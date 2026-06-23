@@ -1,0 +1,168 @@
+# Waterfall (spectrogram) — accumulate, stream to PC, export
+
+[🇷🇺 Русская версия](WATERFALL.md) · [← README](README.en.md)
+
+The gateway can accumulate a **waterfall** (spectrogram): a sequence of spectra
+taken at fixed intervals. Each waterfall row is a **delta** of the cumulative
+spectrum over one interval — i.e. a finished "counts-per-period" spectrum,
+8192 channels, `uint16` per channel (**16 KB per row**).
+
+You can:
+
+- view it right in the board's browser — `http://<board-ip>/waterfall`;
+- **stream it to a PC live** over WebSocket;
+- export everything accumulated on flash as a single file;
+- convert to **ANSI N42.42** — the industrial gamma-spectrometry interchange format;
+- open it as a 2D waterfall in the offline viewer shipped in this repo.
+
+## How it works
+
+| Parameter | Value | Where in code |
+|---|---|---|
+| Channels | 8192 (`WF_CHANNELS`) | `main/spectrogram.h` |
+| Row size | 16 KB (`WF_ROW_BYTES`) | `main/spectrogram.h` |
+| PSRAM ring | 256 rows × 16 KB = **4 MB** (`WF_RING_ROWS_DEFAULT`) | `main/spectrogram.h` |
+| Default interval | 5 s (`WF_INTERVAL_DEFAULT`), range 1…3600 | `main/spectrogram.h` |
+| Data type | `uint16` little-endian | `main/web_waterfall.c` |
+
+While `recording`, rows accumulate into a **PSRAM ring buffer** (the latest 256 rows
+are always available for the window/stream). If `persist` is on, rows are also written
+to **flash** (LittleFS) for later file export. When flash runs out of space `flash_full`
+becomes `true`, flash writing stops, while the ring and the WS stream keep running.
+
+> **Calibration.** The instrument's real energy calibration is a 5-coefficient
+> polynomial (`E(ch) = c₀ + c₁·ch + c₂·ch² + c₃·ch³ + c₄·ch⁴`). It is delivered in the
+> **WebSocket text header** (`/ws/waterfall`) and in the `.aswf` file header — **not**
+> in the `t1/t2/t3` fields of `/api/spectrum.json`. The tools in `scripts/` read the
+> calibration from the WS header, so the axis comes out in **keV**.
+
+## Waterfall Web API
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/waterfall` | GET | Built-in waterfall Web UI (heatmap on the board itself) |
+| `/api/waterfall/status` | GET | Waterfall status (JSON, see below) |
+| `/api/waterfall/start` | POST | Start recording |
+| `/api/waterfall/stop` | POST | Stop recording |
+| `/api/waterfall/clear` | POST | Clear ring + flash (only while stopped) |
+| `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — interval (s) and flash persistence |
+| `/api/waterfall/window` | GET | Ring snapshot (**ASWW** binary, up to 256 rows) |
+| `/api/waterfall/export` | GET | Everything on flash as one file (**ASWF** binary) |
+| `/ws/waterfall` | WS | Text header on connect, then one binary frame (16384 B) per new row |
+
+> All POST endpoints require the **`X-CSRF-Token`** header (from `GET /api/csrf-token`),
+> same as the rest of the gateway API.
+
+`GET /api/waterfall/status` → JSON:
+
+```json
+{
+  "recording": false, "persist": false, "flash_full": false, "ready": true,
+  "interval_sec": 5, "ring_capacity": 256, "ring_count": 0,
+  "total_rows": 0, "flash_rows": 0, "started_at": 0, "channels": 8192
+}
+```
+
+- `ready` — PSRAM ring allocated;
+- `ring_count` — valid rows in the ring (≤ `ring_capacity`);
+- `total_rows` — rows recorded since `start` (monotonic);
+- `flash_rows` — rows in the flash file.
+
+## File formats
+
+### ASWW — window snapshot (`/api/waterfall/window`)
+
+Compact header-less binary, streamed out (single 16 KB bounce buffer, no second
+4 MB buffer → no OOM):
+
+```
+"ASWW" (4 bytes)
+channels     u32 LE   (= 8192)
+rows         u32 LE   (rows in the window)
+first_index  u32 LE   (total index of the first row)
+interval     u32 LE   (seconds between rows)
+payload      = rows × channels × uint16 LE   (chronological, oldest first)
+```
+
+### ASWF — self-describing file (`/api/waterfall/export`, `scripts/waterfall_client.py`)
+
+Binary with a JSON header — everything needed to interpret it standalone:
+
+```
+"ASWF" (4 bytes)
+header_len   u32 LE
+header       = JSON (utf-8), header_len bytes
+payload      = rows × channels × uint16 LE
+```
+
+JSON header:
+
+```json
+{
+  "format": "atomspectra-waterfall", "version": 1,
+  "channels": 8192, "dtype": "uint16", "byte_order": "little",
+  "rows": 1234, "interval_sec": 5, "started_at": 1750000000,
+  "serial": "...", "calibration": [c0, c1, c2, c3, c4]
+}
+```
+
+`serial` and `calibration` are present only if the instrument reported them.
+
+### WebSocket header (`/ws/waterfall`)
+
+The first frame after connect is a **text** JSON:
+
+```json
+{ "type": "header", "channels": 8192, "interval_sec": 5, "total_rows": 187,
+  "serial": "...", "calibration": [c0, c1, c2, c3, c4] }
+```
+
+Then one **binary** frame per new row (16384 bytes = 8192 × uint16 LE). Up to
+4 WS clients are supported at once.
+
+## Streaming to a PC and N42 export
+
+`scripts/` ships three tools (require `pip install requests websocket-client`):
+
+### `waterfall_n42.py` — export to ANSI N42.42-2012
+
+ANSI N42.42 (IEC 62755) is the XML gamma-spectrometry interchange format understood by
+InterSpec, PeakEasy, Cambio. Each waterfall row becomes one `<RadMeasurement>` with
+`RealTimeDuration = PT{interval}S`; sparse delta rows are compressed with `CountedZeroes`.
+The calibration is written to `<EnergyCalibration>` (polynomial from the WS header).
+
+```bash
+# board ring snapshot → snapshot.n42
+python waterfall_n42.py window  <board-ip> -o snapshot.n42
+
+# live stream to N42, auto-stop after 360 s (recording must be ON on the board)
+python waterfall_n42.py stream  <board-ip> -o live.n42 --seconds 360
+
+# convert a previously captured .aswf (pull calibration from the board via --host)
+python waterfall_n42.py convert capture.aswf -o capture.n42 --host <board-ip>
+```
+
+Options: `--detector CsI|NaI|LaBr3|...` (default `CsI`), `-o/--out`.
+
+### `waterfall_viewer.html` — offline waterfall viewer
+
+A standalone HTML page (no server, no dependencies): open it in a browser and
+**drag a `.n42` file** onto it — it renders a heatmap (time ↓ × energy →, viridis
+palette). Controls: channel range, detail, log/contrast, hover tooltip with energy in
+keV (when calibration is present). You can also pass a file via `?src=name.n42` when
+serving over `http://`.
+
+### `waterfall_client.py` — capture to `.aswf`
+
+Writes an unbounded `.aswf` from the WS stream (not limited by the board's 256-row
+ring). Stop with Ctrl+C — the header with the final row count is written on exit.
+The `.aswf` can then be converted to N42 via `waterfall_n42.py convert`.
+
+## What opens N42
+
+| Tool | By | Note |
+|---|---|---|
+| [InterSpec](https://sandialabs.github.io/InterSpec/) | Sandia | Best choice; shows the measurement time-history |
+| `waterfall_viewer.html` | this repo | 2D waterfall (heatmap), offline |
+| PeakEasy | LANL | Spectrum viewer |
+| Cambio | Sandia | Converter/viewer |

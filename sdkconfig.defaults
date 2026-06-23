@@ -1,0 +1,38 @@
+# AtomSpectra Gateway — ESP32-S3-N16R8
+# USB Host + WiFi + Web Server + LittleFS
+
+# Target
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash / PSRAM
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# USB Host
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+CONFIG_USB_HOST_HW_BUFFER_BIAS_BALANCED=y
+CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK=y
+
+# WiFi
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# Network — больше сокетов для частого polling Web UI (иначе httpd accept errno 23)
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# WebSocket support для /ws/waterfall (live-стрим строк спектрограммы)
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# LittleFS for spectrum storage
+CONFIG_LITTLEFS_MAX_PARTITIONS=3
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Task watchdog
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# Partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AtomSpectra WiFi Setup</title>
+<style>
+body{font-family:sans-serif;background:#1a1a2e;color:#e0e0e0;margin:0;padding:20px;max-width:420px;margin:0 auto}
+h1{color:#0f0;text-align:center;font-size:22px}
+.nets{margin:10px 0}
+.net{padding:10px 12px;margin:4px 0;background:#16213e;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.net:hover{background:#1a3a5c}
+.net.sel{border:2px solid #0f0}
+.sig{font-size:12px;color:#888}
+input{width:100%;padding:10px;margin:8px 0;background:#16213e;color:#e0e0e0;border:1px solid #333;border-radius:6px;box-sizing:border-box;font-size:16px}
+button{width:100%;padding:12px;background:#0f0;color:#111;border:none;border-radius:6px;font-size:18px;font-weight:bold;cursor:pointer;margin-top:12px}
+button:hover{background:#0c0}
+button:disabled{background:#333;color:#666;cursor:not-allowed}
+#st{text-align:center;padding:10px;margin-top:10px;min-height:20px}
+.ok{color:#0f0}.err{color:#f44}
+#rescan{width:auto;padding:8px 16px;font-size:14px;background:#16213e;color:#0f0;border:1px solid #0f0;margin:8px 0}
+#rescan:hover{background:#0f0;color:#111}
+</style>
+</head>
+<body>
+<h1>AtomSpectra WiFi Setup</h1>
+<div class="nets" id="nets">Scanning networks...</div>
+<button id="rescan" onclick="scan()">Rescan</button>
+<input id="ssid" placeholder="WiFi Network (SSID)">
+<input id="pass" type="password" placeholder="Password">
+<button onclick="doConnect()" id="btn">Connect</button>
+<div id="st"></div>
+
+<script>
+function scan(){
+    document.getElementById('nets').textContent='Scanning...';
+    fetch('/api/scan').then(function(r){return r.json()}).then(function(d){
+        var c=document.getElementById('nets');
+        c.innerHTML='';
+        if(!d.length){c.textContent='No networks found';return;}
+        d.forEach(function(n){
+            var div=document.createElement('div');
+            div.className='net';
+            var s1=document.createElement('span');
+            s1.textContent=n.ssid;
+            var s2=document.createElement('span');
+            s2.className='sig';
+            s2.textContent=n.rssi+' dBm'+(n.auth>0?' [secured]':'');
+            div.appendChild(s1);
+            div.appendChild(s2);
+            div.onclick=function(){
+                document.querySelectorAll('.net').forEach(function(e){e.classList.remove('sel')});
+                div.classList.add('sel');
+                document.getElementById('ssid').value=n.ssid;
+            };
+            c.appendChild(div);
+        });
+    }).catch(function(){document.getElementById('nets').textContent='Scan failed';});
+}
+function doConnect(){
+    var s=document.getElementById('ssid').value;
+    var p=document.getElementById('pass').value;
+    var st=document.getElementById('st');
+    if(!s){st.className='err';st.textContent='Enter SSID';return;}
+    document.getElementById('btn').disabled=true;
+    st.className='ok';st.textContent='Saving...';
+    fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ssid:s,pass:p})})
+    .then(function(r){return r.json()}).then(function(){
+        st.textContent='Saved! Rebooting in STA mode...';
+    }).catch(function(){
+        st.className='ok';st.textContent='Device rebooting, connect to your WiFi network';
+    });
+}
+scan();
+</script>
+</body></html>

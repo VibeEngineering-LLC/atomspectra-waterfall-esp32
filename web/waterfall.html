@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AtomSpectra — Водопад</title>
+<style>
+body{font-family:monospace;background:#111;color:#0f0;margin:0;padding:10px}
+h1{font-size:16px;margin:0 0 8px}
+a{color:#3cf}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.bar>*{flex:none}
+button{background:#222;color:#0f0;border:1px solid #0f0;padding:4px 8px;cursor:pointer;font-family:monospace}
+button:hover{background:#0f0;color:#111}
+button:disabled{opacity:.4;cursor:default}
+button:disabled:hover{background:#222;color:#0f0}
+input,select{background:#000;color:#0f0;border:1px solid #0a0;padding:3px;font-family:monospace}
+input[type=number]{width:64px}
+label{user-select:none}
+#wrap{position:relative;display:inline-block;border:1px solid #0a0}
+#wf{display:block;background:#000;cursor:crosshair}
+#cur{position:absolute;left:0;top:0;pointer-events:none}
+#hud{position:absolute;right:4px;top:4px;background:rgba(0,0,0,.6);padding:2px 6px;font-size:11px;color:#9f9;white-space:pre}
+.st{color:#9f9}
+.warn{color:#fc3}
+.err{color:#f55}
+#log{height:90px;overflow:auto;background:#000;border:1px solid #060;padding:4px;font-size:11px;white-space:pre-wrap;margin-top:8px}
+.sw{display:inline-block;width:140px;height:10px;vertical-align:middle;
+  background:linear-gradient(90deg,#000,#206,#a04,#f80,#ff0,#fff)}
+</style>
+</head>
+<body>
+<h1>AtomSpectra — Водопад (спектрограмма) · <a href="/">← спектр</a></h1>
+
+<div class="bar">
+  <button id="bStart">▶ Старт</button>
+  <button id="bStop">■ Стоп</button>
+  <button id="bClear">🗑 Очистить</button>
+  <button id="bExport">⬇ Экспорт .aswf</button>
+  <span class="st" id="state">…</span>
+</div>
+
+<div class="bar">
+  <label>Интервал, с <input type="number" id="iv" min="1" max="3600" value="5"></label>
+  <button id="bIv">применить</button>
+  <label><input type="checkbox" id="persist"> хранить во Flash</label>
+  <span class="st" id="flashst"></span>
+</div>
+
+<div class="bar">
+  <label>Ось X
+    <select id="axis"><option value="ch">каналы</option><option value="kev">кэВ</option></select>
+  </label>
+  <label>Яркость
+    <select id="scale"><option value="log">лог</option><option value="lin">лин</option></select>
+  </label>
+  <label>Контраст <input type="range" id="gain" min="1" max="100" value="40"></label>
+  <span class="sw"></span>
+  <label>Каналы <input type="number" id="chLo" min="0" max="8191" value="0"> –
+    <input type="number" id="chHi" min="1" max="8192" value="8192"></label>
+  <button id="bFit">сброс зума</button>
+</div>
+
+<div id="wrap">
+  <canvas id="wf" width="900" height="520"></canvas>
+  <canvas id="cur" width="900" height="520"></canvas>
+  <div id="hud"></div>
+</div>
+
+<div id="log"></div>
+
+<script>
+"use strict";
+var CH=8192;                 // число каналов (уточняется из WS-заголовка)
+var WFW=900, WFH=520;        // размер канвы
+var MAXROWS=2048;            // потолок клиентского буфера строк
+var rows=[];                 // массив Uint16Array(CH), хронологически (старые в начале)
+var baseIndex=0;             // глобальный индекс строки rows[0]
+var calib=null, serial="", intervalSec=5, startedAt=0;
+var viewBottom=-1;           // глобальный индекс строки у нижнего края (-1 = прилипнуть к новым)
+var chLo=0, chHi=CH;         // окно каналов (зум по X)
+var gain=40, scaleMode="log", axisMode="ch";
+var ws=null, wsTimer=null, recording=false;
+var wf=document.getElementById("wf"), wfx=wf.getContext("2d");
+var cur=document.getElementById("cur"), curx=cur.getContext("2d");
+
+function lg(m){var d=document.getElementById("log");var t=new Date().toLocaleTimeString();
+  d.textContent+="["+t+"] "+m+"\n";d.scrollTop=d.scrollHeight}
+
+// палитра: 0..1 -> [r,g,b] (black-blue-magenta-orange-yellow-white)
+function cmap(t){
+  if(t<0)t=0; if(t>1)t=1;
+  var stops=[[0,0,0],[32,0,96],[160,0,64],[255,128,0],[255,255,0],[255,255,255]];
+  var f=t*(stops.length-1), i=Math.floor(f), g=f-i;
+  if(i>=stops.length-1)return stops[stops.length-1];
+  var a=stops[i], b=stops[i+1];
+  return [a[0]+(b[0]-a[0])*g, a[1]+(b[1]-a[1])*g, a[2]+(b[2]-a[2])*g];
+}
+function ch2kev(c){if(!calib)return c;var e=0;for(var i=0;i<calib.length;i++)e+=calib[i]*Math.pow(c,i);return e}
+function kev2ch(k){var lo=0,hi=CH;for(var i=0;i<30;i++){var m=(lo+hi)/2;if(ch2kev(m)<k)lo=m;else hi=m}return(lo+hi)/2}
+
+// текущий максимум для нормировки яркости (сглажен)
+var normMax=64;
+function rowMax(r){var m=0;for(var i=chLo;i<chHi&&i<r.length;i++){if(r[i]>m)m=r[i];}return m;}
+
+function draw(){
+  var img=wfx.createImageData(WFW,WFH);
+  var data=img.data;
+  var span=chHi-chLo; if(span<1)span=1;
+  // какой глобальный индекс у нижней строки
+  var lastIdx=baseIndex+rows.length-1;
+  var bottom=(viewBottom<0)?lastIdx:viewBottom;
+  // нормировка: максимум по видимым строкам
+  var seenMax=1;
+  for(var y=0;y<WFH;y++){
+    var gIdx=bottom-y;                 // верх экрана = старее
+    var li=gIdx-baseIndex;
+    if(li<0||li>=rows.length)continue;
+    var rm=rowMax(rows[li]); if(rm>seenMax)seenMax=rm;
+  }
+  normMax=normMax*0.7+seenMax*0.3; if(normMax<1)normMax=1;
+  var gfac=gain/40.0;
+  for(var y=0;y<WFH;y++){
+    var gIdx=bottom-y;
+    var li=gIdx-baseIndex;
+    var off=y*WFW*4;
+    if(li<0||li>=rows.length){
+      for(var x=0;x<WFW;x++){var o=off+x*4;data[o]=12;data[o+1]=12;data[o+2]=12;data[o+3]=255;}
+      continue;
+    }
+    var row=rows[li];
+    for(var x=0;x<WFW;x++){
+      var c=chLo+Math.floor(x/WFW*span);
+      var v=(c>=0&&c<row.length)?row[c]:0;
+      var t;
+      if(scaleMode==="log"){t=Math.log1p(v*gfac)/Math.log1p(normMax);}
+      else{t=(v*gfac)/normMax;}
+      var col=cmap(t);
+      var o=off+x*4;
+      data[o]=col[0]|0;data[o+1]=col[1]|0;data[o+2]=col[2]|0;data[o+3]=255;
+    }
+  }
+  wfx.putImageData(img,0,0);
+  drawAxis();
+  updHud(bottom,lastIdx);
+}
+
+function drawAxis(){
+  curx.clearRect(0,0,WFW,WFH);
+  curx.fillStyle="rgba(0,0,0,.55)";curx.fillRect(0,WFH-16,WFW,16);
+  curx.strokeStyle="#0a0";curx.fillStyle="#9f9";curx.font="10px monospace";curx.textAlign="center";
+  var span=chHi-chLo;
+  var N=8;
+  for(var i=0;i<=N;i++){
+    var x=i/N*WFW;
+    var ch=chLo+span*i/N;
+    var lbl=axisMode==="kev"&&calib?ch2kev(ch).toFixed(0)+"k":Math.round(ch);
+    curx.beginPath();curx.moveTo(x,WFH-16);curx.lineTo(x,WFH-12);curx.stroke();
+    var tx=x; if(i===0)tx+=12; if(i===N)tx-=12;
+    curx.fillText(lbl,tx,WFH-4);
+  }
+}
+
+function updHud(bottom,lastIdx){
+  var behind=lastIdx-bottom;
+  var total=rows.length;
+  var tail=(viewBottom<0)?"LIVE":("−"+behind);
+  document.getElementById("hud").textContent=
+    "строк: "+total+"   низ: #"+(bottom<0?0:bottom)+" ["+tail+"]\n"+
+    "норм: "+Math.round(normMax)+"   X: "+chLo+"…"+chHi;
+}
+
+// курсор
+wf.parentNode.addEventListener("mousemove",function(e){
+  var rc=wf.getBoundingClientRect();
+  var x=e.clientX-rc.left, y=e.clientY-rc.top;
+  if(x<0||x>=WFW||y<0||y>=WFH)return;
+  draw();
+  curx.strokeStyle="rgba(255,255,255,.4)";
+  curx.beginPath();curx.moveTo(x,0);curx.lineTo(x,WFH);curx.moveTo(0,y);curx.lineTo(WFW,y);curx.stroke();
+  var span=chHi-chLo; var c=chLo+Math.floor(x/WFW*span);
+  var lastIdx=baseIndex+rows.length-1;
+  var bottom=(viewBottom<0)?lastIdx:viewBottom;
+  var gIdx=bottom-y, li=gIdx-baseIndex;
+  var v=(li>=0&&li<rows.length&&c<rows[li].length)?rows[li][c]:0;
+  var ke=calib?(" / "+ch2kev(c).toFixed(1)+" кэВ"):"";
+  curx.fillStyle="rgba(0,0,0,.7)";curx.fillRect(x+6,y-2,150,14);
+  curx.fillStyle="#ff0";curx.textAlign="left";curx.font="11px monospace";
+  curx.fillText("ch "+c+ke+" : "+v,x+9,y+9);
+});
+wf.parentNode.addEventListener("mouseleave",function(){draw();});
+
+function pushRow(u16){
+  rows.push(u16);
+  if(rows.length>MAXROWS){rows.shift();baseIndex++;}
+}
+function clearRows(){rows=[];baseIndex=0;viewBottom=-1;normMax=64;}
+
+async function backfill(){
+  try{
+    var ab=await(await fetch("/api/waterfall/window")).arrayBuffer();
+    if(ab.byteLength<20)return;
+    var dv=new DataView(ab);
+    var mg=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+    if(mg!=="ASWW")return;
+    var ch=dv.getUint32(4,true), nr=dv.getUint32(8,true), first=dv.getUint32(12,true);
+    intervalSec=dv.getUint32(16,true)||intervalSec;
+    CH=ch; chHiClamp();
+    clearRows(); baseIndex=first;
+    var base=20;
+    for(var i=0;i<nr;i++){
+      rows.push(new Uint16Array(ab.slice(base+i*ch*2, base+(i+1)*ch*2)));
+    }
+    lg("backfill: "+nr+" строк, first #"+first);
+    draw();
+  }catch(e){lg("backfill err: "+e);}
+}
+
+function connectWS(){
+  var proto=location.protocol==="https:"?"wss:":"ws:";
+  ws=new WebSocket(proto+"//"+location.host+"/ws/waterfall");
+  ws.binaryType="arraybuffer";
+  ws.onopen=function(){lg("WS подключён");document.getElementById("state").className="st";};
+  ws.onmessage=function(ev){
+    if(typeof ev.data==="string"){
+      try{var h=JSON.parse(ev.data);if(h.channels){CH=h.channels;chHiClamp();}if(h.interval_sec)intervalSec=h.interval_sec;}catch(e){}
+      return;
+    }
+    var u16=new Uint16Array(ev.data);
+    if(u16.length!==CH&&u16.length>0)CH=u16.length;
+    pushRow(u16);
+    draw();
+  };
+  ws.onclose=function(){lg("WS закрыт, переподключение…");document.getElementById("state").className="warn";
+    clearTimeout(wsTimer);wsTimer=setTimeout(connectWS,2000);};
+  ws.onerror=function(){try{ws.close();}catch(e){}};
+}
+
+function chHiClamp(){
+  if(chHi>CH)chHi=CH; if(chLo<0)chLo=0; if(chLo>=chHi)chLo=Math.max(0,chHi-1);
+  document.getElementById("chHi").max=CH;document.getElementById("chLo").max=CH-1;
+}
+
+async function refreshStatus(){
+  try{
+    var s=await(await fetch("/api/waterfall/status")).json();
+    recording=s.recording;intervalSec=s.interval_sec;startedAt=s.started_at;
+    document.getElementById("iv").value=s.interval_sec;
+    document.getElementById("persist").checked=!!s.persist;
+    var st=document.getElementById("state");
+    st.textContent=(s.recording?"● ЗАПИСЬ":"○ стоп")+
+      "  ·  строк всего: "+s.total_rows+"  ·  в кольце: "+s.ring_count+"/"+s.ring_capacity+
+      (s.persist?("  ·  Flash: "+s.flash_rows):"");
+    st.className=s.recording?"st":"warn";
+    var fs=document.getElementById("flashst");
+    fs.textContent=s.flash_full?"⚠ Flash заполнен (стрим продолжается)":"";
+    fs.className=s.flash_full?"err":"st";
+    document.getElementById("bStart").disabled=s.recording;
+    document.getElementById("bStop").disabled=!s.recording;
+  }catch(e){}
+}
+
+// ---- контролы ----
+function post(url,body){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});}
+var csrfToken="";
+async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||"";}catch(e){}}
+
+document.getElementById("bStart").onclick=async function(){await post("/api/waterfall/start");refreshStatus();};
+document.getElementById("bStop").onclick=async function(){await post("/api/waterfall/stop");refreshStatus();};
+document.getElementById("bClear").onclick=async function(){
+  if(!confirm("Очистить накопленную спектрограмму?"))return;
+  await post("/api/waterfall/clear");clearRows();draw();refreshStatus();lg("очищено");};
+document.getElementById("bIv").onclick=async function(){
+  var v=parseInt(document.getElementById("iv").value)||5;
+  await post("/api/waterfall/config",{interval:v});refreshStatus();lg("интервал = "+v+" с");};
+document.getElementById("persist").onchange=async function(){
+  await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
+document.getElementById("bExport").onclick=function(){window.location="/api/waterfall/export";lg("экспорт .aswf");};
+
+document.getElementById("axis").onchange=function(){axisMode=this.value;draw();};
+document.getElementById("scale").onchange=function(){scaleMode=this.value;draw();};
+document.getElementById("gain").oninput=function(){gain=parseInt(this.value);draw();};
+function applyZoom(){chLo=parseInt(document.getElementById("chLo").value)||0;
+  chHi=parseInt(document.getElementById("chHi").value)||CH;chHiClamp();draw();}
+document.getElementById("chLo").onchange=applyZoom;
+document.getElementById("chHi").onchange=applyZoom;
+document.getElementById("bFit").onclick=function(){chLo=0;chHi=CH;
+  document.getElementById("chLo").value=0;document.getElementById("chHi").value=CH;draw();};
+
+// колесо: вертикальный скролл; Shift = зум по каналам у курсора
+wf.addEventListener("wheel",function(e){
+  e.preventDefault();
+  if(e.shiftKey){
+    var rc=wf.getBoundingClientRect();var x=e.clientX-rc.left;
+    var span=chHi-chLo;var cc=chLo+x/WFW*span;
+    var f=e.deltaY<0?0.8:1.25;var ns=Math.max(16,Math.min(CH,span*f));
+    chLo=Math.round(cc-(x/WFW)*ns);chHi=Math.round(chLo+ns);chHiClamp();
+    document.getElementById("chLo").value=chLo;document.getElementById("chHi").value=chHi;
+  }else{
+    var lastIdx=baseIndex+rows.length-1;
+    var bottom=(viewBottom<0)?lastIdx:viewBottom;
+    var step=e.deltaY<0?-3:3;
+    bottom+=step;
+    if(bottom>=lastIdx){viewBottom=-1;}else{if(bottom<baseIndex)bottom=baseIndex;viewBottom=bottom;}
+  }
+  draw();
+},{passive:false});
+
+// ---- init ----
+(async function(){
+  await loadCsrf();
+  try{var sp=await(await fetch("/api/spectrum.json")).json();
+    if(sp.calibration)calib=sp.calibration;if(sp.serial_number)serial=sp.serial_number;}catch(e){}
+  await refreshStatus();
+  await backfill();
+  connectWS();
+  setInterval(refreshStatus,5000);
+})();
+</script>
+</body>
+</html>

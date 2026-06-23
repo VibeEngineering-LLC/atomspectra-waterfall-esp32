@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>AtomSpectra Gateway</title>
+<style>
+body{font-family:monospace;background:#111;color:#0f0;margin:20px}
+canvas{display:block;margin:10px 0;cursor:crosshair}
+button{background:#222;color:#0f0;border:1px solid #0f0;padding:8px 16px;cursor:pointer;margin:4px}
+button:hover{background:#0f0;color:#111}
+button.sta{background:#030;border-color:#0f0;color:#0f0;font-size:16px;padding:10px 24px}
+button.sta:hover{background:#0f0;color:#111}
+button.sto{background:#330;border-color:#fa0;color:#fa0;font-size:16px;padding:10px 24px}
+button.sto:hover{background:#fa0;color:#111}
+button.rst{background:#300;border-color:#f44;color:#f44;font-size:16px;padding:10px 24px}
+button.rst:hover{background:#f44;color:#111}
+button.del{border-color:#f44;color:#f44}
+button.del:hover{background:#f44;color:#111}
+button.ovl{border-color:#fa0;color:#fa0}
+button.ovl:hover{background:#fa0;color:#111}
+button.tog{padding:5px 12px;font-size:13px;min-width:48px}
+button.tog.on{background:#0f0;color:#111;font-weight:bold}
+.info{color:#0a0;font-size:14px;margin:8px 0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#log{color:#080;font-size:12px;max-height:120px;overflow-y:auto;white-space:pre;margin-top:8px}
+#overlay-label{color:#fa0;font-size:13px;margin-left:8px}
+h2{color:#0c0;margin:20px 0 8px;border-top:1px solid #040;padding-top:12px}
+table{border-collapse:collapse;margin:8px 0}
+th,td{border:1px solid #040;padding:6px 12px;text-align:left}
+th{color:#0c0}
+a{color:#0f0}
+.empty{color:#060;font-style:italic}
+.tg{display:inline-flex;gap:2px;margin-right:16px;align-items:center}
+.tg span{color:#060;font-size:11px;margin-right:4px}
+#cursor-info{color:#0a0;font-size:13px;height:16px;margin:0 0 4px}
+#flash-bar{margin:8px 0;padding:8px 12px;border:1px solid #040;background:#0a0a0a;font-size:13px}
+#flash-inner{height:8px;background:#0f0;border-radius:2px;transition:width .3s}
+details{margin:12px 0;border:1px solid #040;background:#0a0a0a}
+details summary{padding:8px 12px;cursor:pointer;color:#0c0;font-size:14px}
+details summary:hover{color:#0f0}
+.cb{padding:8px 12px}
+.cb label{display:inline-block;width:90px;color:#0a0;font-size:13px}
+.cb input[type=text]{background:#222;color:#0f0;border:1px solid #040;padding:4px 8px;width:180px;font-family:monospace;margin:2px 0}
+</style></head>
+<body>
+<h1>AtomSpectra Gateway · <a href="/waterfall" style="color:#3cf;font-size:13px">водопад →</a></h1>
+<div id="device-name" style="color:#0c0;font-size:16px;margin:4px 0"></div>
+<div class="info" id="status">Connecting...</div>
+<div id="flash-bar">Flash: <span id="flash-text">...</span>
+<div style="background:#040;height:8px;border-radius:2px;margin-top:4px"><div id="flash-inner" style="width:0%"></div></div>
+</div>
+<div id="controls" style="display:flex;gap:12px;align-items:center;margin:12px 0;padding:12px;border:1px solid #040;background:#0a0a0a">
+<button class="sta" onclick="startAcq()">&#9654; &#1057;&#1090;&#1072;&#1088;&#1090;</button>
+<button class="sto" onclick="stopAcq()">&#9632; &#1057;&#1090;&#1086;&#1087;</button>
+<button class="rst" onclick="resetSpectrum()">&#8635; &#1057;&#1073;&#1088;&#1086;&#1089;</button>
+<div style="margin-left:24px;font-size:22px">
+<span id="big-time" style="color:#0f0">00:00:00</span>
+<span style="color:#060;margin:0 12px">|</span>
+<span id="big-cps" style="color:#ff0">0</span><span style="color:#880;font-size:14px"> CPS</span>
+<span style="color:#060;margin:0 12px">|</span>
+<span id="big-total" style="color:#0c0">0</span><span style="color:#060;font-size:14px"> counts</span>
+</div>
+</div>
+<div class="row" style="margin:4px 0">
+<div class="tg"><span>Scale:</span><button class="tog on" id="btn-lin" onclick="setLog(false)">Lin</button><button class="tog" id="btn-log" onclick="setLog(true)">Log</button></div>
+<div class="tg"><span>Y:</span><button class="tog on" id="btn-cnt" onclick="setCps(false)">Counts</button><button class="tog" id="btn-cps" onclick="setCps(true)">CPS</button></div>
+<div class="tg"><span>X:</span><button class="tog on" id="btn-ch" onclick="setKev(false)">Ch</button><button class="tog" id="btn-kev" onclick="setKev(true)">keV</button></div>
+</div>
+<canvas id="sp" width="1200" height="400"></canvas>
+<div id="cursor-info"></div>
+<div class="row">
+<button onclick="saveSpectrum()">&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1080;&#1090;&#1100;</button>
+<button onclick="location.href='/api/export.xml'">Export XML</button>
+<button onclick="location.href='/api/export.csv'">Export CSV</button>
+<button onclick="requestInfo()">&#1048;&#1085;&#1092;&#1086;</button>
+<button onclick="toggleLogPanel()">&#1051;&#1086;&#1075;</button>
+<button class="ovl" onclick="clearOverlay()" id="btn-clear-ovl" style="display:none">Clear Overlay</button>
+<span id="overlay-label"></span>
+<button onclick="rebootDevice()" style="border-color:#f44;color:#f44">Reboot Device</button>
+<button onclick="rebootEsp()" style="border-color:#f80;color:#f80">Reboot ESP</button>
+<button onclick="resetWifi()" style="border-color:#f80;color:#f80">WiFi Reset</button>
+<input id="cmd" placeholder="-inf" style="background:#222;color:#0f0;border:1px solid #0f0;padding:8px;width:200px">
+<button onclick="sendCmd()">Send</button>
+</div>
+<details>
+<summary>&#1050;&#1072;&#1083;&#1080;&#1073;&#1088;&#1086;&#1074;&#1082;&#1072; &#1101;&#1085;&#1077;&#1088;&#1075;&#1080;&#1080;</summary>
+<div class="cb">
+<div><label>a (ch&#8308;):</label><input id="cal-a" type="text" placeholder="0"></div>
+<div><label>b (ch&#179;):</label><input id="cal-b" type="text" placeholder="0"></div>
+<div><label>c (ch&#178;):</label><input id="cal-c" type="text" placeholder="0"></div>
+<div><label>d (ch&#185;):</label><input id="cal-d" type="text" placeholder="0"></div>
+<div><label>e (offset):</label><input id="cal-e" type="text" placeholder="0"></div>
+<div style="margin-top:8px">
+<button onclick="applyCalib()">&#1055;&#1088;&#1080;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100;</button>
+<button onclick="clearCalib()">&#1054;&#1095;&#1080;&#1089;&#1090;&#1080;&#1090;&#1100;</button>
+<button onclick="requestInfo()">&#1057;&#1095;&#1080;&#1090;&#1072;&#1090;&#1100; &#1089; &#1087;&#1088;&#1080;&#1073;&#1086;&#1088;&#1072;</button>
+<span id="calib-status" style="color:#060;font-size:12px;margin-left:8px">&#1053;&#1077; &#1079;&#1072;&#1076;&#1072;&#1085;&#1072;</span>
+</div>
+</div>
+</details>
+<pre id="log" style="display:none"></pre>
+<h2>&#1057;&#1086;&#1093;&#1088;&#1072;&#1085;&#1105;&#1085;&#1085;&#1099;&#1077; &#1089;&#1087;&#1077;&#1082;&#1090;&#1088;&#1099;</h2>
+<div id="saved"><span class="empty">&#1047;&#1072;&#1075;&#1088;&#1091;&#1079;&#1082;&#1072;...</span></div>
+
+<script>
+var C=document.getElementById("sp"),X=C.getContext("2d");
+var logEl=document.getElementById("log");
+var overlayBins=null,overlayIdx=-1;
+var isLog=false,isCps=false,isKev=false;
+var calib=null,lastD=null,calibEditing=false;
+var PL=65,PT=15,PW=1120,PH=340,PR=PL+PW,PB=PT+PH;
+var csrfToken="";
+
+async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
+function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
+
+function lg(m){logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight}
+function fmtTime(s){var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;return(h>0?h+"h ":"")+(m>0?m+"m ":"")+ss+"s"}
+function fmtHMS(s){var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(ss).padStart(2,"0")}
+function togBtn(a,b,v){document.getElementById(a).className="tog"+(v?"":" on");document.getElementById(b).className="tog"+(v?" on":"")}
+function setLog(v){isLog=v;togBtn("btn-lin","btn-log",v);if(lastD)draw(lastD);else clearCanvas()}
+function setCps(v){isCps=v;togBtn("btn-cnt","btn-cps",v);if(lastD)draw(lastD);else clearCanvas()}
+function setKev(v){isKev=v;togBtn("btn-ch","btn-kev",v);if(lastD)draw(lastD);else clearCanvas()}
+function ch2kev(ch){if(!calib)return ch;var e=0;for(var i=0;i<calib.length;i++)e+=calib[i]*Math.pow(ch,i);return e}
+function kev2ch(kev){var lo=0,hi=8192;for(var i=0;i<30;i++){var m=(lo+hi)/2;if(ch2kev(m)<kev)lo=m;else hi=m}return(lo+hi)/2}
+function niceStep(r,n){if(r<=0)return 1;var s=r/n,e=Math.floor(Math.log10(s)),f=s/Math.pow(10,e);return(f<=1.5?1:f<=3.5?2:f<=7.5?5:10)*Math.pow(10,e)}
+function fmtY(v){if(v>=1e6)return(v/1e6).toFixed(1)+"M";if(v>=1e4)return(v/1e3).toFixed(0)+"k";if(v>=1e3)return(v/1e3).toFixed(1)+"k";if(v>0&&v<0.01)return v.toExponential(0);if(isCps)return v.toFixed(v<1?3:v<10?2:v<100?1:0);return String(Math.round(v))}
+
+function clearCanvas(){
+ X.fillStyle="#111";X.fillRect(0,0,1200,400);
+ X.strokeStyle="#0f0";X.lineWidth=1;X.beginPath();X.moveTo(PL,PT);X.lineTo(PL,PB);X.lineTo(PR,PB);X.stroke();
+ X.fillStyle="#060";X.font="16px monospace";X.textAlign="center";
+ X.fillText("Нет данных",PL+PW/2,PT+PH/2);
+ X.font="11px monospace";X.fillText(isKev&&calib?"keV":"Channel",PL+PW/2,PB+32);
+ X.save();X.translate(12,PT+PH/2);X.rotate(-Math.PI/2);X.textAlign="center";X.fillText(isCps?"CPS":"Counts",0,0);X.restore();
+}
+
+async function update(){
+ try{
+  var r=await fetch("/api/spectrum.json");
+  if(!r.ok){clearCanvas();document.getElementById("status").textContent="Нет данных";return}
+  var d=await r.json();
+  if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib)}
+  if(d.serial)document.getElementById("device-name").textContent=d.serial;
+  lastD=d;
+  document.getElementById("status").textContent=
+   (d.serial?d.serial+" | ":"")+"CPS: "+d.cps+" | "+d.total.toLocaleString()+" counts | "+fmtTime(d.time)+
+   " | CPU: "+d.cpu+"% | Lost: "+d.lost+" | T: "+d.t1+"/"+d.t2+"/"+d.t3+"°C";
+  document.getElementById("big-time").textContent=fmtHMS(d.time);
+  document.getElementById("big-cps").textContent=d.cps;
+  document.getElementById("big-total").textContent=d.total.toLocaleString();
+  draw(d);
+ }catch(e){clearCanvas();document.getElementById("status").textContent="Error: "+e}
+}
+
+function draw(d){
+ var bins=d.bins,time=d.time,N=bins.length;
+ var t=time>0?time:1;
+ var yV=new Array(N);
+ for(var i=0;i<N;i++)yV[i]=isCps?bins[i]/t:bins[i];
+ var yO=null;
+ if(overlayBins){yO=new Array(overlayBins.length);for(var i=0;i<overlayBins.length;i++)yO[i]=isCps?overlayBins[i]/t:overlayBins[i]}
+ var mx=0;
+ for(var i=0;i<N;i++)if(yV[i]>mx)mx=yV[i];
+ if(yO)for(var i=0;i<yO.length;i++)if(yO[i]>mx)mx=yO[i];
+ if(mx<=0)mx=1;
+ var yTicks=[],minExp=0,maxExp=0,yMap;
+ if(isLog){
+  maxExp=Math.ceil(Math.log10(mx));if(maxExp<1)maxExp=1;
+  minExp=Math.max(maxExp-7,isCps?-3:0);
+  if(minExp>=maxExp)minExp=maxExp-1;
+  for(var p=minExp;p<=maxExp;p++)yTicks.push(Math.pow(10,p));
+  yMap=function(v){if(v<=0)return PB;var lv=Math.log10(v);if(lv<minExp)return PB;return PB-((lv-minExp)/(maxExp-minExp))*PH};
+ }else{
+  yMap=function(v){return PB-(v/mx)*PH};
+  var ys=niceStep(mx,6);for(var v=0;v<=mx*1.01;v+=ys)yTicks.push(v);
+ }
+ var xTicks=[];
+ if(isKev&&calib){var mk=ch2kev(N-1);var ks=niceStep(mk,8);for(var k=0;k<=mk*1.01;k+=ks){var c=kev2ch(k);var x=PL+(c/N)*PW;if(x>=PL&&x<=PR)xTicks.push({x:x,l:k.toFixed(0)})}}
+ else{var cs=niceStep(N,8);for(var c=0;c<=N;c+=cs){var x=PL+(c/N)*PW;if(x>=PL&&x<=PR)xTicks.push({x:x,l:String(Math.round(c))})}}
+ X.fillStyle="#111";X.fillRect(0,0,1200,400);
+ X.strokeStyle="#1a2a1a";X.lineWidth=1;
+ for(var i=0;i<yTicks.length;i++){var y=yMap(yTicks[i]);if(y>=PT&&y<=PB){X.beginPath();X.moveTo(PL,y);X.lineTo(PR,y);X.stroke()}}
+ for(var i=0;i<xTicks.length;i++){X.beginPath();X.moveTo(xTicks[i].x,PT);X.lineTo(xTicks[i].x,PB);X.stroke()}
+ X.save();X.beginPath();X.rect(PL,PT,PW,PH);X.clip();
+ var bw=PW/N;
+ if(yO){X.fillStyle="rgba(255,170,0,0.3)";for(var i=0;i<yO.length;i++){var y=yMap(yO[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y)}}
+ X.fillStyle=yO?"rgba(0,255,0,0.7)":"#0f0";
+ for(var i=0;i<N;i++){var y=yMap(yV[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y)}
+ if(yO){X.strokeStyle="#fa0";X.lineWidth=1;X.beginPath();for(var i=0;i<yO.length;i++){var px=PL+i*bw+bw/2,py=yMap(yO[i]);i===0?X.moveTo(px,py):X.lineTo(px,py)}X.stroke()}
+ X.restore();
+ X.strokeStyle="#0f0";X.lineWidth=1;X.beginPath();X.moveTo(PL,PT);X.lineTo(PL,PB);X.lineTo(PR,PB);X.stroke();
+ X.fillStyle="#0a0";X.font="11px monospace";X.textAlign="right";
+ for(var i=0;i<yTicks.length;i++){var y=yMap(yTicks[i]);if(y>=PT&&y<=PB)X.fillText(fmtY(yTicks[i]),PL-4,y+4)}
+ X.textAlign="center";
+ for(var i=0;i<xTicks.length;i++){X.strokeStyle="#0f0";X.beginPath();X.moveTo(xTicks[i].x,PB);X.lineTo(xTicks[i].x,PB+5);X.stroke();X.fillStyle="#0a0";X.fillText(xTicks[i].l,xTicks[i].x,PB+16)}
+ X.fillStyle="#060";X.fillText(isKev&&calib?"keV":"Channel",PL+PW/2,PB+32);
+ X.save();X.translate(12,PT+PH/2);X.rotate(-Math.PI/2);X.textAlign="center";X.fillText(isCps?"CPS":"Counts",0,0);X.restore();
+}
+
+C.addEventListener("mousemove",function(e){
+ if(!lastD)return;
+ var rect=C.getBoundingClientRect();
+ var mx=(e.clientX-rect.left)*(1200/rect.width);
+ var my=(e.clientY-rect.top)*(400/rect.height);
+ if(mx<PL||mx>PR||my<PT||my>PB){document.getElementById("cursor-info").textContent="";return}
+ var ch=Math.floor((mx-PL)/PW*lastD.bins.length);
+ if(ch<0||ch>=lastD.bins.length){document.getElementById("cursor-info").textContent="";return}
+ var cnt=lastD.bins[ch];
+ var info="Ch: "+ch;
+ if(calib)info+=" | "+ch2kev(ch).toFixed(1)+" keV";
+ info+=" | "+cnt+" counts";
+ if(lastD.time>0)info+=" | "+(cnt/lastD.time).toFixed(2)+" CPS";
+ document.getElementById("cursor-info").textContent=info;
+});
+C.addEventListener("mouseleave",function(){document.getElementById("cursor-info").textContent=""});
+
+function fillCalibFields(cal){
+ document.getElementById("cal-e").value=cal[0]||0;
+ document.getElementById("cal-d").value=cal[1]||0;
+ document.getElementById("cal-c").value=cal[2]||0;
+ document.getElementById("cal-b").value=cal[3]||0;
+ document.getElementById("cal-a").value=cal[4]||0;
+ document.getElementById("calib-status").textContent="Задана";
+ document.getElementById("calib-status").style.color="#0f0";
+}
+async function applyCalib(){
+ var e=parseFloat(document.getElementById("cal-e").value)||0;
+ var d=parseFloat(document.getElementById("cal-d").value)||0;
+ var c=parseFloat(document.getElementById("cal-c").value)||0;
+ var b=parseFloat(document.getElementById("cal-b").value)||0;
+ var a=parseFloat(document.getElementById("cal-a").value)||0;
+ var coeffs=[e,d,c,b,a];
+ try{
+  var r=await post("/api/calibration",{headers:{"Content-Type":"application/json"},body:JSON.stringify({coeffs:coeffs})});
+  if(r.ok){calibEditing=false;calib=coeffs;document.getElementById("calib-status").textContent="Применена";document.getElementById("calib-status").style.color="#0f0";lg("Calibration: ["+coeffs.join(", ")+"]");if(lastD)draw(lastD)}
+  else{document.getElementById("calib-status").textContent="Ошибка";document.getElementById("calib-status").style.color="#f44"}
+ }catch(err){lg("Calibration error: "+err)}
+}
+function clearCalib(){
+ calibEditing=true;calib=null;
+ ["cal-a","cal-b","cal-c","cal-d","cal-e"].forEach(function(id){document.getElementById(id).value=""});
+ document.getElementById("calib-status").textContent="Не задана";document.getElementById("calib-status").style.color="#060";
+ if(isKev)setKev(false);else if(lastD)draw(lastD);
+ lg("Calibration cleared");
+}
+async function loadFlashInfo(){
+ try{
+  var r=await(await fetch("/api/system")).json();
+  var total=r.flash_total||0,used=r.flash_used||0,free=total-used;
+  var pct=total>0?((used/total)*100).toFixed(1):0;
+  document.getElementById("flash-text").textContent=(used/1024).toFixed(0)+" / "+(total/1024).toFixed(0)+" KB ("+pct+"%) | Свободно: "+(free/1024).toFixed(0)+" KB";
+  document.getElementById("flash-inner").style.width=pct+"%";
+  document.getElementById("flash-inner").style.background=pct>90?"#f44":pct>70?"#fa0":"#0f0";
+ }catch(e){}
+}
+async function loadOverlay(idx){
+ try{var r=await(await fetch("/api/saved/"+idx+"/spectrum.json")).json();overlayBins=r.bins;overlayIdx=idx;
+ document.getElementById("overlay-label").textContent="Overlay: #"+idx;document.getElementById("btn-clear-ovl").style.display="";
+ lg("Overlay loaded: #"+idx);if(lastD)draw(lastD)}catch(e){lg("Overlay error: "+e)}
+}
+function clearOverlay(){overlayBins=null;overlayIdx=-1;document.getElementById("overlay-label").textContent="";document.getElementById("btn-clear-ovl").style.display="none";lg("Overlay cleared");if(lastD)draw(lastD)}
+async function loadSaved(){
+ var el=document.getElementById("saved");
+ try{
+  var r=await(await fetch("/api/list")).json();
+  if(!r.spectra||r.spectra.length===0){el.innerHTML='<span class="empty">Нет сохранённых</span>';return}
+  var html='<table><tr><th>#</th><th>Сохр.</th><th>Counts</th><th>Время</th><th>Export</th><th></th></tr>';
+  for(var i=0;i<r.spectra.length;i++){
+   var s=r.spectra[i];var dt=s.saved_at>0?new Date(s.saved_at*1000).toLocaleString():'—';
+   var act=s.index===overlayIdx?' style="background:#330"':'';
+   html+='<tr'+act+'><td>'+s.index+'</td><td>'+dt+'</td><td>'+s.counts.toLocaleString()+'</td><td>'+fmtTime(s.time)+'</td>'+
+    '<td><a href="/api/saved/'+s.index+'/export.xml">XML</a> | <a href="/api/saved/'+s.index+'/export.csv">CSV</a></td>'+
+    '<td><button class="ovl" onclick="loadOverlay('+s.index+')">Overlay</button> <button class="del" onclick="delSaved('+s.index+')">Удал.</button></td></tr>';
+  }
+  el.innerHTML=html+'</table>';
+ }catch(e){el.innerHTML='<span class="empty">Error: '+e+'</span>'}
+}
+async function delSaved(idx){if(!confirm("Удалить спектр #"+idx+"?"))return;await post("/api/saved/"+idx+"/delete");lg("Deleted #"+idx);if(overlayIdx===idx)clearOverlay();loadSaved();loadFlashInfo()}
+async function startAcq(){await post("/api/command",{body:"-sta"});lg("Start sent")}
+async function stopAcq(){await post("/api/command",{body:"-sto"});lg("Stop sent")}
+async function resetSpectrum(){clearCanvas();lastD=null;document.getElementById("big-time").textContent="00:00:00";document.getElementById("big-cps").textContent="0";document.getElementById("big-total").textContent="0";await post("/api/reset");lg("Reset sent")}
+async function saveSpectrum(){var r=await(await post("/api/save")).json();lg(r.ok?"Сохранён #"+r.index:"Save error");if(r.ok){loadSaved();loadFlashInfo()}}
+async function requestInfo(){calibEditing=false;await post("/api/command",{body:"-inf"});lg("Info requested");setTimeout(update,500)}
+async function sendCmd(){var c=document.getElementById("cmd").value;if(!c)return;await post("/api/command",{body:c});lg("Sent: "+c);setTimeout(update,500)}
+function toggleLogPanel(){logEl.style.display=logEl.style.display==="none"?"block":"none"}
+async function rebootDevice(){if(!confirm("Перезагрузить спектрометр?"))return;await post("/api/reboot-device");lg("Reboot device sent")}
+async function rebootEsp(){if(!confirm("Перезагрузить ESP32?"))return;await post("/api/reboot-esp");document.getElementById("status").textContent="Перезагрузка..."}
+async function resetWifi(){if(!confirm("Сбросить WiFi?"))return;await post("/api/wifi/reset");document.getElementById("status").textContent="Настройка WiFi..."}
+document.getElementById("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")sendCmd()});
+["cal-a","cal-b","cal-c","cal-d","cal-e"].forEach(function(id){document.getElementById(id).addEventListener("focus",function(){calibEditing=true})});
+async function initCalib(){
+ try{var r=await(await fetch("/api/device")).json();
+ if(r.calibration){calib=r.calibration;if(!calibEditing)fillCalibFields(r.calibration)}
+ if(r.serial){document.getElementById("device-name").textContent=r.serial}}catch(e){}
+}
+(async function(){await loadCsrf();
+setInterval(update,1000);
+setInterval(loadFlashInfo,10000);
+clearCanvas();
+initCalib();
+update();
+loadSaved();
+loadFlashInfo();})();
+</script>
+</body></html>

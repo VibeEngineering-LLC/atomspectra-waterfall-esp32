@@ -1,0 +1,9 @@
+# Name,    Type, SubType, Offset,   Size,     Flags
+# Подтип "spiffs" — это generic data-подтип (0x82); в ESP-IDF нет отдельного
+# подтипа "littlefs". Раздел "storage" монтируется как LittleFS по метке
+# partition_label="storage" (см. esp_vfs_littlefs_register в spectrum.c),
+# а не по подтипу. Подтип лишь резервирует область под файловую систему.
+nvs,       data, nvs,     0x9000,   0x6000,
+phy_init,  data, phy,     0xf000,   0x1000,
+factory,   app,  factory, 0x10000,  0x300000,
+storage,   data, spiffs,  0x310000, 0xCF0000,
