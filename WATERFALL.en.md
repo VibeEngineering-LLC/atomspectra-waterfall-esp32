@@ -49,7 +49,6 @@ becomes `true`, flash writing stops, while the ring and the WS stream keep runni
 | `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — interval (s) and flash persistence |
 | `/api/waterfall/window` | GET | Ring snapshot (**ASWW** binary, up to 256 rows) |
 | `/api/waterfall/export.n42` | GET | **Export to ANSI N42.42** from the PSRAM ring (one `<RadMeasurement>` per row, `CountedZeroes`, calibration in `<EnergyCalibration>`). The "⬇ Export .n42" button in the Web UI. Does not require flash persistence |
-| `/api/waterfall/export` | GET | Raw dump of everything on flash as one file (**ASWF** binary, programmatic path — no Web UI button) |
 | `/ws/waterfall` | WS | Text header on connect, then one binary frame (16384 B) per new row |
 
 > All POST endpoints require the **`X-CSRF-Token`** header (from `GET /api/csrf-token`),
@@ -86,9 +85,11 @@ interval     u32 LE   (seconds between rows)
 payload      = rows × channels × uint16 LE   (chronological, oldest first)
 ```
 
-### ASWF — self-describing file (`/api/waterfall/export`, `scripts/waterfall_client.py`)
+### ASWF — self-describing file (`scripts/waterfall_client.py`)
 
-Binary with a JSON header — everything needed to interpret it standalone:
+Binary with a JSON header — everything needed to interpret it standalone. The `.aswf`
+file is written only by the PC script `waterfall_client.py` from the WS stream
+(`/ws/waterfall`); there is no on-board dump endpoint:
 
 ```
 "ASWF" (4 bytes)

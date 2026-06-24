@@ -194,54 +194,6 @@ static esp_err_t h_window(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/waterfall/export -> self-describing file:
-   "ASWF"(4) header_len(u32 LE) JSON-header payload */
-static esp_err_t h_export(httpd_req_t *req)
-{
-    wf_status_t s;
-    spectrogram_get_status(&s);
-    uint32_t rows = s.flash_rows;
-    FILE *f = fopen(spectrogram_data_path(), "rb");
-    if (!f || rows == 0) {
-        if (f) fclose(f);
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no waterfall data");
-        return ESP_FAIL;
-    }
-    char hdr[512];
-    int hn = snprintf(hdr, sizeof(hdr),
-        "{\"format\":\"atomspectra-waterfall\",\"version\":1,\"channels\":%d,"
-        "\"dtype\":\"uint16\",\"byte_order\":\"little\",\"rows\":%" PRIu32 ","
-        "\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
-        WF_CHANNELS, rows, s.interval_sec, (long)s.started_at);
-    hn = append_calib_json(hdr, hn, sizeof(hdr));
-    hn += snprintf(hdr + hn, sizeof(hdr) - hn, "}");
-
-    httpd_resp_set_type(req, "application/octet-stream");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"waterfall.aswf\"");
-    uint8_t pre[8];
-    memcpy(pre, "ASWF", 4);
-    uint32_t hl = (uint32_t)hn;
-    memcpy(pre + 4, &hl, 4);
-    httpd_resp_send_chunk(req, (char *)pre, 8);
-    httpd_resp_send_chunk(req, hdr, hn);
-
-    char *buf = malloc(8192);
-    if (buf) {
-        size_t remain = (size_t)rows * WF_ROW_BYTES;
-        while (remain > 0) {
-            size_t c = remain > 8192 ? 8192 : remain;
-            size_t rd = fread(buf, 1, c, f);
-            if (rd == 0) break;
-            if (httpd_resp_send_chunk(req, buf, rd) != ESP_OK) break;
-            remain -= rd;
-        }
-        free(buf);
-    }
-    fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
-}
-
 /* Контекст отдачи одной строки кольца как <RadMeasurement>. */
 typedef struct {
     httpd_req_t *req;
@@ -436,7 +388,6 @@ void web_waterfall_register(httpd_handle_t server)
     reg(server, "/api/waterfall/clear",  HTTP_POST, h_clear);
     reg(server, "/api/waterfall/config", HTTP_POST, h_config);
     reg(server, "/api/waterfall/window", HTTP_GET,  h_window);
-    reg(server, "/api/waterfall/export", HTTP_GET,  h_export);
     reg(server, "/api/waterfall/export.n42", HTTP_GET, h_export_n42);
 
     httpd_uri_t ws = {

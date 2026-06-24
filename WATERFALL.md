@@ -50,7 +50,6 @@
 | `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — интервал (с) и запись во flash |
 | `/api/waterfall/window` | GET | Снимок кольца (бинарь **ASWW**, до 256 строк) |
 | `/api/waterfall/export.n42` | GET | **Экспорт в ANSI N42.42** из кольца PSRAM (одна `<RadMeasurement>` на строку, `CountedZeroes`, калибровка в `<EnergyCalibration>`). Кнопка «⬇ Экспорт .n42» в Web UI. Не требует записи во flash |
-| `/api/waterfall/export` | GET | Сырой дамп накопленного во flash одним файлом (бинарь **ASWF**, программный путь — в Web UI кнопки нет) |
 | `/ws/waterfall` | WS | Текстовый заголовок при подключении, далее по одному бинарному кадру (16384 Б) на каждую новую строку |
 
 > Все POST требуют заголовок **`X-CSRF-Token`** (получить из `GET /api/csrf-token`),
@@ -87,9 +86,11 @@ interval     u32 LE   (секунд между строками)
 payload      = rows × channels × uint16 LE   (хронологически, старейшая первой)
 ```
 
-### ASWF — самодостаточный файл (`/api/waterfall/export`, `scripts/waterfall_client.py`)
+### ASWF — самодостаточный файл (`scripts/waterfall_client.py`)
 
-Бинарь с JSON-заголовком — содержит всё для автономной интерпретации:
+Бинарь с JSON-заголовком — содержит всё для автономной интерпретации. Файл `.aswf`
+пишет только PC-скрипт `waterfall_client.py` из WS-стрима (`/ws/waterfall`); отдельного
+эндпоинта дампа на плате нет:
 
 ```
 "ASWF" (4 байта)

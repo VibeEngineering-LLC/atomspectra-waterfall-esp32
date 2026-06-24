@@ -57,5 +57,5 @@ size_t spectrogram_stream_window(uint16_t *bounce, size_t max_rows,
                                  uint32_t *first_total_index,
                                  wf_emit_cb_t emit, void *ctx);
 
-// Путь к флэш-файлу payload (для стриминга в /api/waterfall/export).
+// Путь к флэш-файлу payload (запись при включённом persist; чтение/очистка изнутри).
 const char *spectrogram_data_path(void);
