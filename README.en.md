@@ -44,9 +44,7 @@ No cloud. No accounts. Everything runs on your local network.
 
 ## What you see in the Web UI
 
-![Web UI — live spectrum](images/web-ui.png)
-
-![Web UI — energy calibration and keV scale](images/web-ui-calibration.png)
+![Board Web UI — "Waterfall" tab: spectrogram (time ↓, energy →) with a spectrum slice](images/web-ui-waterfall.png)
 
 The Web UI opens in a browser at `http://<board-IP>/`:
 
@@ -196,7 +194,7 @@ A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect t
 
 ## Waterfall (spectrogram)
 
-![Web UI — "Waterfall" tab (spectrogram + spectrum slice)](images/web-ui-waterfall.png)
+![Offline viewer waterfall_viewer.html — waterfall heatmap from a .n42 file](images/waterfall-viewer.png)
 
 Besides the live spectrum, the gateway can accumulate a **waterfall** — a sequence of
 spectra at equal intervals (5…60 s; each row = the accumulation delta over one period, 8192
