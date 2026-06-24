@@ -5,6 +5,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,22 +14,42 @@
 
 static const char *TAG = "wf_web";
 
-#define WF_WS_MAX  4
+#define WF_WS_MAX        4
+#define WS_INFLIGHT_MAX  8   // P2-3: лимит несброшенных кадров на клиента
 
 static httpd_handle_t s_server;
 static int            s_ws_fds[WF_WS_MAX];
+// P2-3/P3-3: s_ws_fds трогают httpd-таск (ws_add/ws_del) и таск-продьюсер
+// (wf_broadcast/ws_async_send). Мьютекс закрывает гонку реестра; s_ws_inflight
+// считает кадры, поставленные в очередь httpd_queue_work но ещё не отданные, —
+// при переполнении кадр дропается (back-pressure вместо роста кучи).
+static int               s_ws_inflight[WF_WS_MAX];
+static SemaphoreHandle_t s_ws_mutex = NULL;
+#define WS_LOCK()   do { if (s_ws_mutex) xSemaphoreTake(s_ws_mutex, portMAX_DELAY); } while (0)
+#define WS_UNLOCK() do { if (s_ws_mutex) xSemaphoreGive(s_ws_mutex); } while (0)
 
 /* ---- WS client registry + async broadcast ---- */
 
+static void ws_del_locked(int fd)
+{
+    for (int i = 0; i < WF_WS_MAX; i++)
+        if (s_ws_fds[i] == fd) { s_ws_fds[i] = 0; s_ws_inflight[i] = 0; }
+}
+
 static void ws_add(int fd)
 {
-    for (int i = 0; i < WF_WS_MAX; i++) if (s_ws_fds[i] == fd) return;
-    for (int i = 0; i < WF_WS_MAX; i++) if (s_ws_fds[i] <= 0) { s_ws_fds[i] = fd; return; }
+    WS_LOCK();
+    for (int i = 0; i < WF_WS_MAX; i++) if (s_ws_fds[i] == fd) { WS_UNLOCK(); return; }
+    for (int i = 0; i < WF_WS_MAX; i++)
+        if (s_ws_fds[i] <= 0) { s_ws_fds[i] = fd; s_ws_inflight[i] = 0; break; }
+    WS_UNLOCK();
 }
 
 static void ws_del(int fd)
 {
-    for (int i = 0; i < WF_WS_MAX; i++) if (s_ws_fds[i] == fd) s_ws_fds[i] = 0;
+    WS_LOCK();
+    ws_del_locked(fd);
+    WS_UNLOCK();
 }
 
 typedef struct { int fd; size_t len; uint8_t buf[]; } ws_send_t;
@@ -39,23 +61,49 @@ static void ws_async_send(void *arg)
     fr.type    = HTTPD_WS_TYPE_BINARY;
     fr.payload = a->buf;
     fr.len     = a->len;
-    if (httpd_ws_send_frame_async(s_server, a->fd, &fr) != ESP_OK) ws_del(a->fd);
+    esp_err_t r = httpd_ws_send_frame_async(s_server, a->fd, &fr);
+    WS_LOCK();
+    for (int i = 0; i < WF_WS_MAX; i++)
+        if (s_ws_fds[i] == a->fd) { if (s_ws_inflight[i] > 0) s_ws_inflight[i]--; break; }
+    if (r != ESP_OK) ws_del_locked(a->fd);
+    WS_UNLOCK();
     free(a);
 }
 
 static void wf_broadcast(const uint16_t *row, size_t bytes, uint32_t idx)
 {
     (void)idx;
+    WS_LOCK();
     for (int i = 0; i < WF_WS_MAX; i++) {
         int fd = s_ws_fds[i];
         if (fd <= 0) continue;
-        ws_send_t *a = malloc(sizeof(ws_send_t) + bytes);
+        if (s_ws_inflight[i] >= WS_INFLIGHT_MAX) continue;   // back-pressure: дроп кадра
+        ws_send_t *a = heap_caps_malloc(sizeof(ws_send_t) + bytes, MALLOC_CAP_SPIRAM);
         if (!a) continue;
         a->fd  = fd;
         a->len = bytes;
         memcpy(a->buf, row, bytes);
         if (httpd_queue_work(s_server, ws_async_send, a) != ESP_OK) free(a);
+        else s_ws_inflight[i]++;
     }
+    WS_UNLOCK();
+}
+
+/* P3-9: XML-escape для значений из прибора (serial), идущих в N42-разметку. */
+static void xml_escape(const char *in, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (const char *p = in; *p && o + 6 < cap; p++) {
+        switch (*p) {
+        case '&':  o += snprintf(out + o, cap - o, "&amp;");  break;
+        case '<':  o += snprintf(out + o, cap - o, "&lt;");   break;
+        case '>':  o += snprintf(out + o, cap - o, "&gt;");   break;
+        case '"':  o += snprintf(out + o, cap - o, "&quot;"); break;
+        case '\'': o += snprintf(out + o, cap - o, "&apos;"); break;
+        default:   out[o++] = *p; break;
+        }
+    }
+    out[o] = '\0';
 }
 
 static int append_calib_json(char *buf, int off, int cap)
@@ -278,9 +326,10 @@ static esp_err_t h_export_n42(httpd_req_t *req)
         "    <RadInstrumentModelName>Atom Spectra</RadInstrumentModelName>\n");
     httpd_resp_send_chunk(req, acc, n);
     if (sp && sp->serial_number[0]) {
+        char esc[512];
+        xml_escape(sp->serial_number, esc, sizeof(esc));
         n = snprintf(acc, 8192,
-            "    <RadInstrumentIdentifier>%s</RadInstrumentIdentifier>\n",
-            sp->serial_number);
+            "    <RadInstrumentIdentifier>%s</RadInstrumentIdentifier>\n", esc);
         httpd_resp_send_chunk(req, acc, n);
     }
     n = snprintf(acc, 8192,
@@ -361,9 +410,16 @@ static esp_err_t h_ws(httpd_req_t *req)
     if (fr.type == HTTPD_WS_TYPE_CLOSE) {
         ws_del(httpd_req_to_sockfd(req));
     } else if (fr.len) {
-        uint8_t tmp[64];
+        // P3-6: вычитать кадр ЦЕЛИКОМ. httpd_ws_recv_frame с max_len < длины
+        // кадра вернёт ESP_ERR_INVALID_SIZE и НЕ извлечёт payload — остаток
+        // повредил бы разбор следующего кадра. UI шлёт только мелкие
+        // контрол-кадры; аномально большой — повод закрыть соединение.
+        if (fr.len > 512) {
+            ws_del(httpd_req_to_sockfd(req));
+            return ESP_OK;
+        }
+        uint8_t tmp[512];
         fr.payload = tmp;
-        fr.len = fr.len > sizeof(tmp) ? sizeof(tmp) : fr.len;
         httpd_ws_recv_frame(req, &fr, fr.len);
     }
     return ESP_OK;
@@ -379,7 +435,8 @@ static void reg(httpd_handle_t srv, const char *uri, httpd_method_t m,
 void web_waterfall_register(httpd_handle_t server)
 {
     s_server = server;
-    for (int i = 0; i < WF_WS_MAX; i++) s_ws_fds[i] = 0;
+    if (!s_ws_mutex) s_ws_mutex = xSemaphoreCreateMutex();
+    for (int i = 0; i < WF_WS_MAX; i++) { s_ws_fds[i] = 0; s_ws_inflight[i] = 0; }
 
     reg(server, "/waterfall",            HTTP_GET,  h_page);
     reg(server, "/api/waterfall/status", HTTP_GET,  h_status);

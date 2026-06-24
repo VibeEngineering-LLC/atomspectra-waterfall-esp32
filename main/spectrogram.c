@@ -25,7 +25,8 @@ static uint32_t         s_count;
 static uint16_t        *s_row;
 static uint32_t        *s_prev;
 static uint32_t         s_prev_total;
-static spectrum_data_t *s_snap;
+static spectrum_data_t *s_snap;     // только start()/write_meta() (serial/calib для META)
+static spectrum_data_t *s_wf_snap;  // приватный буфер периодического wf_task (P3-4)
 
 static wf_status_t       s_status;
 static wf_row_cb_t       s_row_cb;
@@ -90,8 +91,9 @@ void spectrogram_init(void)
     s_prev = heap_caps_malloc(WF_CHANNELS * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     s_row  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
     s_snap = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
+    s_wf_snap = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
 
-    if (!s_ring || !s_prev || !s_row || !s_snap) {
+    if (!s_ring || !s_prev || !s_row || !s_snap || !s_wf_snap) {
         ESP_LOGE(TAG, "PSRAM alloc failed");
         s_status.ready = false;
         return;
@@ -112,16 +114,16 @@ static void wf_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(iv * 1000));
 
         if (!s_status.recording) continue;
-        spectrum_get_snapshot(s_snap);
+        spectrum_get_snapshot(s_wf_snap);
 
-        bool reset = (s_snap->total_counts < s_prev_total);
+        bool reset = (s_wf_snap->total_counts < s_prev_total);
         for (int i = 0; i < WF_CHANNELS; i++) {
-            int64_t d = (int64_t)s_snap->bins[i] - (reset ? 0 : (int64_t)s_prev[i]);
+            int64_t d = (int64_t)s_wf_snap->bins[i] - (reset ? 0 : (int64_t)s_prev[i]);
             if (d < 0) d = 0; else if (d > 65535) d = 65535;
             s_row[i]  = (uint16_t)d;
-            s_prev[i] = s_snap->bins[i];
+            s_prev[i] = s_wf_snap->bins[i];
         }
-        s_prev_total = s_snap->total_counts;
+        s_prev_total = s_wf_snap->total_counts;
 
         LOCK();
         ring_push(s_row);
@@ -136,9 +138,13 @@ static void wf_task(void *arg)
                 LOCK(); s_status.flash_full = true; UNLOCK();
                 ESP_LOGW(TAG, "flash full at %" PRIu32 " rows", s_status.flash_rows);
             } else if (s_fp) {
-                fwrite(s_row, 1, WF_ROW_BYTES, s_fp);
-                fflush(s_fp);
-                LOCK(); s_status.flash_rows++; UNLOCK();
+                size_t wr = fwrite(s_row, 1, WF_ROW_BYTES, s_fp);
+                if (wr != WF_ROW_BYTES || fflush(s_fp) != 0) {
+                    ESP_LOGE(TAG, "flash row write failed (wr=%zu), stopping persist", wr);
+                    LOCK(); s_status.flash_full = true; UNLOCK();
+                } else {
+                    LOCK(); s_status.flash_rows++; UNLOCK();
+                }
             }
         }
         if (s_row_cb) s_row_cb(s_row, WF_ROW_BYTES, idx);
@@ -255,6 +261,10 @@ size_t spectrogram_stream_window(uint16_t *bounce, size_t max_rows,
     UNLOCK();
 
     // Построчно: копия под локом в bounce, emit() — вне лока.
+    // P3-5: окно — снимок best-effort. Если во время длинной выгрузки идёт
+    // запись (wf_task пушит новые строки), кольцо может прокрутиться, и строки
+    // у хвоста окна будут перезаписаны более свежими до того, как мы их скопируем.
+    // Для мониторингового экспорта это приемлемо (а не строгий консистентный срез).
     for (size_t i = 0; i < n; i++) {
         LOCK();
         size_t ri = (start + i) % s_capacity;

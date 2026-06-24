@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stddef.h>
+#include <math.h>
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,12 +39,21 @@ static void csrf_generate(void)
     s_csrf[32] = '\0';
 }
 
+// P3-9: сравнение токена за постоянное время — не утекает позиция
+// первого несовпавшего байта по времени ответа.
+static bool csrf_ct_eq(const char *a, const char *b, size_t n)
+{
+    uint8_t d = 0;
+    for (size_t i = 0; i < n; i++) d |= (uint8_t)a[i] ^ (uint8_t)b[i];
+    return d == 0;
+}
+
 // Проверяет X-CSRF-Token. При несовпадении сам шлёт 403 и возвращает false.
 static bool csrf_check(httpd_req_t *req)
 {
     char hdr[40] = {0};
     if (httpd_req_get_hdr_value_str(req, "X-CSRF-Token", hdr, sizeof(hdr)) == ESP_OK
-        && s_csrf[0] && strcmp(hdr, s_csrf) == 0)
+        && s_csrf[0] && strlen(hdr) == 32 && csrf_ct_eq(hdr, s_csrf, 32))
         return true;
     httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Bad or missing CSRF token");
     return false;
@@ -53,6 +63,35 @@ static bool csrf_check(httpd_req_t *req)
 bool web_csrf_check(httpd_req_t *req)
 {
     return csrf_check(req);
+}
+
+// P3-9: serial с прибора уходит в XML-разметку → экранировать &<>"'.
+static void xml_escape(const char *in, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (const char *p = in; *p && o + 6 < cap; p++) {
+        switch (*p) {
+        case '&':  o += snprintf(out + o, cap - o, "&amp;");  break;
+        case '<':  o += snprintf(out + o, cap - o, "&lt;");   break;
+        case '>':  o += snprintf(out + o, cap - o, "&gt;");   break;
+        case '"':  o += snprintf(out + o, cap - o, "&quot;"); break;
+        case '\'': o += snprintf(out + o, cap - o, "&apos;"); break;
+        default:   out[o++] = *p; break;
+        }
+    }
+    out[o] = '\0';
+}
+
+// P3-9: serial в CSV → выкинуть переводы строк/запятые/управляющие символы.
+static void csv_sanitize(const char *in, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (const char *p = in; *p && o + 1 < cap; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\n' || c == '\r' || c == ',' || c < 0x20) continue;
+        out[o++] = (char)c;
+    }
+    out[o] = '\0';
 }
 
 static esp_err_t handle_csrf_token(httpd_req_t *req)
@@ -77,6 +116,7 @@ static esp_err_t handle_status(httpd_req_t *req)
     const device_info_t   *di = spectrum_get_device_info();
 
     cJSON *root = cJSON_CreateObject();
+    if (!root) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return ESP_FAIL; }
     cJSON_AddBoolToObject(root, "analyzer_connected", usb_host_cdc_is_connected());
     cJSON_AddBoolToObject(root, "wifi_connected", wifi_is_connected());
     cJSON_AddNumberToObject(root, "total_counts", sp->total_counts);
@@ -308,6 +348,9 @@ static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp
     localtime_r(&t_start, &ts);
     localtime_r(&end_time, &te);
 
+    char serial_esc[160];
+    xml_escape(sp->serial_number[0] ? sp->serial_number : "AtomSpectra",
+               serial_esc, sizeof(serial_esc));
     int n = snprintf(buf, 4096,
         "      <SampleInfo>\r\n"
         "        <Name>%s</Name>\r\n"
@@ -324,7 +367,7 @@ static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp
         "      <StartTime>%04d-%02d-%02dT%02d:%02d:%02d</StartTime>\r\n"
         "      <EndTime>%04d-%02d-%02dT%02d:%02d:%02d</EndTime>\r\n"
         "      <PresetTime>0</PresetTime>\r\n",
-        sp->serial_number[0] ? sp->serial_number : "AtomSpectra",
+        serial_esc,
         ts.tm_year+1900, ts.tm_mon+1, ts.tm_mday, ts.tm_hour, ts.tm_min, ts.tm_sec,
         ts.tm_year+1900, ts.tm_mon+1, ts.tm_mday, ts.tm_hour, ts.tm_min, ts.tm_sec,
         te.tm_year+1900, te.tm_mon+1, te.tm_mday, te.tm_hour, te.tm_min, te.tm_sec);
@@ -408,6 +451,10 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
     snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
 
+    char serial_csv[80];
+    csv_sanitize(sp->serial_number[0] ? sp->serial_number : "AtomSpectra",
+                 serial_csv, sizeof(serial_csv));
+
     if (sp->calib_valid) {
         int pos = snprintf(buf, 4096, "calibcoeff:");
         for (int i = 0; i <= sp->calib_order; i++)
@@ -416,8 +463,7 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
         httpd_resp_send_chunk(req, buf, pos);
     }
 
-    int n = snprintf(buf, 4096, "remark: %s\n",
-        sp->serial_number[0] ? sp->serial_number : "AtomSpectra");
+    int n = snprintf(buf, 4096, "remark: %s\n", serial_csv);
     httpd_resp_send_chunk(req, buf, n);
 
     float live_time = (float)sp->total_time_sec;
@@ -436,7 +482,7 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
         "SerialNumber: %s\n"
         "starttime: %04d-%02d-%02dT%02d:%02d:%02d\n",
         live_time, sp->total_time_sec,
-        sp->serial_number[0] ? sp->serial_number : "unknown",
+        serial_csv,
         ts.tm_year+1900, ts.tm_mon+1, ts.tm_mday,
         ts.tm_hour, ts.tm_min, ts.tm_sec);
     httpd_resp_send_chunk(req, buf, n);
@@ -596,6 +642,11 @@ static esp_err_t handle_device(httpd_req_t *req)
     spectrum_data_t *sp = malloc(sizeof(*sp));
     bool have_sp = sp && spectrum_get_snapshot(sp);
     cJSON *root = cJSON_CreateObject();
+    if (!root) {  // P2-7: при OOM cJSON_Add* разыменует NULL
+        free(sp);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
     cJSON_AddBoolToObject(root, "valid", di->valid);
     if (di->valid) {
         cJSON_AddNumberToObject(root, "dev", di->dev);
@@ -651,6 +702,10 @@ static esp_err_t handle_reboot_device(httpd_req_t *req)
 static esp_err_t handle_system(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
+    if (!root) {  // P2-7: при OOM cJSON_Add* разыменует NULL
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "min_free_heap", esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(root, "uptime_sec", (double)(esp_timer_get_time() / 1000000));
@@ -705,7 +760,15 @@ static esp_err_t handle_set_calibration(httpd_req_t *req)
     double coeffs[CALIB_COEFFS] = {0};
     for (int i = 0; i < n; i++) {
         cJSON *item = cJSON_GetArrayItem(arr, i);
-        if (cJSON_IsNumber(item)) coeffs[i] = item->valuedouble;
+        // P2-5: cJSON парсит "NaN"/"Infinity" в valuedouble как есть. NaN/Inf
+        // в коэффициентах калибровки потом дают мусорные энергии и могут
+        // распространиться в N42/CSV экспорт — отбраковываем на входе.
+        if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble)) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad coeff");
+            return ESP_FAIL;
+        }
+        coeffs[i] = item->valuedouble;
     }
     spectrum_set_calibration(coeffs, n - 1);
     cJSON_Delete(root);

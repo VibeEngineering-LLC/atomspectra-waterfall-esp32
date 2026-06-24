@@ -207,7 +207,11 @@ void usb_host_cdc_init(void)
     xTaskCreatePinnedToCore(usb_host_lib_task, "usb_lib", 4096, NULL, 2, NULL, 0);
 
     const cdc_acm_host_driver_config_t driver_config = {
-        .driver_task_stack_size = 4096,
+        // 8192: парсинг info-response (spectrum_process_info_response) идёт в
+        // контексте этого таска через data_cb→handle_rx_packet и раньше клал
+        // ~3.5 КБ локальных буферов на стек (P1-1). Буфер вынесен в static,
+        // плюс расширенный стек убирает остаточный риск переполнения.
+        .driver_task_stack_size = 8192,
         .driver_task_priority = 3,
         .xCoreID = 0,
     };

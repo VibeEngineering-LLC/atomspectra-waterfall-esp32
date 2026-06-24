@@ -86,7 +86,6 @@ const spectrum_data_t *spectrum_get_current(void);
 bool spectrum_get_snapshot(spectrum_data_t *out);
 const device_info_t   *spectrum_get_device_info(void);
 int  spectrum_save_to_flash(void);
-int  spectrum_list_saved(char *buf, size_t buf_size);
 int  spectrum_load_from_flash(int index, spectrum_data_t *out);
 int  spectrum_delete_from_flash(int index);
 void spectrum_set_calibration(const double *coeffs, int order);

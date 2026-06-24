@@ -50,6 +50,9 @@ static void dns_captive_task(void *arg)
         int len = recvfrom(sock, rx, sizeof(rx), 0,
                            (struct sockaddr *)&client, &clen);
         if (len < 12) continue;
+        // P2-2: ниже к ответу дописываются 16 байт A-записи (off = len + 16).
+        // Без этой проверки запрос длиной > sizeof(tx)-16 переполнил бы tx[].
+        if (len > (int)sizeof(tx) - 16) continue;
 
         memcpy(tx, rx, len);
         tx[2] = 0x80 | (rx[2] & 0x79);
@@ -147,6 +150,11 @@ static esp_err_t handle_setup_connect(httpd_req_t *req)
     nvs_handle_t nvs;
     if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_str(nvs, "ssid", ssid);
+        // P2-6: пароль WiFi пишется в NVS открытым текстом. Это осознанный
+        // дизайн для модели "доверенный LAN"; единственная корректная защита —
+        // включить NVS-encryption через flash-encryption в sdkconfig
+        // (CONFIG_NVS_ENCRYPTION + secure boot). Менять sdkconfig — gate оператора,
+        // здесь не трогаем.
         nvs_set_str(nvs, "pass", pass ? pass : "");
         nvs_commit(nvs);
         nvs_close(nvs);
@@ -185,9 +193,9 @@ static void start_captive_portal(void)
         }
     };
 
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    esp_wifi_start();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "AP started: SSID=AtomSpectra-Setup, IP=192.168.4.1");
 
@@ -246,11 +254,11 @@ void wifi_manager_init(void)
 
     s_wifi_events = xEventGroupCreate();
 
-    esp_netif_init();
-    esp_event_loop_create_default();
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     wifi_config_t wifi_config = {0};
     nvs_handle_t nvs;
@@ -276,9 +284,9 @@ void wifi_manager_init(void)
         &wifi_event_handler, NULL, &inst_got_ip);
 
     esp_netif_create_default_wifi_sta();
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    esp_wifi_start();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "WiFi STA starting, SSID=%s", wifi_config.sta.ssid);
 }

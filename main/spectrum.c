@@ -57,14 +57,17 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
     uint16_t offset = data[0] | (data[1] << 8);
     size_t bin_bytes = len - 2;
     size_t bin_count = bin_bytes / 4;
+    // Инкрементально правим total_counts на дельту изменённых бинов вместо
+    // полного пересчёта суммы по 8192 каналам под локом на каждый chunk
+    // (приходит десятками в секунду) — арифметика точная, дрейфа нет.
+    int64_t delta = 0;
     for (size_t i = 0; i < bin_count && (offset + i) < SPECTRUM_CHANNELS; i++) {
         size_t idx = 2 + i * 4;
-        s_spectrum.bins[offset + i] =
-            data[idx] | (data[idx+1] << 8) | (data[idx+2] << 16) | (data[idx+3] << 24);
+        uint32_t v = data[idx] | (data[idx+1] << 8) | (data[idx+2] << 16) | (data[idx+3] << 24);
+        delta += (int64_t)v - (int64_t)s_spectrum.bins[offset + i];
+        s_spectrum.bins[offset + i] = v;
     }
-    uint32_t total = 0;
-    for (int i = 0; i < SPECTRUM_CHANNELS; i++) total += s_spectrum.bins[i];
-    s_spectrum.total_counts = total;
+    s_spectrum.total_counts = (uint32_t)((int64_t)s_spectrum.total_counts + delta);
     s_spectrum.valid = true;
     SPEC_UNLOCK();
 }
@@ -85,7 +88,9 @@ void spectrum_process_info_response(const char *text)
     SPEC_LOCK();
     device_info_t *d = &s_device_info;
     memset(d, 0, sizeof(*d));
-    char lbuf[48][64];
+    // static: 3 КБ парс-буфера не на стеке CDC-таска (P1-1). Функция целиком
+    // выполняется под SPEC_LOCK, единственный путь вызова — безопасно.
+    static char lbuf[48][64];
     int lcount = 0;
     const char *lp = text;
     while (*lp && lcount < 48) {
@@ -105,7 +110,8 @@ void spectrum_process_info_response(const char *text)
         ESP_LOGI(TAG, "  L[%d]: \"%s\"", i, lbuf[i]);
     if (lcount >= 11) {
         char hcat[256] = {0};
-        for (int i = 0; i < 10; i++) strcat(hcat, lbuf[i]);
+        for (int i = 0; i < 10; i++)
+            strncat(hcat, lbuf[i], sizeof(hcat) - strlen(hcat) - 1);
         uint32_t cc = 0;
         for (int i = 0; hcat[i]; i++) {
             cc ^= (uint8_t)hcat[i];
@@ -181,6 +187,10 @@ void spectrum_reset(void)
     SPEC_UNLOCK();
 }
 
+// ВНИМАНИЕ: возвращают сырой указатель на разделяемое состояние БЕЗ лока.
+// Допустимо ТОЛЬКО для логов/статуса (отдельные скалярные поля, чтение которых
+// атомарно на ESP32). Для согласованного снимка многополевых данных
+// (bins[]+total+calib) использовать spectrum_get_snapshot().
 const spectrum_data_t *spectrum_get_current(void) { return &s_spectrum; }
 const device_info_t   *spectrum_get_device_info(void) { return &s_device_info; }
 
@@ -223,27 +233,17 @@ int spectrum_save_to_flash(void)
     }
     f = fopen(path, "wb");
     if (!f) { ESP_LOGE(TAG, "Cannot create %s", path); free(snap); return -1; }
-    fwrite(snap, sizeof(*snap), 1, f);
-    fclose(f);
+    size_t wr = fwrite(snap, sizeof(*snap), 1, f);
+    int fc = fclose(f);
+    if (wr != 1 || fc != 0) {
+        ESP_LOGE(TAG, "Write to %s failed (wr=%zu fc=%d), removing", path, wr, fc);
+        remove(path);
+        free(snap);
+        return -1;
+    }
     ESP_LOGI(TAG, "Saved spectrum to %s (%" PRIu32 " counts)", path, snap->total_counts);
     free(snap);
     return idx;
-}
-
-int spectrum_list_saved(char *buf, size_t buf_size)
-{
-    int count = 0;
-    size_t pos = 0;
-    char path[64];
-    for (int i = 0; i < 9999 && pos < buf_size - 64; i++) {
-        snprintf(path, sizeof(path), "%s/spec_%04d.bin", STORAGE_PATH, i);
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        fclose(f);
-        pos += snprintf(buf + pos, buf_size - pos, "%04d\n", i);
-        count++;
-    }
-    return count;
 }
 
 int spectrum_load_from_flash(int index, spectrum_data_t *out)
@@ -269,8 +269,11 @@ void spectrum_save_calibration(void)
     st.valid = 1;
     FILE *f = fopen(CALIB_FILE, "wb");
     if (!f) return;
-    fwrite(&st, sizeof(st), 1, f);
-    fclose(f);
+    size_t wr = fwrite(&st, sizeof(st), 1, f);
+    if (fclose(f) != 0 || wr != 1) {
+        ESP_LOGE(TAG, "Calibration write failed (wr=%zu)", wr);
+        return;
+    }
     ESP_LOGI(TAG, "Calibration saved for '%s'", st.serial);
 }
 
@@ -317,8 +320,9 @@ void spectrum_autosave(void)
     SPEC_UNLOCK();
     FILE *f = fopen(AUTOSAVE_FILE, "wb");
     if (!f) { ESP_LOGE(TAG, "Autosave open failed"); free(snap); return; }
-    fwrite(snap, sizeof(*snap), 1, f);
-    fclose(f);
+    size_t wr = fwrite(snap, sizeof(*snap), 1, f);
+    if (fclose(f) != 0 || wr != 1)
+        ESP_LOGE(TAG, "Autosave write failed (wr=%zu)", wr);
     free(snap);
 }
 
