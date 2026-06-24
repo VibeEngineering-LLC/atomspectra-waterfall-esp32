@@ -12,8 +12,8 @@
 #define WF_ROW_BYTES          (WF_CHANNELS * 2)
 #define WF_RING_ROWS_DEFAULT  256             // окно в PSRAM (256 * 16 КБ = 4 МБ)
 #define WF_INTERVAL_DEFAULT   5               // сек между строками
-#define WF_INTERVAL_MIN       1
-#define WF_INTERVAL_MAX       3600
+#define WF_INTERVAL_MIN       5               // нижняя граница (UI: 5–60 с)
+#define WF_INTERVAL_MAX       60              // верхняя граница (UI: 5–60 с)
 
 typedef struct {
     bool     recording;

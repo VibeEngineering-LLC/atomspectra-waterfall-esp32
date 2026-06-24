@@ -11,8 +11,9 @@ You can:
 
 - view it right in the board's browser — `http://<board-ip>/waterfall`;
 - **stream it to a PC live** over WebSocket;
-- export everything accumulated on flash as a single file;
-- convert to **ANSI N42.42** — the industrial gamma-spectrometry interchange format;
+- **export it with the "⬇ Export .n42" button** right from the Web UI — the board
+  builds **ANSI N42.42** from the PSRAM ring (works even without flash persistence);
+- convert to **ANSI N42.42** with the scripts shipped in this repo;
 - open it as a 2D waterfall in the offline viewer shipped in this repo.
 
 ## How it works
@@ -22,7 +23,7 @@ You can:
 | Channels | 8192 (`WF_CHANNELS`) | `main/spectrogram.h` |
 | Row size | 16 KB (`WF_ROW_BYTES`) | `main/spectrogram.h` |
 | PSRAM ring | 256 rows × 16 KB = **4 MB** (`WF_RING_ROWS_DEFAULT`) | `main/spectrogram.h` |
-| Default interval | 5 s (`WF_INTERVAL_DEFAULT`), range 1…3600 | `main/spectrogram.h` |
+| Default interval | 5 s (`WF_INTERVAL_DEFAULT`), range **5…60** (`WF_INTERVAL_MIN`/`WF_INTERVAL_MAX`) | `main/spectrogram.h` |
 | Data type | `uint16` little-endian | `main/web_waterfall.c` |
 
 While `recording`, rows accumulate into a **PSRAM ring buffer** (the latest 256 rows
@@ -47,7 +48,8 @@ becomes `true`, flash writing stops, while the ring and the WS stream keep runni
 | `/api/waterfall/clear` | POST | Clear ring + flash (only while stopped) |
 | `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — interval (s) and flash persistence |
 | `/api/waterfall/window` | GET | Ring snapshot (**ASWW** binary, up to 256 rows) |
-| `/api/waterfall/export` | GET | Everything on flash as one file (**ASWF** binary) |
+| `/api/waterfall/export.n42` | GET | **Export to ANSI N42.42** from the PSRAM ring (one `<RadMeasurement>` per row, `CountedZeroes`, calibration in `<EnergyCalibration>`). The "⬇ Export .n42" button in the Web UI. Does not require flash persistence |
+| `/api/waterfall/export` | GET | Raw dump of everything on flash as one file (**ASWF** binary, programmatic path — no Web UI button) |
 | `/ws/waterfall` | WS | Text header on connect, then one binary frame (16384 B) per new row |
 
 > All POST endpoints require the **`X-CSRF-Token`** header (from `GET /api/csrf-token`),

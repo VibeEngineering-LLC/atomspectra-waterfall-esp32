@@ -197,11 +197,11 @@ A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect t
 ## Waterfall (spectrogram)
 
 Besides the live spectrum, the gateway can accumulate a **waterfall** — a sequence of
-spectra at equal intervals (each row = the accumulation delta over one period, 8192
+spectra at equal intervals (5…60 s; each row = the accumulation delta over one period, 8192
 channels, `uint16`). The waterfall can be viewed in the browser
-(`http://<board-IP>/waterfall`), **streamed to a PC** over WebSocket in real time,
-exported as a file, and converted to the industry-standard **ANSI N42.42**
-(InterSpec / PeakEasy / Cambio).
+(`http://<board-IP>/waterfall`), **streamed to a PC** over WebSocket in real time, and
+**exported with the "⬇ Export .n42" button** right from the Web UI to the
+industry-standard **ANSI N42.42** (InterSpec / PeakEasy / Cambio).
 
 `scripts/` holds the PC-side tools: N42 export (`waterfall_n42.py`), an offline 2D
 waterfall viewer (`waterfall_viewer.html`), and `.aswf` capture (`waterfall_client.py`).

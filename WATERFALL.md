@@ -11,8 +11,9 @@
 
 - смотреть прямо в браузере платы — `http://<IP-платы>/waterfall`;
 - **стримить на ПК в реальном времени** по WebSocket;
-- выгрузить накопленное во flash одним файлом;
-- конвертировать в **ANSI N42.42** — индустриальный формат гамма-спектрометрии;
+- **выгрузить кнопкой «⬇ Экспорт .n42»** прямо из Web UI — на плате собирается
+  **ANSI N42.42** из кольца PSRAM (работает и без записи во flash);
+- конвертировать в **ANSI N42.42** скриптами из репозитория;
 - открыть как 2D-водопад в офлайн-просмотрщике из этого репозитория.
 
 ## Как это устроено
@@ -22,7 +23,7 @@
 | Каналов | 8192 (`WF_CHANNELS`) | `main/spectrogram.h` |
 | Размер строки | 16 КБ (`WF_ROW_BYTES`) | `main/spectrogram.h` |
 | Кольцо в PSRAM | 256 строк × 16 КБ = **4 МБ** (`WF_RING_ROWS_DEFAULT`) | `main/spectrogram.h` |
-| Интервал по умолчанию | 5 с (`WF_INTERVAL_DEFAULT`), диапазон 1…3600 | `main/spectrogram.h` |
+| Интервал по умолчанию | 5 с (`WF_INTERVAL_DEFAULT`), диапазон **5…60** (`WF_INTERVAL_MIN`/`WF_INTERVAL_MAX`) | `main/spectrogram.h` |
 | Тип данных | `uint16` little-endian | `main/web_waterfall.c` |
 
 Запись (`recording`) копит строки в **кольцевой буфер PSRAM** (последние 256 строк
@@ -48,7 +49,8 @@
 | `/api/waterfall/clear` | POST | Очистить кольцо + flash (только когда запись остановлена) |
 | `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — интервал (с) и запись во flash |
 | `/api/waterfall/window` | GET | Снимок кольца (бинарь **ASWW**, до 256 строк) |
-| `/api/waterfall/export` | GET | Накопленное во flash одним файлом (бинарь **ASWF**) |
+| `/api/waterfall/export.n42` | GET | **Экспорт в ANSI N42.42** из кольца PSRAM (одна `<RadMeasurement>` на строку, `CountedZeroes`, калибровка в `<EnergyCalibration>`). Кнопка «⬇ Экспорт .n42» в Web UI. Не требует записи во flash |
+| `/api/waterfall/export` | GET | Сырой дамп накопленного во flash одним файлом (бинарь **ASWF**, программный путь — в Web UI кнопки нет) |
 | `/ws/waterfall` | WS | Текстовый заголовок при подключении, далее по одному бинарному кадру (16384 Б) на каждую новую строку |
 
 > Все POST требуют заголовок **`X-CSRF-Token`** (получить из `GET /api/csrf-token`),

@@ -97,6 +97,14 @@ static esp_err_t h_start(httpd_req_t *req)
 {
     if (!web_csrf_check(req)) return ESP_FAIL;
     int r = spectrogram_start();
+    /* Водопад должен работать НЕЗАВИСИМО от набора спектра: по Старту сами
+       запускаем набор MCA на приборе (-sta — прибор стримит спектр раз в
+       секунду). Без этого гистограмма не обновляется и строки водопада
+       нулевые (см. PROTOCOL.md, раздел «MCA — управление набором спектра»). */
+    if (r == 0) {
+        int tx = usb_host_send_text_command("-sta");
+        ESP_LOGI(TAG, "waterfall start -> -sta sent to analyzer (rc=%d)", tx);
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, r == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
     return ESP_OK;
@@ -234,6 +242,136 @@ static esp_err_t h_export(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Контекст отдачи одной строки кольца как <RadMeasurement>. */
+typedef struct {
+    httpd_req_t *req;
+    char        *acc;
+    uint32_t     interval_sec;
+    time_t       started_at;
+    bool         have_cal;
+    uint32_t     r;
+} n42_ctx_t;
+
+static bool n42_row_emit(void *vctx, const uint16_t *row, size_t bytes)
+{
+    n42_ctx_t *c = (n42_ctx_t *)vctx;
+    (void)bytes;
+    char *acc = c->acc, tbuf[40];
+    struct tm tmv;
+    uint32_t r = c->r++;
+    time_t ts = c->started_at + (time_t)r * (time_t)c->interval_sec;
+    gmtime_r(&ts, &tmv);
+    strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    int n = snprintf(acc, 8192,
+        "  <RadMeasurement id=\"m-%" PRIu32 "\">\n    <MeasurementClassCode>Foreground</MeasurementClassCode>\n    <StartDateTime>%s</StartDateTime>\n    <RealTimeDuration>PT%" PRIu32 "S</RealTimeDuration>\n    <Spectrum id=\"m-%" PRIu32 "-s-1\" radDetectorInformationReference=\"det-1\"%s>\n      <LiveTimeDuration>PT%" PRIu32 "S</LiveTimeDuration>\n      <ChannelData compressionCode=\"CountedZeroes\">",
+        r, tbuf, c->interval_sec, r, c->have_cal ? " energyCalibrationReference=\"ecal-1\"" : "", c->interval_sec);
+    if (httpd_resp_send_chunk(c->req, acc, n) != ESP_OK) return false;
+    int off = 0; bool first = true; uint32_t i = 0;
+    while (i < WF_CHANNELS) {
+        int wrote;
+        if (row[i] == 0) {
+            uint32_t z = 0;
+            while (i < WF_CHANNELS && row[i] == 0) { z++; i++; }
+            wrote = snprintf(acc + off, 8192 - off, "%s0 %" PRIu32, first ? "" : " ", z);
+        } else {
+            wrote = snprintf(acc + off, 8192 - off, "%s%u", first ? "" : " ", (unsigned)row[i]); i++;
+        }
+        off += wrote; first = false;
+        if (off > 8192 - 32) { if (httpd_resp_send_chunk(c->req, acc, off) != ESP_OK) return false; off = 0; }
+    }
+    if (off > 0) { if (httpd_resp_send_chunk(c->req, acc, off) != ESP_OK) return false; }
+    n = snprintf(acc, 8192, "</ChannelData>\n    </Spectrum>\n  </RadMeasurement>\n");
+    if (httpd_resp_send_chunk(c->req, acc, n) != ESP_OK) return false;
+    return true;
+}
+
+
+/* GET /api/waterfall/export.n42 -> ANSI N42.42-2011 XML.
+   Каждая строка водопада = отдельный <RadMeasurement> со спектром-дельтой
+   за интервал; ChannelData сжата CountedZeroes. Калибровка (если валидна) —
+   в <EnergyCalibration>. Источник — кольцо PSRAM (как /api/waterfall/window),
+   поэтому экспорт работает и при выключенном persist (Flash). */
+static esp_err_t h_export_n42(httpd_req_t *req)
+{
+    wf_status_t s;
+    spectrogram_get_status(&s);
+    if (s.ring_count == 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no waterfall data");
+        return ESP_FAIL;
+    }
+
+    spectrum_data_t *sp = malloc(sizeof(*sp));
+    if (sp) spectrum_get_snapshot(sp);
+    bool have_cal = sp && sp->calib_valid;
+
+    uint16_t *row = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
+    char *acc = malloc(8192);
+    if (!row || !acc) {
+        if (row) heap_caps_free(row);
+        if (acc) free(acc);
+        if (sp) free(sp);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"waterfall.n42\"");
+
+    int n;
+    n = snprintf(acc, 8192,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<RadInstrumentData xmlns=\"http://physics.nist.gov/N42/2011/N42\">\n"
+        "  <RadInstrumentInformation id=\"inst-1\">\n"
+        "    <RadInstrumentManufacturerName>KB Radar</RadInstrumentManufacturerName>\n"
+        "    <RadInstrumentModelName>Atom Spectra</RadInstrumentModelName>\n");
+    httpd_resp_send_chunk(req, acc, n);
+    if (sp && sp->serial_number[0]) {
+        n = snprintf(acc, 8192,
+            "    <RadInstrumentIdentifier>%s</RadInstrumentIdentifier>\n",
+            sp->serial_number);
+        httpd_resp_send_chunk(req, acc, n);
+    }
+    n = snprintf(acc, 8192,
+        "    <RadInstrumentClassCode>Spectroscopic Personal Radiation Detector</RadInstrumentClassCode>\n"
+        "  </RadInstrumentInformation>\n"
+        "  <RadDetectorInformation id=\"det-1\">\n"
+        "    <RadDetectorCategoryCode>Gamma</RadDetectorCategoryCode>\n"
+        "    <RadDetectorKindCode>CsI</RadDetectorKindCode>\n"
+        "  </RadDetectorInformation>\n");
+    httpd_resp_send_chunk(req, acc, n);
+
+    if (have_cal) {
+        n = snprintf(acc, 8192,
+            "  <EnergyCalibration id=\"ecal-1\">\n    <CoefficientValues>");
+        httpd_resp_send_chunk(req, acc, n);
+        for (int i = 0; i <= sp->calib_order; i++) {
+            n = snprintf(acc, 8192, "%s%.9g", i ? " " : "", sp->calibration[i]);
+            httpd_resp_send_chunk(req, acc, n);
+        }
+        n = snprintf(acc, 8192, "</CoefficientValues>\n  </EnergyCalibration>\n");
+        httpd_resp_send_chunk(req, acc, n);
+    }
+
+    /* Источник — кольцо PSRAM: row служит bounce-буфером, каждая строка
+       отдаётся колбэком n42_row_emit() ВНЕ лока рекордера. */
+    n42_ctx_t ctx = {
+        .req = req, .acc = acc,
+        .interval_sec = s.interval_sec,
+        .started_at = s.started_at,
+        .have_cal = have_cal,
+        .r = (s.ring_count <= s.total_rows) ? (s.total_rows - s.ring_count) : 0,
+    };
+    spectrogram_stream_window(row, s.ring_count, NULL, n42_row_emit, &ctx);
+
+    n = snprintf(acc, 8192, "</RadInstrumentData>\n");
+    httpd_resp_send_chunk(req, acc, n);
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    heap_caps_free(row);
+    free(acc);
+    if (sp) free(sp);
+    return ESP_OK;
+}
 static esp_err_t h_page(httpd_req_t *req)
 {
     extern const uint8_t waterfall_html_start[] asm("_binary_waterfall_html_start");
@@ -299,6 +437,7 @@ void web_waterfall_register(httpd_handle_t server)
     reg(server, "/api/waterfall/config", HTTP_POST, h_config);
     reg(server, "/api/waterfall/window", HTTP_GET,  h_window);
     reg(server, "/api/waterfall/export", HTTP_GET,  h_export);
+    reg(server, "/api/waterfall/export.n42", HTTP_GET, h_export_n42);
 
     httpd_uri_t ws = {
         .uri = "/ws/waterfall", .method = HTTP_GET,

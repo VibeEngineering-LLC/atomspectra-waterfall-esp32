@@ -36,12 +36,12 @@ label{user-select:none}
   <button id="bStart">▶ Старт</button>
   <button id="bStop">■ Стоп</button>
   <button id="bClear">🗑 Очистить</button>
-  <button id="bExport">⬇ Экспорт .aswf</button>
+  <button id="bExportN42">⬇ Экспорт .n42</button>
   <span class="st" id="state">…</span>
 </div>
 
 <div class="bar">
-  <label>Интервал, с <input type="number" id="iv" min="1" max="3600" value="5"></label>
+  <label>Интервал, с <input type="number" id="iv" min="5" max="60" value="5"></label>
   <button id="bIv">применить</button>
   <label><input type="checkbox" id="persist"> хранить во Flash</label>
   <span class="st" id="flashst"></span>
@@ -223,7 +223,8 @@ function connectWS(){
   ws.onopen=function(){lg("WS подключён");document.getElementById("state").className="st";};
   ws.onmessage=function(ev){
     if(typeof ev.data==="string"){
-      try{var h=JSON.parse(ev.data);if(h.channels){CH=h.channels;chHiClamp();}if(h.interval_sec)intervalSec=h.interval_sec;}catch(e){}
+      try{var h=JSON.parse(ev.data);if(h.channels){CH=h.channels;chHiClamp();}if(h.interval_sec)intervalSec=h.interval_sec;
+        if(h.calibration&&h.calibration.length){calib=h.calibration;drawAxis();}if(h.serial)serial=h.serial;}catch(e){}
       return;
     }
     var u16=new Uint16Array(ev.data);
@@ -245,7 +246,7 @@ async function refreshStatus(){
   try{
     var s=await(await fetch("/api/waterfall/status")).json();
     recording=s.recording;intervalSec=s.interval_sec;startedAt=s.started_at;
-    document.getElementById("iv").value=s.interval_sec;
+    var ivEl=document.getElementById("iv"); if(document.activeElement!==ivEl)ivEl.value=s.interval_sec;
     document.getElementById("persist").checked=!!s.persist;
     var st=document.getElementById("state");
     st.textContent=(s.recording?"● ЗАПИСЬ":"○ стоп")+
@@ -270,12 +271,16 @@ document.getElementById("bStop").onclick=async function(){await post("/api/water
 document.getElementById("bClear").onclick=async function(){
   if(!confirm("Очистить накопленную спектрограмму?"))return;
   await post("/api/waterfall/clear");clearRows();draw();refreshStatus();lg("очищено");};
-document.getElementById("bIv").onclick=async function(){
-  var v=parseInt(document.getElementById("iv").value)||5;
-  await post("/api/waterfall/config",{interval:v});refreshStatus();lg("интервал = "+v+" с");};
+async function applyInterval(){
+  var el=document.getElementById("iv");
+  var v=parseInt(el.value)||5;
+  if(v<5)v=5; if(v>60)v=60; el.value=v;
+  await post("/api/waterfall/config",{interval:v});refreshStatus();lg("интервал = "+v+" с");}
+document.getElementById("bIv").onclick=applyInterval;
+document.getElementById("iv").onchange=applyInterval;
 document.getElementById("persist").onchange=async function(){
   await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
-document.getElementById("bExport").onclick=function(){window.location="/api/waterfall/export";lg("экспорт .aswf");};
+document.getElementById("bExportN42").onclick=function(){window.location="/api/waterfall/export.n42";lg("экспорт .n42 (ANSI N42.42)");};
 
 document.getElementById("axis").onchange=function(){axisMode=this.value;draw();};
 document.getElementById("scale").onchange=function(){scaleMode=this.value;draw();};
@@ -310,7 +315,7 @@ wf.addEventListener("wheel",function(e){
 (async function(){
   await loadCsrf();
   try{var sp=await(await fetch("/api/spectrum.json")).json();
-    if(sp.calibration)calib=sp.calibration;if(sp.serial_number)serial=sp.serial_number;}catch(e){}
+    if(sp.calib&&sp.calib.length)calib=sp.calib;if(sp.serial)serial=sp.serial;}catch(e){}
   await refreshStatus();
   await backfill();
   connectWS();
