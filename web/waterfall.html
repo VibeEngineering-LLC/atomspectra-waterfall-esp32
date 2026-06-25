@@ -24,7 +24,7 @@ label{user-select:none}
 .st{color:#9f9}
 .warn{color:#fc3}
 .err{color:#f55}
-#log{height:90px;overflow:auto;background:#000;border:1px solid #060;padding:4px;font-size:11px;white-space:pre-wrap;margin-top:8px}
+#log{box-sizing:border-box;width:902px;max-width:100%;height:90px;overflow:auto;background:#000;border:1px solid #060;padding:4px;font-size:11px;white-space:pre-wrap;margin-top:8px}
 .sw{display:inline-block;width:140px;height:10px;vertical-align:middle;
   background:linear-gradient(90deg,#000,#206,#a04,#f80,#ff0,#fff)}
 .ind{color:#9f9;display:inline-flex;align-items:center;gap:6px}
@@ -47,6 +47,7 @@ details.help b{color:#0f0}
   <button id="bStop">■ Стоп</button>
   <button id="bClear">🗑 Очистить</button>
   <button id="bExportN42">⬇ Экспорт .n42</button>
+  <button id="bDisk" title="Сохранять входящий стрим в .aswf-файл на диске ПК (Chromium-браузеры)">💾 Стрим на диск…</button>
   <span class="st" id="state">…</span>
 </div>
 
@@ -66,6 +67,8 @@ details.help b{color:#0f0}
   <span class="ind" id="flashwrap" title="занятость флэш-памяти платы (когда включено «хранить во Flash»)">
     Flash <b id="flashtxt">—</b>
     <span class="fb"><span class="fi" id="flashfi"></span></span></span>
+  <span class="ind" id="diskwrap" style="display:none" title="идёт запись WS-стрима в .aswf на диске ПК">
+    💾 Диск: <b id="disktxt">—</b></span>
 </div>
 
 <details class="help">
@@ -73,8 +76,18 @@ details.help b{color:#0f0}
   <p><b>Стрим на ПК</b> — отдельно включать не нужно. Плата раздаёт каждую новую строку по WebSocket
   всем, кто открыл эту страницу. Чтобы «стримить на компьютер» — просто открой
   <code>http://&lt;IP-платы&gt;/waterfall</code> в браузере <b>на ПК</b>: спектрограмма рисуется вживую.
-  Для записи в файл на ПК — скрипты в <code>scripts/</code>:
-  <code>waterfall_n42.py</code> (экспорт .n42) и <code>waterfall_client.py</code> (непрерывный захват .aswf).</p>
+  Источник — буфер в RAM в момент рождения строки, а <b>не</b> Flash; работает и при выключенном
+  «хранить во Flash», и когда Flash переполнен.</p>
+  <p><b>Запись в файл на ПК — две опции:</b><br>
+  • кнопка <code>💾 Стрим на диск…</code> сверху — два режима:
+  <b>(а) потоковый</b> — Chrome/Edge/Opera: открывает нативный диалог «Сохранить как», каждая входящая
+  строка пишется прямо в выбранный <code>.aswf</code>-файл, шапка обновляется каждые ~30 с (валидный
+  файл даже при крахе вкладки).
+  <b>(б) buffer-режим</b> — Firefox/Safari/sandboxed-iframe: строки копятся в ОЗУ вкладки, на «Стоп»
+  скачивается одним blob-ом через стандартный download (имя <code>waterfall_&lt;ip&gt;_…&period;aswf</code>).
+  Для длинных сессий используй потоковый режим или скрипты.<br>
+  • скрипты в <code>scripts/</code>: <code>waterfall_n42.py</code> (экспорт .n42 одним выстрелом) и
+  <code>waterfall_client.py &lt;ip&gt; -o &lt;путь&gt;.aswf</code> (непрерывный захват).</p>
   <p><b>Выбор места хранения</b> — галочка «📍 хранить во Flash» выше:<br>
   • <b>выкл</b> (по умолчанию) — водопад живёт только в <b>кольце ОЗУ</b> (PSRAM, последние ~256 строк;
   старое затирается новым). Экспорт .n42 берёт данные из кольца — Flash для этого не нужен.<br>
@@ -117,6 +130,12 @@ var chLo=0, chHi=CH;         // окно каналов (зум по X)
 var gain=40, scaleMode="log", axisMode="ch";
 var ws=null, wsTimer=null, recording=false;
 var wfStat=null;             // последний /api/waterfall/status (для индикаторов)
+// --- disk stream (File System Access API, Chromium) ---
+var dskWritable=null;        // FileSystemWritableFileStream
+var dskRows=0, dskStart=0, dskName="", dskBytes=0;
+var dskHdrReserve=4096;      // зарезервированный размер JSON-шапки .aswf
+var dskFlushTimer=null;
+var dskMemChunks=null;       // fallback-режим: накопление в ОЗУ + download на стопе
 var wf=document.getElementById("wf"), wfx=wf.getContext("2d");
 var cur=document.getElementById("cur"), curx=cur.getContext("2d");
 
@@ -266,6 +285,18 @@ function connectWS(){
     var u16=new Uint16Array(ev.data);
     if(u16.length!==CH&&u16.length>0)CH=u16.length;
     pushRow(u16);
+    // ── запись на диск (если включено пользователем) ──
+    if(dskWritable){
+      try{
+        dskWritable.write(new Uint8Array(ev.data));
+        dskRows++; dskBytes+=ev.data.byteLength;
+        updDiskInd();
+      }catch(e){lg("диск: write err "+e);stopDiskStream();}
+    }else if(dskMemChunks){
+      dskMemChunks.push(new Uint8Array(ev.data));
+      dskRows++; dskBytes+=ev.data.byteLength;
+      updDiskInd();
+    }
     draw();
   };
   ws.onclose=function(){lg("WS закрыт, переподключение…");document.getElementById("state").className="warn";
@@ -346,6 +377,122 @@ async function refreshSystem(){
   }catch(e){}
 }
 
+// ---- диск-стрим (File System Access API, Chromium) ----
+function dskTs(){var d=new Date();function p(n){return(n<10?"0":"")+n;}
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"_"+
+         p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
+function padJson(obj,len){
+  var s=JSON.stringify(obj);
+  var enc=new TextEncoder().encode(s);
+  if(enc.length>len)throw new Error("header overflow: "+enc.length+">"+len);
+  var pad=" ".repeat(len-enc.length);
+  return new TextEncoder().encode(s+pad);
+}
+function dskHeaderObj(finalRows){
+  return {
+    format:"aswf",version:1,
+    channels:CH,interval_sec:intervalSec,
+    serial:serial||"",
+    calibration:calib||[],
+    started_at:wfStat&&wfStat.started_at?wfStat.started_at:Math.floor(Date.now()/1000),
+    saved_rows:finalRows|0,
+    source:"browser /waterfall WS",
+    saved_at:Math.floor(Date.now()/1000)
+  };
+}
+async function writeDiskHeader(finalRows){
+  if(!dskWritable)return;
+  var hdr=padJson(dskHeaderObj(finalRows),dskHdrReserve);
+  var prefix=new Uint8Array(8);
+  prefix[0]=0x41;prefix[1]=0x53;prefix[2]=0x57;prefix[3]=0x46; // "ASWF"
+  var dv=new DataView(prefix.buffer);
+  dv.setUint32(4,dskHdrReserve,true);
+  await dskWritable.write({type:"write",position:0,data:prefix});
+  await dskWritable.write({type:"write",position:8,data:hdr});
+  // вернуть курсор записи в хвост (payload), чтобы новые строки шли за концом файла
+  var tail=8+dskHdrReserve+dskRows*CH*2;
+  await dskWritable.write({type:"seek",position:tail});
+}
+async function startDiskStream(){
+  var host=(location.hostname||"esp").replace(/[^a-zA-Z0-9_.-]/g,"_");
+  var name="waterfall_"+host+"_"+dskTs()+".aswf";
+  dskRows=0;dskBytes=0;dskStart=Date.now();dskName=name;
+  // 1) Современный путь: нативный диалог + потоковая запись
+  if("showSaveFilePicker" in window){
+    try{
+      var handle=await window.showSaveFilePicker({
+        suggestedName:name,
+        types:[{description:"AtomSpectra waterfall",accept:{"application/octet-stream":[".aswf"]}}]
+      });
+      dskWritable=await handle.createWritable();
+      dskName=handle.name||name;
+      await writeDiskHeader(0);
+      dskFlushTimer=setInterval(flushDiskHeader,30000);
+      lg("диск: запись начата → "+dskName+" (потоковая)");
+    }catch(e){
+      if(e&&e.name==="AbortError"){dskRows=0;dskBytes=0;return;}   // отмена диалога — молча
+      lg("диск: FSA fail ("+e+"), переключаюсь в режим ОЗУ-буфера");
+      dskWritable=null;
+    }
+  }
+  // 2) Fallback: копим строки в ОЗУ, на «Стоп» — скачиваем blob-ом
+  if(!dskWritable){
+    dskMemChunks=[];
+    lg("диск: запись начата → "+dskName+" (буфер ОЗУ, скачается на «Стоп»)");
+  }
+  document.getElementById("diskwrap").style.display="";
+  document.getElementById("bDisk").textContent="■ Стрим на диск (стоп)";
+  updDiskInd();
+  window.addEventListener("beforeunload",beforeUnloadDisk);
+}
+async function flushDiskHeader(){
+  if(!dskWritable)return;
+  try{await writeDiskHeader(dskRows);}catch(e){lg("диск: flush err "+e);}
+}
+async function stopDiskStream(){
+  if(dskFlushTimer){clearInterval(dskFlushTimer);dskFlushTimer=null;}
+  window.removeEventListener("beforeunload",beforeUnloadDisk);
+  var w=dskWritable;dskWritable=null;
+  var mem=dskMemChunks;dskMemChunks=null;
+  try{
+    if(w){
+      // финальная шапка с актуальным числом строк, затем close()
+      var hdr=padJson(dskHeaderObj(dskRows),dskHdrReserve);
+      var prefix=new Uint8Array(8);
+      prefix[0]=0x41;prefix[1]=0x53;prefix[2]=0x57;prefix[3]=0x46;
+      new DataView(prefix.buffer).setUint32(4,dskHdrReserve,true);
+      await w.write({type:"write",position:0,data:prefix});
+      await w.write({type:"write",position:8,data:hdr});
+      await w.close();
+      lg("диск: запись завершена ("+dskRows+" стр., "+(dskBytes/1048576).toFixed(2)+" МБ) → "+dskName);
+    }else if(mem){
+      // fallback: собираем blob и форсируем download
+      var hdr2=padJson(dskHeaderObj(dskRows),dskHdrReserve);
+      var prefix2=new Uint8Array(8);
+      prefix2[0]=0x41;prefix2[1]=0x53;prefix2[2]=0x57;prefix2[3]=0x46;
+      new DataView(prefix2.buffer).setUint32(4,dskHdrReserve,true);
+      var parts=[prefix2,hdr2].concat(mem);
+      var blob=new Blob(parts,{type:"application/octet-stream"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url;a.download=dskName;document.body.appendChild(a);a.click();
+      setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},1000);
+      lg("диск: blob скачан ("+dskRows+" стр., "+(dskBytes/1048576).toFixed(2)+" МБ) → "+dskName);
+    }
+  }catch(e){lg("диск: close err "+e);}
+  document.getElementById("diskwrap").style.display="none";
+  document.getElementById("bDisk").textContent="💾 Стрим на диск…";
+}
+function beforeUnloadDisk(e){
+  if(!dskWritable)return;
+  e.preventDefault();e.returnValue="Идёт запись на диск. Закрыть страницу?";
+}
+function updDiskInd(){
+  var sec=Math.floor((Date.now()-dskStart)/1000);
+  document.getElementById("disktxt").textContent=
+    dskRows+" стр. · "+(dskBytes/1048576).toFixed(2)+" МБ · "+fmtHMS(sec);
+}
+
 // ---- контролы ----
 function post(url,body){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});}
 var csrfToken="";
@@ -366,6 +513,14 @@ document.getElementById("iv").onchange=applyInterval;
 document.getElementById("persist").onchange=async function(){
   await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
 document.getElementById("bExportN42").onclick=function(){window.location="/api/waterfall/export.n42";lg("экспорт .n42 (ANSI N42.42)");};
+document.getElementById("bDisk").onclick=function(){
+  if(dskWritable||dskMemChunks)stopDiskStream();else startDiskStream();
+};
+if(!("showSaveFilePicker" in window)){
+  document.getElementById("bDisk").title=
+    "Этот браузер не поддерживает File System Access API — буду копить в ОЗУ, на «Стоп» скачается одним файлом. "+
+    "Для длинных сессий используйте Chrome / Edge / Opera (потоковая запись) или scripts/waterfall_client.py.";
+}
 
 document.getElementById("axis").onchange=function(){axisMode=this.value;draw();};
 document.getElementById("scale").onchange=function(){scaleMode=this.value;draw();};

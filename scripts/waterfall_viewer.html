@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>AtomSpectra Waterfall Viewer (.n42)</title>
+<title>AtomSpectra Waterfall Viewer (.n42 / .aswf)</title>
 <style>
   :root { color-scheme: dark; }
   body { margin:0; font:13px/1.4 system-ui,Segoe UI,sans-serif; background:#111; color:#ddd; }
@@ -28,12 +28,12 @@
 <body>
 <header>
   <div class="row">
-    <strong>Водопад .n42</strong>
-    <button id="pick">Открыть .n42</button>
-    <input id="file" type="file" accept=".n42,.xml" style="display:none">
+    <strong>Водопад .n42 / .aswf</strong>
+    <button id="pick">Открыть файл…</button>
+    <input id="file" type="file" accept=".n42,.xml,.aswf,.bin" style="display:none">
     <span id="meta">файл не загружен</span>
   </div>
-  <div id="drop">Перетащи сюда файл .n42 (или нажми «Открыть .n42»)</div>
+  <div id="drop">Перетащи сюда файл <code>.n42</code> или <code>.aswf</code> (или нажми «Открыть файл…»)</div>
   <div class="row">
     <label>Канал от <input id="chMin" type="number" value="0" min="0"></label>
     <label>до <input id="chMax" type="number" value="8191" min="1"></label>
@@ -119,6 +119,44 @@ function parseN42(text){
   return { channels, rows, calib };
 }
 
+// === .aswf parser ===
+// Layout: "ASWF"(4) | header_len:u32 LE | JSON header (UTF-8, space-padded) | payload (rows × channels × uint16 LE)
+function parseAswf(buf){
+  const u8=new Uint8Array(buf), dv=new DataView(buf);
+  if(buf.byteLength<12) throw new Error(".aswf слишком короткий: "+buf.byteLength+" байт");
+  if(!(u8[0]===0x41&&u8[1]===0x53&&u8[2]===0x57&&u8[3]===0x46))
+    throw new Error("не .aswf: магия "+[u8[0],u8[1],u8[2],u8[3]].map(x=>x.toString(16)).join(" ")+" ≠ ASWF");
+  const hdrLen=dv.getUint32(4,true);
+  if(hdrLen<2||hdrLen>1024*1024) throw new Error("шапка подозрительной длины: "+hdrLen);
+  const hdrBytes=u8.subarray(8,8+hdrLen);
+  let hdr;
+  try{ hdr=JSON.parse(new TextDecoder("utf-8").decode(hdrBytes).trim()); }
+  catch(e){ throw new Error("шапка не JSON: "+e.message); }
+  const channels=hdr.channels|0;
+  if(channels<1||channels>65536) throw new Error("channels из шапки = "+hdr.channels);
+  const interval=+hdr.interval_sec||0;
+  const startedAt=+hdr.started_at||0;          // epoch секунды
+  const calib=Array.isArray(hdr.calibration)&&hdr.calibration.some(x=>Math.abs(x)>0)?hdr.calibration.map(Number):null;
+  const payloadOff=8+hdrLen;
+  const payloadBytes=buf.byteLength-payloadOff;
+  const rowBytes=channels*2;
+  let nRows=Math.floor(payloadBytes/rowBytes);
+  const declared=hdr.saved_rows|0;
+  if(declared>0&&declared<nRows) nRows=declared;  // шапка авторитетнее, если в файле есть «хвост»
+  if(nRows<1) throw new Error("в файле нет ни одной строки (payload "+payloadBytes+" байт, строка "+rowBytes+")");
+  const rows=new Array(nRows);
+  for(let i=0;i<nRows;i++){
+    // конвертация Uint16 → Uint32, чтобы остальной код работал без изменений
+    const src=new Uint16Array(buf, payloadOff+i*rowBytes, channels);
+    const dst=new Uint32Array(channels);
+    for(let k=0;k<channels;k++) dst[k]=src[k];
+    const t=startedAt>0?(startedAt+i*interval):0;
+    const startStr=t>0?new Date(t*1000).toISOString():"строка #"+i;
+    rows[i]={ comp:"", start:startStr, real:"PT"+interval+"S", counts:dst };
+  }
+  return { channels, rows, calib, _aswf:hdr };
+}
+
 function energy(ch){
   if(!ST||!ST.calib) return null;
   const c = ST.calib;
@@ -172,24 +210,58 @@ function render(){
 
 function refresh(){ buildGrid(); render(); }
 
-function loadText(text, name){
+function detectKind(buf, name){
+  if(buf.byteLength>=4){
+    const u8=new Uint8Array(buf,0,4);
+    if(u8[0]===0x41&&u8[1]===0x53&&u8[2]===0x57&&u8[3]===0x46) return "aswf";  // "ASWF"
+    if(u8[0]===0x3C) return "n42";                                              // "<"
+  }
+  if(name&&/\.aswf$/i.test(name)) return "aswf";
+  if(name&&/\.(n42|xml)$/i.test(name)) return "n42";
+  return "n42"; // default
+}
+
+function fmtBytes(n){ if(n<1024)return n+" B"; if(n<1048576)return(n/1024).toFixed(1)+" КБ";
+  if(n<1073741824)return(n/1048576).toFixed(1)+" МБ"; return(n/1073741824).toFixed(2)+" ГБ"; }
+
+function loadBuf(buf, name){
   try{
-    ST = parseN42(text);
+    const kind = detectKind(buf, name);
+    let extra = "";
+    if(kind==="aswf"){
+      ST = parseAswf(buf);
+      const h = ST._aswf||{};
+      const t = h.started_at>0 ? new Date(h.started_at*1000).toLocaleString() : "?";
+      extra = `  •  начало: ${t}  •  интервал: ${h.interval_sec||"?"} с`;
+      if(h.serial) extra += `  •  S/N: ${h.serial}`;
+    } else {
+      ST = parseN42(new TextDecoder("utf-8").decode(buf));
+      const r0 = ST.rows[0];
+      extra = `  •  интервал: ${r0?r0.real:"?"}`;
+    }
     $("chMax").value = ST.channels-1;
-    const r0 = ST.rows[0];
-    $("meta").textContent = `${name||""}  •  строк: ${ST.rows.length}  •  каналов: ${ST.channels}` +
-      `  •  интервал: ${r0?r0.real:"?"}  •  калибровка: ${ST.calib?("есть ["+ST.calib.join(", ")+"]"):"нет (ось = каналы)"}`;
+    $("meta").textContent =
+      `${name||""}  •  [${kind}, ${fmtBytes(buf.byteLength)}]  •  строк: ${ST.rows.length}` +
+      `  •  каналов: ${ST.channels}${extra}` +
+      `  •  калибровка: ${ST.calib?("есть ["+ST.calib.map(x=>(+x).toPrecision(4)).join(", ")+"]"):"нет (ось = каналы)"}`;
     refresh();
   }catch(e){ $("meta").textContent = "Ошибка: "+e.message; ST=null; }
 }
 
+function readFile(f){
+  const rd=new FileReader();
+  rd.onload=()=>loadBuf(rd.result, f.name);
+  rd.onerror=()=>{ $("meta").textContent="Ошибка чтения файла: "+rd.error; };
+  rd.readAsArrayBuffer(f);
+}
+
 // ---- file input + drag&drop ----
 $("pick").onclick = ()=>$("file").click();
-$("file").onchange = e=>{ const f=e.target.files[0]; if(f){ const rd=new FileReader(); rd.onload=()=>loadText(rd.result, f.name); rd.readAsText(f); } };
+$("file").onchange = e=>{ const f=e.target.files[0]; if(f) readFile(f); };
 const drop=$("drop");
 ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault(); drop.classList.add("hl");}));
 ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault(); drop.classList.remove("hl");}));
-drop.addEventListener("drop",e=>{ const f=e.dataTransfer.files[0]; if(f){ const rd=new FileReader(); rd.onload=()=>loadText(rd.result, f.name); rd.readAsText(f); } });
+drop.addEventListener("drop",e=>{ const f=e.dataTransfer.files[0]; if(f) readFile(f); });
 
 // ---- controls ----
 ["chMin","chMax","cols"].forEach(id=>$(id).addEventListener("change",refresh));
@@ -219,7 +291,7 @@ cv.addEventListener("mouseleave",()=>tip.style.display="none");
 
 // ---- optional ?src= auto-load (when served over http) ----
 const src = new URLSearchParams(location.search).get("src");
-if(src){ fetch(src).then(r=>r.text()).then(t=>loadText(t, src)).catch(e=>$("meta").textContent="fetch error: "+e.message); }
+if(src){ fetch(src).then(r=>r.arrayBuffer()).then(b=>loadBuf(b, src)).catch(e=>$("meta").textContent="fetch error: "+e.message); }
 </script>
 </body>
 </html>
