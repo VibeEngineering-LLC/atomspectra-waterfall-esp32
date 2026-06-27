@@ -203,6 +203,13 @@ channels, `uint16`). The waterfall can be viewed in the browser
 **exported with the "⬇ Export .n42" button** right from the Web UI to the
 industry-standard **ANSI N42.42** (InterSpec / PeakEasy / Cambio).
 
+> 🔴 **Live demo on real data:**
+> **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**
+> — the very same spectrogram from the firmware's Web UI, rendered from a real `.aswf`
+> capture of an "Atom Spectra" instrument (480 rows × 8192 channels, real calibration).
+> No board required: hover the image and a per-row spectrum slice with a keV energy
+> axis appears below.
+
 `scripts/` holds the PC-side tools: N42 export (`waterfall_n42.py`), an offline 2D
 waterfall viewer (`waterfall_viewer.html`), and `.aswf` capture (`waterfall_client.py`).
 

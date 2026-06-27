@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AtomSpectra · Водопад — демо на реальных данных</title>
+<style>
+:root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); }
+body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; padding-bottom:28px; }
+a{ color:var(--accent); text-decoration:none; }
+a:hover{ text-decoration:underline; }
+button,input,select{ font-family:inherit; }
+.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
+.brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
+.logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
+.logo i{ width:15px; height:15px; border-radius:50%; border:2px solid var(--accent); }
+.logo b{ position:absolute; width:5px; height:5px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); }
+.chips{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.chip{ background:#10140f; border:1px solid #243024; border-radius:999px; padding:6px 12px; font-size:11.5px; color:var(--dim); }
+.chip.ok{ color:#aeb6a8; display:flex; align-items:center; gap:7px; }
+.dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 7px var(--accent); }
+nav{ display:flex; align-items:center; gap:2px; padding:0 20px; border-bottom:1px solid #1c241c; overflow-x:auto; }
+nav a,nav span{ padding:12px 16px; font-size:13px; color:var(--dim); flex-shrink:0; white-space:nowrap; }
+nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); }
+.panel{ background:var(--panel); border:1px solid var(--bd); border-radius:10px; }
+.pad{ padding:13px 16px; }
+.row{ display:flex; align-items:center; gap:14px; padding:11px 16px; flex-wrap:wrap; }
+.btn{ border-radius:8px; padding:8px 13px; font-size:12.5px; cursor:pointer; background:#161b14; border:1px solid #2a322a; color:var(--txt); }
+.btn.sm{ padding:7px 11px; font-size:12px; }
+.btn:hover:not(:disabled){ filter:brightness(1.2); }
+.inp,.sel{ background:#0c0f0b; border:1px solid #283024; color:#e8efe2; padding:7px 10px; border-radius:7px; font-size:12px; outline:none; }
+.inp[type=number]{ width:74px; }
+.lbl{ font-size:11.5px; color:#6b756a; }
+.ml{ margin-left:auto; }
+.note{ font-size:11.5px; color:#7c887c; line-height:1.6; }
+.note b{ color:#aeb6a8; }
+.note code{ color:#f0c45a; background:#0c0f0b; padding:1px 5px; border-radius:3px; font-size:11px; }
+#wrap-wf{ position:relative; display:block; border:1px solid var(--bd); border-radius:8px; overflow:hidden; }
+#wf{ display:block; background:#000; cursor:crosshair; width:100%; height:auto; max-width:100%; image-rendering:pixelated; image-rendering:crisp-edges; }
+#cur{ position:absolute; left:0; top:0; pointer-events:none; width:100%; height:100%; }
+#hud{ position:absolute; right:8px; top:8px; background:rgba(8,10,8,.7); padding:6px 10px; font-size:11px; color:#aeb6a8; white-space:pre; border:1px solid #283024; border-radius:6px; line-height:1.5; }
+.seg{ display:flex; border:1px solid #2a322a; border-radius:7px; overflow:hidden; }
+.seg button{ padding:6px 11px; font-size:11.5px; cursor:pointer; border:none; background:transparent; color:#9aa496; }
+.seg button.on{ background:var(--accent); color:#0c1206; font-weight:700; }
+.sw{ display:inline-block; width:130px; height:9px; vertical-align:middle; border-radius:3px; border:1px solid #283024; cursor:pointer; transition:transform .15s; }
+.sw:hover{ transform:scaleY(1.3); }
+.palmod{ position:fixed; inset:0; background:rgba(0,0,0,.78); z-index:100; display:none; align-items:center; justify-content:center; padding:20px; }
+.palmod.on{ display:flex; }
+.palmod .pal{ background:var(--panel); border:1px solid var(--bd); border-radius:12px; max-width:520px; width:100%; max-height:80vh; overflow:auto; }
+.palmod h3{ margin:0; padding:14px 18px; border-bottom:1px solid #1b211a; font-size:14px; color:#e8efe2; display:flex; justify-content:space-between; align-items:center; }
+.palmod h3 button{ background:none; border:none; color:#6b756a; font-size:22px; cursor:pointer; padding:0; }
+.palmod ul{ list-style:none; margin:0; padding:8px; }
+.palmod li{ display:flex; align-items:center; gap:14px; padding:10px 12px; border-radius:8px; cursor:pointer; }
+.palmod li:hover{ background:#161b14; }
+.palmod li.on{ background:var(--accent-dim); border:1px solid rgba(52,211,192,.4); }
+.palmod .swatch{ width:160px; height:14px; border-radius:4px; flex-shrink:0; }
+.palmod .nm{ font-size:13px; color:#cfd6cd; }
+.palmod .desc{ font-size:11px; color:#6b756a; margin-top:2px; }
+.badge{ background:var(--accent-dim); border:1px solid rgba(52,211,192,.4); color:var(--accent); border-radius:999px; padding:3px 10px; font-size:11px; font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+<div class="brand"><span class="logo"><i></i><b></b></span>AtomSpectra <span style="color:var(--accent)">&nbsp;Gateway</span></div>
+<div class="chips">
+<span class="badge">демо / demo</span>
+<span class="chip ok"><span class="dot"></span><span id="device-chip">Atom Spectra</span></span>
+<span class="chip" id="meta-chip">—</span>
+<a class="chip" href="https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32" style="color:#aeb6a8">GitHub ↗</a>
+</div>
+</header>
+<nav>
+<span class="on">Водопад — демо (реальные данные)</span>
+<a href="https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32">← репозиторий прошивки</a>
+</nav>
+
+<div class="wrap">
+
+<section class="panel pad">
+<div class="note">
+<b>Это — реальные данные.</b> Спектрограмма ниже отрисована той же логикой, что и Web UI прошивки
+(<code>web/waterfall.html</code>), но без живой платы: данные загружены из реального файла
+<code>.aswf</code>, записанного прибором «Atom Spectra» через кнопку «💾 Стрим на диск» страницы
+<code>/waterfall</code>. Наведите курсор на спектрограмму — снизу появится срез спектра выбранной
+строки с энергетической шкалой (кэВ), вычисленной по реальной калибровке прибора.<br>
+<span style="color:#6b756a">This waterfall is rendered by the firmware's own UI code from a real
+<code>.aswf</code> capture (no live board). Hover the image to inspect a per-row spectrum slice with
+the device's real keV calibration.</span>
+</div>
+</section>
+
+<section class="panel">
+<div class="row">
+<label class="lbl">Ось X <select class="sel" id="axis"><option value="ch">каналы</option><option value="kev">кэВ</option></select></label>
+<label class="lbl">Яркость <select class="sel" id="scale"><option value="log">лог</option><option value="lin">лин</option></select></label>
+<label class="lbl">Контраст <input type="range" id="gain" min="1" max="100" value="40" style="vertical-align:middle"></label>
+<label class="lbl">Палитра <span class="sw" id="palSw" title="Сменить цветовую палитру" onclick="openPalette()"></span> <span id="palName" style="color:var(--accent);font-size:11.5px">Inferno</span></label>
+<label class="lbl">Каналы <input class="inp" type="number" id="chLo" min="0" max="8191" value="0"> – <input class="inp" type="number" id="chHi" min="1" max="8192" value="8192"></label>
+<button class="btn sm" id="bFit">сброс зума</button>
+</div>
+</section>
+
+<section class="panel pad">
+<div id="wrap-wf">
+<canvas id="wf" width="900" height="520"></canvas>
+<canvas id="cur" width="900" height="520"></canvas>
+<div id="hud"></div>
+</div>
+</section>
+
+<section class="panel">
+<div class="row">
+<span class="lbl" style="color:#aeb6a8;font-weight:600">Срез спектра</span>
+<span class="lbl" id="slcInfo">наведите курсор на спектрограмму</span>
+<span class="ml lbl">Y</span>
+<div class="seg" id="slcSeg">
+<button data-v="log" class="on">лог</button><button data-v="lin">лин</button>
+</div>
+</div>
+<div style="padding:0 16px 14px">
+<canvas id="slc" width="900" height="180" style="display:block;width:100%;height:auto;border:1px solid var(--bd);border-radius:6px;background:#000"></canvas>
+</div>
+</section>
+
+<section class="panel pad">
+<div class="note" id="about">Загрузка реальных данных…</div>
+</section>
+
+</div>
+
+<!-- модальное окно выбора палитры -->
+<div class="palmod" id="palMod">
+<div class="pal">
+<h3>Палитра <button onclick="closePalette()">&times;</button></h3>
+<ul id="palList"></ul>
+</div>
+</div>
+
+<script>
+// ======= минимальный i18n-стаб (только ключи, нужные функциям отрисовки) =======
+var DICT={ru:{
+ "opt.kev":"кэВ","slc.no_data":"нет данных","slc.wait":"ожидание данных…",
+ "slc.empty_fallback":"строка %1 пуста → показана %2","slc.cursor_prefix":"строка #",
+ "slc.live_prefix":"строка #","hud.live":"низ","hud.rows":"строк:","hud.bottom":"низ #",
+ "hud.norm":"норма","hud.x":"X"
+}};
+function t(k){return(DICT.ru[k]!==undefined)?DICT.ru[k]:k;}
+function tfmt(k){var s=t(k);for(var i=1;i<arguments.length;i++)s=s.replace("%"+i,arguments[i]);return s;}
+
+// === 10-стоп палитры (1:1 с прошивкой web/waterfall.html) ===
+var PALETTES={
+ Inferno:{desc:"тёмная, контрастная (дефолт)",stops:[[0,0,4],[20,11,52],[58,9,99],[101,21,110],[143,36,108],[185,53,95],[222,73,74],[247,104,52],[252,143,30],[252,194,72]]},
+ Magma:{desc:"мягкая, фиолетово-розовая",stops:[[0,0,4],[18,13,49],[56,15,94],[94,23,113],[131,35,123],[166,47,129],[202,63,128],[233,86,118],[247,123,106],[252,176,134]]},
+ Plasma:{desc:"фиолет → жёлтый, без чёрного",stops:[[13,8,135],[55,5,158],[97,1,168],[131,4,167],[164,17,154],[195,38,132],[221,69,103],[239,103,73],[247,150,40],[239,205,40]]},
+ Viridis:{desc:"перцептивная, друг-к-другу слепых",stops:[[68,1,84],[71,28,113],[63,55,128],[55,82,131],[43,108,128],[35,135,120],[40,159,106],[81,182,86],[150,200,60],[230,210,50]]},
+ Cividis:{desc:"для дальтоников, синь→жёлт",stops:[[0,32,77],[0,50,103],[19,68,121],[51,86,127],[81,103,127],[112,121,126],[145,140,124],[181,160,115],[219,182,98],[253,206,73]]},
+ Turbo:{desc:"яркая, плавный синий→красн",stops:[[48,18,59],[64,69,196],[57,141,247],[42,205,202],[81,242,115],[173,246,55],[244,209,46],[253,143,46],[223,75,41],[122,4,3]]},
+ Jet:{desc:"классика matlab",stops:[[0,0,131],[0,60,170],[5,255,255],[5,255,135],[120,255,5],[255,255,0],[255,170,0],[255,80,0],[225,0,0],[128,0,0]]},
+ Hot:{desc:"чёрный→красн→жёлт→белый",stops:[[0,0,0],[64,0,0],[128,0,0],[192,0,0],[255,32,0],[255,96,0],[255,160,0],[255,224,0],[255,255,128],[255,255,255]]},
+ Ocean:{desc:"чёрный→синий→белый, спокойная",stops:[[0,0,0],[0,16,40],[0,32,80],[0,56,120],[0,90,160],[20,130,200],[60,170,225],[120,205,235],[190,225,240],[245,250,252]]},
+ Grayscale:{desc:"моно, для печати",stops:[[0,0,0],[28,28,28],[56,56,56],[84,84,84],[112,112,112],[140,140,140],[168,168,168],[196,196,196],[224,224,224],[255,255,255]]}
+};
+var currentPalette="Inferno", currentLut=null;
+function buildLut(name){
+ var stops=PALETTES[name].stops, N=256;
+ var lut=new Uint8Array(N*3);
+ for(var i=0;i<N;i++){
+  var t=i/(N-1);
+  var f=t*(stops.length-1), si=Math.floor(f), g=f-si;
+  if(si>=stops.length-1)si=stops.length-2,g=1;
+  var a=stops[si],b=stops[si+1];
+  lut[i*3]  =(a[0]+(b[0]-a[0])*g)|0;
+  lut[i*3+1]=(a[1]+(b[1]-a[1])*g)|0;
+  lut[i*3+2]=(a[2]+(b[2]-a[2])*g)|0;
+ }
+ return lut;
+}
+function applyPalette(name){
+ currentPalette=name; currentLut=buildLut(name);
+ document.getElementById("palName").textContent=name;
+ var sw=document.getElementById("palSw");
+ var stops=PALETTES[name].stops;
+ var grad=stops.map(function(s,i){return"rgb("+s[0]+","+s[1]+","+s[2]+") "+(i/(stops.length-1)*100).toFixed(0)+"%"}).join(",");
+ sw.style.background="linear-gradient(90deg,"+grad+")";
+ try{localStorage.setItem("aswf-pal",name);}catch(e){}
+ draw();
+}
+function openPalette(){
+ var list=document.getElementById("palList"); list.innerHTML="";
+ Object.keys(PALETTES).forEach(function(name){
+  var p=PALETTES[name];
+  var grad=p.stops.map(function(s,i){return"rgb("+s[0]+","+s[1]+","+s[2]+") "+(i/(p.stops.length-1)*100).toFixed(0)+"%"}).join(",");
+  var li=document.createElement("li");
+  if(name===currentPalette)li.className="on";
+  li.innerHTML='<div class="swatch" style="background:linear-gradient(90deg,'+grad+')"></div>'+
+   '<div><div class="nm">'+name+'</div><div class="desc">'+p.desc+'</div></div>';
+  li.onclick=function(){applyPalette(name);closePalette();};
+  list.appendChild(li);
+ });
+ document.getElementById("palMod").classList.add("on");
+}
+function closePalette(){document.getElementById("palMod").classList.remove("on");}
+document.getElementById("palMod").addEventListener("click",function(e){if(e.target===this)closePalette();});
+
+// ============== плумбинг отрисовки — 1:1 с web/waterfall.html ==============
+var CH=8192;
+var WFW=900, WFH=520;
+var MAXROWS=2048;
+var rows=[];
+var baseIndex=0;
+var calib=null, serial="", intervalSec=10;
+var viewBottom=-1;
+var chLo=0, chHi=CH;
+var gain=40, scaleMode="log", axisMode="ch";
+var wf=document.getElementById("wf"), wfx=wf.getContext("2d");
+var cur=document.getElementById("cur"), curx=cur.getContext("2d");
+var slc=document.getElementById("slc"), slcx=slc.getContext("2d");
+var SLW=900, SLH=180;
+(function(){var dpr=Math.max(2,window.devicePixelRatio||1);function hidpi(c,ctx,w,h){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);}hidpi(cur,curx,WFW,WFH);hidpi(slc,slcx,SLW,SLH);})();
+var slcMode="log", slcHoverLi=-1, slcCursorCh=-1, cursorY=-1;
+var slcCursorInDark=false;
+
+function cmap(t){
+ if(t<0)t=0; if(t>1)t=1;
+ var i=Math.min(255,Math.floor(t*256));
+ var o=i*3;
+ return [currentLut[o],currentLut[o+1],currentLut[o+2]];
+}
+function ch2kev(c){if(!calib)return c;var e=0;for(var i=0;i<calib.length;i++)e+=calib[i]*Math.pow(c,i);return e}
+function kev2ch(k){var lo=0,hi=CH;for(var i=0;i<30;i++){var m=(lo+hi)/2;if(ch2kev(m)<k)lo=m;else hi=m}return(lo+hi)/2}
+
+var normMax=64;
+function rowMax(r){var m=0;for(var i=chLo;i<chHi&&i<r.length;i++){if(r[i]>m)m=r[i];}return m;}
+
+function draw(){
+ var img=wfx.createImageData(WFW,WFH);
+ var data=img.data;
+ var span=chHi-chLo; if(span<1)span=1;
+ var lastIdx=baseIndex+rows.length-1;
+ var bottom=(viewBottom<0)?lastIdx:viewBottom;
+ var seenMax=1;
+ for(var y=0;y<WFH;y++){
+  var gIdx=bottom-y;
+  var li=gIdx-baseIndex;
+  if(li<0||li>=rows.length)continue;
+  var rm=rowMax(rows[li]); if(rm>seenMax)seenMax=rm;
+ }
+ normMax=normMax*0.7+seenMax*0.3; if(normMax<1)normMax=1;
+ var gfac=gain/40.0;
+ for(var y=0;y<WFH;y++){
+  var gIdx=bottom-y;
+  var li=gIdx-baseIndex;
+  var off=y*WFW*4;
+  if(li<0||li>=rows.length){
+   for(var x=0;x<WFW;x++){var o=off+x*4;data[o]=8;data[o+1]=10;data[o+2]=8;data[o+3]=255;}
+   continue;
+  }
+  var row=rows[li];
+  for(var x=0;x<WFW;x++){
+   var c=chLo+Math.floor(x/WFW*span);
+   var v=(c>=0&&c<row.length)?row[c]:0;
+   var t;
+   if(scaleMode==="log"){t=Math.log1p(v*gfac)/Math.log1p(normMax);}
+   else{t=(v*gfac)/normMax;}
+   var col=cmap(t);
+   var o=off+x*4;
+   data[o]=col[0]|0;data[o+1]=col[1]|0;data[o+2]=col[2]|0;data[o+3]=255;
+  }
+ }
+ wfx.putImageData(img,0,0);
+ drawAxis();
+ drawCursor();
+ updHud(bottom,lastIdx);
+ drawSlice();
+}
+
+function drawCursor(){
+ if(cursorY<0||slcCursorCh<0)return;
+ var span=chHi-chLo; if(span<1)span=1;
+ if(slcCursorCh<chLo||slcCursorCh>=chHi)return;
+ var x=Math.round((slcCursorCh-chLo)/span*WFW);
+ var y=cursorY|0;
+ curx.strokeStyle="rgba(255,255,255,.55)"; curx.lineWidth=1;
+ curx.beginPath();
+ curx.moveTo(x+0.5,0); curx.lineTo(x+0.5,WFH);
+ curx.moveTo(0,y+0.5); curx.lineTo(WFW,y+0.5);
+ curx.stroke();
+ var lastIdx=baseIndex+rows.length-1;
+ var bottom=(viewBottom<0)?lastIdx:viewBottom;
+ var li=(bottom-y)-baseIndex;
+ var v=(li>=0&&li<rows.length&&slcCursorCh<rows[li].length)?rows[li][slcCursorCh]:0;
+ var ke=calib?(" / "+ch2kev(slcCursorCh).toFixed(1)+" "+t("opt.kev")):"";
+ var lbl="ch "+slcCursorCh+ke+" : "+v;
+ curx.font="11px ui-monospace,monospace";
+ var tw=curx.measureText(lbl).width+10;
+ var tx=x+8; if(tx+tw>WFW-4)tx=x-tw-8;
+ var ty=y-2; if(ty<14)ty=y+14;
+ curx.fillStyle="rgba(0,0,0,.7)"; curx.fillRect(tx,ty-12,tw,14);
+ curx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';
+ curx.textAlign="left"; curx.fillText(lbl,tx+5,ty);
+}
+
+function drawSlice(){
+ slcx.fillStyle="#000"; slcx.fillRect(0,0,SLW,SLH);
+ var liReq=(slcHoverLi>=0&&slcHoverLi<rows.length)?slcHoverLi:-1;
+ var liLive=rows.length-1;
+ var info=document.getElementById("slcInfo");
+ var span=chHi-chLo; if(span<1)span=1;
+ if(slcCursorInDark){
+  info.textContent=t("slc.no_data");
+  slcx.fillStyle="#3a4438"; slcx.font="11px ui-monospace,monospace"; slcx.textAlign="center";
+  slcx.fillText(t("slc.wait"),SLW/2,SLH/2);
+  return;
+ }
+ function _rowEmpty(r){ if(!r||r.length===0)return true; for(var jj=chLo;jj<chHi&&jj<r.length;jj++){ if(r[jj]>0)return false; } return true; }
+ var li=(liReq>=0)?liReq:liLive;
+ var row=(li>=0&&li<rows.length)?rows[li]:null;
+ var emptyRow=_rowEmpty(row);
+ var liFallback=-1, emptyFallback=false;
+ if(emptyRow){
+  if(liReq>=0 && liLive>=0 && liLive!==liReq && !_rowEmpty(rows[liLive])){
+   liFallback=liLive;
+  } else {
+   for(var kk=rows.length-1;kk>=0;kk--){ if(!_rowEmpty(rows[kk])){ liFallback=kk; break; } }
+  }
+  if(liFallback>=0){ row=rows[liFallback]; emptyRow=false; emptyFallback=(liReq>=0); }
+ }
+ if(emptyRow||!row){
+  info.textContent=t("slc.no_data");
+  slcx.fillStyle="#3a4438"; slcx.font="11px ui-monospace,monospace"; slcx.textAlign="center";
+  slcx.fillText(t("slc.wait"),SLW/2,SLH/2);
+  return;
+ }
+ var mx=1;
+ for(var i=chLo;i<chHi&&i<row.length;i++){ if(row[i]>mx)mx=row[i]; }
+ slcx.strokeStyle="#161b14"; slcx.lineWidth=1;
+ for(var g=1;g<=4;g++){
+  var gy=Math.round(SLH*g/5)+0.5;
+  slcx.beginPath(); slcx.moveTo(0,gy); slcx.lineTo(SLW,gy); slcx.stroke();
+ }
+ var accent=getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';
+ var denom=(slcMode==="log")?Math.log1p(mx):mx;
+ if(denom<1)denom=1;
+ var bw=Math.max(1, Math.floor(SLW/span));
+ var nbars=Math.max(1, Math.floor(SLW/bw));
+ var step=span/nbars;
+ var gap=(bw>=3)?1:0;
+ var bwDraw=bw-gap;
+ var hoverK=-1;
+ if(slcCursorCh>=chLo&&slcCursorCh<chHi){
+  hoverK=Math.floor((slcCursorCh-chLo)/step);
+  if(hoverK<0)hoverK=0; if(hoverK>=nbars)hoverK=nbars-1;
+ }
+ slcx.fillStyle=accent;
+ for(var k=0;k<nbars;k++){
+  var cLo=Math.floor(chLo+k*step);
+  var cHi=Math.ceil(chLo+(k+1)*step);
+  if(cHi<=cLo)cHi=cLo+1;
+  var v=0;
+  for(var c=cLo;c<cHi&&c<row.length;c++){ if(c<0)continue; if(row[c]>v)v=row[c]; }
+  var ti=(slcMode==="log")?(Math.log1p(v)/denom):(v/denom);
+  if(!isFinite(ti))ti=0; if(ti<0)ti=0; if(ti>1)ti=1;
+  var h=ti*(SLH-12);
+  if(h<1&&v>0)h=1;
+  var by=SLH-4-h;
+  if(k===hoverK){
+   slcx.fillStyle="rgba(255,255,255,.18)";
+   slcx.fillRect(k*bw, 0, bwDraw>0?bwDraw:bw, SLH);
+   slcx.fillStyle=accent;
+  }
+  slcx.fillRect(k*bw, by, bwDraw>0?bwDraw:bw, h);
+ }
+ if(slcCursorCh>=chLo&&slcCursorCh<chHi){
+  var cc=slcCursorCh|0;
+  if(cc>=0&&cc<row.length){
+   var vv=row[cc]||0;
+   var lbl="ch "+cc+(calib?(" · "+ch2kev(cc).toFixed(1)+" "+t("opt.kev")):"")+" : "+vv;
+   slcx.font="11px ui-monospace,monospace";
+   var tw=slcx.measureText(lbl).width+10;
+   var hx=(hoverK>=0)?hoverK*bw+Math.floor((bwDraw>0?bwDraw:bw)/2):Math.round((slcCursorCh-chLo)/span*SLW);
+   var tx=hx+8; if(tx+tw>SLW-4)tx=hx-tw-8;
+   slcx.fillStyle="rgba(0,0,0,.7)"; slcx.fillRect(tx,4,tw,16);
+   slcx.fillStyle=accent; slcx.textAlign="left"; slcx.fillText(lbl,tx+5,16);
+  }
+ }
+ var tail;
+ if(emptyFallback){
+  tail=tfmt("slc.empty_fallback", baseIndex+liReq, baseIndex+liFallback);
+ } else if(liReq>=0){
+  tail=t("slc.cursor_prefix")+(baseIndex+liReq);
+ } else {
+  tail=t("slc.live_prefix")+(baseIndex+li);
+ }
+ info.textContent=tail+"  ·  max="+mx;
+ slcx.fillStyle="#6b756a"; slcx.font="10px ui-monospace,monospace"; slcx.textAlign="left";
+ slcx.fillText("max "+mx,6,12);
+ slcx.textAlign="right"; slcx.fillText(slcMode==="log"?"log Y":"lin Y",SLW-6,12);
+}
+
+function drawAxis(){
+ curx.clearRect(0,0,WFW,WFH);
+ curx.fillStyle="rgba(0,0,0,.55)";curx.fillRect(0,WFH-16,WFW,16);
+ curx.strokeStyle="#283024";curx.fillStyle="#aeb6a8";curx.font="10px ui-monospace,monospace";curx.textAlign="center";
+ var span=chHi-chLo;
+ var N=8;
+ for(var i=0;i<=N;i++){
+  var x=i/N*WFW;
+  var ch=chLo+span*i/N;
+  var lbl=axisMode==="kev"&&calib?ch2kev(ch).toFixed(0)+"k":Math.round(ch);
+  curx.beginPath();curx.moveTo(x,WFH-16);curx.lineTo(x,WFH-12);curx.stroke();
+  var tx=x; if(i===0)tx+=12; if(i===N)tx-=12;
+  curx.fillText(lbl,tx,WFH-4);
+ }
+}
+
+function updHud(bottom,lastIdx){
+ var behind=lastIdx-bottom;
+ var total=rows.length;
+ var tail=(viewBottom<0)?t("hud.live"):("−"+behind);
+ document.getElementById("hud").textContent=
+  t("hud.rows")+" "+total+"   "+t("hud.bottom")+(bottom<0?0:bottom)+" ["+tail+"]\n"+
+  t("hud.norm")+" "+Math.round(normMax)+"   "+t("hud.x")+" "+chLo+"…"+chHi;
+}
+
+wf.parentNode.addEventListener("mousemove",function(e){
+ var rc=wf.getBoundingClientRect();
+ var sx=WFW/rc.width, sy=WFH/rc.height;
+ var x=(e.clientX-rc.left)*sx, y=(e.clientY-rc.top)*sy;
+ if(x<0||x>=WFW||y<0||y>=WFH){
+  if(slcHoverLi>=0||slcCursorCh>=0||cursorY>=0||slcCursorInDark){slcHoverLi=-1;slcCursorCh=-1;cursorY=-1;slcCursorInDark=false;draw();}
+  return;
+ }
+ var span=chHi-chLo; var c=chLo+Math.floor(x/WFW*span);
+ var lastIdx=baseIndex+rows.length-1;
+ var bottom=(viewBottom<0)?lastIdx:viewBottom;
+ var li=Math.floor(bottom-Math.floor(y))-baseIndex;
+ var inWf=(li>=0&&li<rows.length);
+ slcHoverLi=inWf?li:-1;
+ slcCursorInDark=!inWf;
+ slcCursorCh=c;
+ cursorY=y;
+ draw();
+});
+wf.parentNode.addEventListener("mouseleave",function(){slcHoverLi=-1;slcCursorCh=-1;cursorY=-1;slcCursorInDark=false;draw();});
+
+function pushRow(u16){
+ rows.push(u16);
+ if(rows.length>MAXROWS){rows.shift();baseIndex++;}
+}
+
+// ============== элементы управления ==============
+function clampCh(){
+ chLo=parseInt(document.getElementById("chLo").value)||0;
+ chHi=parseInt(document.getElementById("chHi").value)||CH;
+ if(chLo<0)chLo=0; if(chHi>CH)chHi=CH; if(chLo>=chHi)chLo=Math.max(0,chHi-1);
+ draw();
+}
+document.getElementById("axis").onchange=function(){axisMode=this.value;draw();};
+document.getElementById("scale").onchange=function(){scaleMode=this.value;draw();};
+document.getElementById("gain").oninput=function(){gain=parseInt(this.value)||40;draw();};
+document.getElementById("chLo").onchange=clampCh;
+document.getElementById("chHi").onchange=clampCh;
+document.getElementById("bFit").onclick=function(){
+ chLo=0; chHi=CH;
+ document.getElementById("chLo").value=0; document.getElementById("chHi").value=CH;
+ viewBottom=-1; draw();
+};
+(function(){var seg=document.getElementById("slcSeg");seg.querySelectorAll("button").forEach(function(b){
+ b.onclick=function(){seg.querySelectorAll("button").forEach(function(x){x.classList.remove("on");});b.classList.add("on");slcMode=b.getAttribute("data-v");draw();};
+});})();
+
+// ============== загрузка реальных данных ==============
+async function loadDemo(){
+ var about=document.getElementById("about");
+ try{
+  var meta=await(await fetch("meta.json")).json();
+  CH=meta.channels|0;
+  intervalSec=meta.interval_sec|0;
+  calib=(meta.calibration&&meta.calibration.length)?meta.calibration:null;
+  chLo=0; chHi=CH;
+  document.getElementById("chLo").max=CH-1;
+  document.getElementById("chHi").max=CH;
+  document.getElementById("chHi").value=CH;
+
+  var resp=await fetch("data.bin.gz");
+  if(!resp.ok)throw new Error("data.bin.gz HTTP "+resp.status);
+  var ab=await resp.arrayBuffer();
+  var bytes=new Uint8Array(ab);
+  if(bytes.length>=2 && bytes[0]===0x1f && bytes[1]===0x8b){
+   if(!("DecompressionStream" in window))throw new Error("браузер не поддерживает DecompressionStream — обновите Chrome/Firefox/Safari");
+   var ds=new DecompressionStream("gzip");
+   var stream=new Blob([ab]).stream().pipeThrough(ds);
+   ab=await new Response(stream).arrayBuffer();
+  }
+  var u16all=new Uint16Array(ab);
+  var rowsN=meta.rows|0;
+  for(var i=0;i<rowsN;i++){
+   pushRow(u16all.subarray(i*CH,(i+1)*CH));
+  }
+  viewBottom=-1;
+
+  var savedPal="Inferno";
+  try{var lp=localStorage.getItem("aswf-pal");if(lp&&PALETTES[lp])savedPal=lp;}catch(e){}
+  applyPalette(savedPal);
+  draw();
+
+  document.getElementById("meta-chip").textContent=meta.channels+" каналов · "+rowsN+" строк";
+  var emax=calib?ch2kev(CH-1).toFixed(0):"—";
+  about.innerHTML=
+   "<b>Параметры этой записи:</b> "+meta.channels+" каналов · "+rowsN+" строк водопада "+
+   "(исходно "+(rowsN*meta.row_group)+" строк по "+meta.interval_sec+" с, суммированы группами по "+
+   meta.row_group+" → "+meta.integration_sec+" с интеграции на строку) · диапазон энергий ~0…"+emax+" кэВ.<br>"+
+   "Калибровка прибора (восходящий полином E(ch)=c₀+c₁·ch+c₂·ch²+c₃·ch³+c₄·ch⁴): <code>["+
+   calib.map(function(x){return (+x).toPrecision(6);}).join(", ")+"]</code><br>"+
+   "<span style='color:#6b756a'>Данные и калибровка — реальные, из файла <code>.aswf</code>. "+
+   "Сборка демо: <code>scripts/build_demo.py</code>. Никаких IP/MAC/учётных данных в данных нет.</span>";
+ }catch(e){
+  about.innerHTML="<span style='color:#ff8a82'>Не удалось загрузить данные: "+(e&&e.message?e.message:e)+"</span>";
+ }
+}
+loadDemo();
+</script>
+</body>
+</html>
