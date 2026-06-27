@@ -22,6 +22,27 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### BUG-AS-05: Web UI breaks on repeated Ctrl+F5 (HTTP 431)
+
+**Status:** fixed (see `sdkconfig.defaults`, key `CONFIG_HTTPD_MAX_REQ_HDR_LEN`)
+
+On repeated hard reload (Ctrl+F5) of the waterfall page the UI could break — some
+assets failed to load, charts/stream stopped updating.
+
+**Cause:** on a hard reload the browser bypasses the cache and sends a request with
+the full set of HTTP headers (`Authorization: Basic` from web-auth + `Sec-Fetch-*` +
+`Accept*` + `Cache-Control: no-cache`). The combined header block exceeded the
+ESP-IDF httpd limit `CONFIG_HTTPD_MAX_REQ_HDR_LEN` (default **512 B**), so the server
+replied `431 Request Header Fields Too Large` instead of the page. The firmware stayed
+fully stable throughout (heap/CPU unchanged, no reboots) — only the browser UI broke.
+
+**Fix:** httpd limits raised in `sdkconfig.defaults`:
+`CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024` and `CONFIG_HTTPD_MAX_URI_LEN=1024` (512 → 1024 B).
+
+**Verification:** Ctrl+F5 stress test with UART capture — after the fix the `431`
+responses are gone (was: on every F5 → now: 0), no firmware reboots, WS reconnects
+succeed. Method and raw before/after logs: [`tests/stress/`](tests/stress/README.md).
+
 ### BUG-AS-04: Calibration missing from XML after reboot
 
 **Status:** fixed in [`3ab490f`](https://github.com/VibeEngineering-LLC/atomspectra-esp32/commit/3ab490f)

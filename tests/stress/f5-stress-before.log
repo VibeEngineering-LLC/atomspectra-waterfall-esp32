@@ -1,0 +1,149 @@
+21:05:49.523 I (504456) main: USB:OK WiFi:OK TCP:-- counts:620742 cpu:52%
+21:05:59.493 I (514456) main: USB:OK WiFi:OK TCP:-- counts:627071 cpu:52%
+21:05:59.602 I (514476) usb_cdc: Text(403): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:06:09.569 I (524456) main: USB:OK WiFi:OK TCP:-- counts:633416 cpu:52%
+21:06:19.536 I (534456) main: USB:OK WiFi:OK TCP:-- counts:639873 cpu:52%
+21:06:29.503 I (544456) main: USB:OK WiFi:OK TCP:-- counts:646242 cpu:52%
+21:06:29.612 I (544476) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:06:40.094 I (554986) main: USB:OK WiFi:OK TCP:-- counts:653225 cpu:52%
+21:06:50.102 I (564986) main: USB:OK WiFi:OK TCP:-- counts:659541 cpu:52%
+21:07:00.070 I (574986) main: USB:OK WiFi:OK TCP:-- counts:665916 cpu:52%
+21:07:00.070 I (575006) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:07:10.034 I (584986) main: USB:OK WiFi:OK TCP:-- counts:672301 cpu:52%
+21:07:20.095 I (594986) main: USB:OK WiFi:OK TCP:-- counts:678708 cpu:52%
+21:07:30.100 I (604986) main: USB:OK WiFi:OK TCP:-- counts:684985 cpu:52%
+21:07:30.100 I (605016) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:07:40.390 I (615346) main: USB:OK WiFi:OK TCP:-- counts:691349 cpu:52%
+21:07:50.416 I (625346) main: USB:OK WiFi:OK TCP:-- counts:697590 cpu:52%
+21:08:00.383 I (635346) main: USB:OK WiFi:OK TCP:-- counts:704041 cpu:52%
+21:08:00.494 I (635356) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:08:10.437 I (645346) main: USB:OK WiFi:OK TCP:-- counts:710374 cpu:52%
+21:08:20.390 I (655346) main: USB:OK WiFi:OK TCP:-- counts:716558 cpu:52%
+21:08:30.460 I (665346) main: USB:OK WiFi:OK TCP:-- counts:722936 cpu:52%
+21:08:30.460 I (665376) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:08:40.791 I (675706) main: USB:OK WiFi:OK TCP:-- counts:729295 cpu:52%
+21:08:50.764 I (685706) main: USB:OK WiFi:OK TCP:-- counts:735773 cpu:52%
+21:09:00.829 I (695706) main: USB:OK WiFi:OK TCP:-- counts:742195 cpu:52%
+21:09:00.829 I (695726) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:09:10.747 I (705706) main: USB:OK WiFi:OK TCP:-- counts:748523 cpu:52%
+21:09:20.733 I (715706) main: USB:OK WiFi:OK TCP:-- counts:754915 cpu:52%
+21:09:30.759 I (725706) main: USB:OK WiFi:OK TCP:-- counts:761372 cpu:52%
+21:09:30.869 I (725736) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:09:41.172 I (736066) main: USB:OK WiFi:OK TCP:-- counts:768545 cpu:52%
+21:09:51.168 I (746066) main: USB:OK WiFi:OK TCP:-- counts:774779 cpu:52%
+21:10:01.180 I (756066) main: USB:OK WiFi:OK TCP:-- counts:781166 cpu:52%
+21:10:01.181 I (756076) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:10:11.159 I (766066) main: USB:OK WiFi:OK TCP:-- counts:787461 cpu:52%
+21:10:18.707 W (773576) httpd_parse: parse_block: request URI/header too long
+21:10:18.707 W (773576) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:19.363 W (774246) httpd_parse: parse_block: request URI/header too long
+21:10:19.363 W (774246) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:19.909 W (774776) httpd_parse: parse_block: request URI/header too long
+21:10:19.909 W (774776) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:20.348 W (775276) httpd_parse: parse_block: request URI/header too long
+21:10:20.348 W (775276) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:21.112 W (775986) httpd_parse: parse_block: request URI/header too long
+21:10:21.112 W (775986) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:21.112 I (776096) main: USB:OK WiFi:OK TCP:-- counts:793946 cpu:52%
+21:10:21.764 W (776706) httpd_parse: parse_block: request URI/header too long
+21:10:21.764 W (776706) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:22.528 W (777426) httpd_parse: parse_block: request URI/header too long
+21:10:22.528 W (777426) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:23.186 W (778146) httpd_parse: parse_block: request URI/header too long
+21:10:23.186 W (778146) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:23.848 W (778746) httpd_parse: parse_block: request URI/header too long
+21:10:23.848 W (778746) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:30.053 W (784986) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:10:30.053 W (784986) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:10:31.142 I (786096) main: USB:OK WiFi:OK TCP:-- counts:800231 cpu:52%
+21:10:31.252 I (786136) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:10:34.984 I (789906) wf_web: ws client 57 connected
+21:10:41.569 I (796506) main: USB:OK WiFi:OK TCP:-- counts:806589 cpu:52%
+21:10:51.585 I (806506) main: USB:OK WiFi:OK TCP:-- counts:812871 cpu:52%
+21:10:54.418 W (809286) httpd_parse: parse_block: request URI/header too long
+21:10:54.418 W (809286) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:55.736 W (810626) httpd_parse: parse_block: request URI/header too long
+21:10:55.736 W (810626) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:56.174 W (811126) httpd_parse: parse_block: request URI/header too long
+21:10:56.174 W (811126) httpd_txrx: httpd_resp_send_err: 431 Request Header Fields Too Large - Header fields are too long
+21:10:58.906 W (813886) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:10:59.014 W (813886) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:11:01.528 I (816506) main: USB:OK WiFi:OK TCP:-- counts:819229 cpu:52%
+21:11:01.637 I (816526) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:11:01.761 I (816716) wf_web: ws client 54 connected
+21:11:11.610 I (826506) main: USB:OK WiFi:OK TCP:-- counts:825630 cpu:52%
+21:11:21.592 I (836506) main: USB:OK WiFi:OK TCP:-- counts:831896 cpu:52%
+21:11:31.561 I (846506) main: USB:OK WiFi:OK TCP:-- counts:838273 cpu:52%
+21:11:31.670 I (846536) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:11:41.959 I (856926) main: USB:OK WiFi:OK TCP:-- counts:844994 cpu:52%
+21:11:52.042 I (866926) main: USB:OK WiFi:OK TCP:-- counts:851402 cpu:52%
+21:12:02.007 I (876926) main: USB:OK WiFi:OK TCP:-- counts:857641 cpu:52%
+21:12:02.007 I (876956) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:12:11.983 I (886926) main: USB:OK WiFi:OK TCP:-- counts:863956 cpu:52%
+21:12:21.973 I (896926) main: USB:OK WiFi:OK TCP:-- counts:870368 cpu:52%
+21:12:32.049 I (906926) main: USB:OK WiFi:OK TCP:-- counts:876572 cpu:52%
+21:12:32.049 I (906966) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:12:42.626 I (917526) main: USB:OK WiFi:OK TCP:-- counts:883052 cpu:52%
+21:12:52.606 I (927526) main: USB:OK WiFi:OK TCP:-- counts:889547 cpu:52%
+21:13:02.594 I (937526) main: USB:OK WiFi:OK TCP:-- counts:895904 cpu:52%
+21:13:02.594 I (937546) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:13:12.583 I (947526) main: USB:OK WiFi:OK TCP:-- counts:902498 cpu:52%
+21:13:22.543 I (957526) main: USB:OK WiFi:OK TCP:-- counts:908824 cpu:52%
+21:13:32.542 I (967526) main: USB:OK WiFi:OK TCP:-- counts:915146 cpu:52%
+21:13:32.652 I (967556) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:13:42.938 I (977896) main: USB:OK WiFi:OK TCP:-- counts:922196 cpu:52%
+21:13:52.925 I (987896) main: USB:OK WiFi:OK TCP:-- counts:928610 cpu:52%
+21:14:02.998 I (997896) main: USB:OK WiFi:OK TCP:-- counts:935181 cpu:52%
+21:14:02.998 I (997906) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:14:12.977 I (1007896) main: USB:OK WiFi:OK TCP:-- counts:941518 cpu:52%
+21:14:22.969 I (1017896) main: USB:OK WiFi:OK TCP:-- counts:947831 cpu:52%
+21:14:32.936 I (1027896) main: USB:OK WiFi:OK TCP:-- counts:953906 cpu:52%
+21:14:33.045 I (1027936) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:14:43.402 I (1038286) main: USB:OK WiFi:OK TCP:-- counts:960695 cpu:52%
+21:14:53.303 I (1048286) main: USB:OK WiFi:OK TCP:-- counts:967031 cpu:52%
+21:15:03.378 I (1058286) main: USB:OK WiFi:OK TCP:-- counts:973322 cpu:52%
+21:15:03.378 I (1058296) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:15:13.371 I (1068286) main: USB:OK WiFi:OK TCP:-- counts:979801 cpu:52%
+21:15:23.346 I (1078286) main: USB:OK WiFi:OK TCP:-- counts:986026 cpu:52%
+21:15:33.339 I (1088286) main: USB:OK WiFi:OK TCP:-- counts:992388 cpu:52%
+21:15:33.446 I (1088326) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:15:43.673 I (1098656) main: USB:OK WiFi:OK TCP:-- counts:998726 cpu:52%
+21:15:53.714 I (1108656) main: USB:OK WiFi:OK TCP:-- counts:1004962 cpu:52%
+21:16:03.677 I (1118656) main: USB:OK WiFi:OK TCP:-- counts:1011288 cpu:52%
+21:16:03.786 I (1118676) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:16:13.684 I (1128656) main: USB:OK WiFi:OK TCP:-- counts:1017600 cpu:52%
+21:16:23.699 I (1138656) main: USB:OK WiFi:OK TCP:-- counts:1023772 cpu:52%
+21:16:33.727 I (1148656) main: USB:OK WiFi:OK TCP:-- counts:1030176 cpu:52%
+21:16:33.727 I (1148696) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:16:44.053 I (1159026) main: USB:OK WiFi:OK TCP:-- counts:1036927 cpu:52%
+21:16:54.121 I (1169036) main: USB:OK WiFi:OK TCP:-- counts:1043641 cpu:52%
+21:17:04.101 I (1179036) main: USB:OK WiFi:OK TCP:-- counts:1050075 cpu:52%
+21:17:04.102 I (1179046) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:17:14.086 I (1189036) main: USB:OK WiFi:OK TCP:-- counts:1056366 cpu:52%
+21:17:24.151 I (1199036) main: USB:OK WiFi:OK TCP:-- counts:1062761 cpu:52%
+21:17:34.090 I (1209036) main: USB:OK WiFi:OK TCP:-- counts:1069151 cpu:52%
+21:17:34.090 I (1209046) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:17:44.512 I (1219406) main: USB:OK WiFi:OK TCP:-- counts:1075643 cpu:52%
+21:17:54.507 I (1229406) main: USB:OK WiFi:OK TCP:-- counts:1081981 cpu:52%
+21:18:04.475 I (1239406) main: USB:OK WiFi:OK TCP:-- counts:1088363 cpu:52%
+21:18:04.475 I (1239426) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:18:14.496 I (1249406) main: USB:OK WiFi:OK TCP:-- counts:1094730 cpu:52%
+21:18:24.468 I (1259406) main: USB:OK WiFi:OK TCP:-- counts:1100851 cpu:52%
+21:18:34.508 I (1269406) main: USB:OK WiFi:OK TCP:-- counts:1107674 cpu:52%
+21:18:34.508 I (1269456) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:18:44.924 I (1279856) main: USB:OK WiFi:OK TCP:-- counts:1114067 cpu:52%
+21:18:54.878 I (1289856) main: USB:OK WiFi:OK TCP:-- counts:1120668 cpu:52%
+21:19:04.945 I (1299856) main: USB:OK WiFi:OK TCP:-- counts:1127119 cpu:52%
+21:19:04.945 I (1299866) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:19:14.900 I (1309856) main: USB:OK WiFi:OK TCP:-- counts:1133399 cpu:52%
+21:19:24.868 I (1319856) main: USB:OK WiFi:OK TCP:-- counts:1139820 cpu:52%
+21:19:34.892 I (1329856) main: USB:OK WiFi:OK TCP:-- counts:1146168 cpu:52%
+21:19:34.893 I (1329866) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:19:45.287 I (1340226) main: USB:OK WiFi:OK TCP:-- counts:1152746 cpu:52%
+21:19:55.274 I (1350226) main: USB:OK WiFi:OK TCP:-- counts:1159139 cpu:52%
+21:20:05.239 I (1360226) main: USB:OK WiFi:OK TCP:-- counts:1165590 cpu:52%
+21:20:05.345 I (1360236) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:20:15.275 I (1370226) main: USB:OK WiFi:OK TCP:-- counts:1171949 cpu:52%
+21:20:25.241 I (1380226) main: USB:OK WiFi:OK TCP:-- counts:1178431 cpu:52%
+21:20:35.328 I (1390226) main: USB:OK WiFi:OK TCP:-- counts:1184867 cpu:52%
+21:20:35.328 I (1390236) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...

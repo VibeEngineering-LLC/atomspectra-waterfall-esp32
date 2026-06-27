@@ -116,21 +116,6 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 </section>
 
-<section class="panel pad">
-<details class="help">
-<summary data-i18n="help.summary">&#10067; Куда идёт стрим на ПК и где выбор места хранения</summary>
-<div data-i18n-html="help.body">
-<p><b>Стрим на ПК</b> — отдельно включать не нужно. Плата раздаёт каждую новую строку по WebSocket всем, кто открыл эту страницу. Источник — буфер в RAM в момент рождения строки, а <b>не</b> Flash; работает и при выключенном «хранить во Flash», и когда Flash переполнен.</p>
-<p><b>Запись в файл на ПК — две опции:</b><br>
-&bull; кнопка <code>&#128190; Стрим на диск</code>: в Chrome/Edge/Opera — нативный «Сохранить как» + потоковая запись каждой строки в .aswf (шапка обновляется каждые ~30 с); в Firefox/Safari — буфер ОЗУ + blob-download на «Стоп».<br>
-&bull; скрипты в <code>scripts/</code>: <code>waterfall_n42.py</code> (экспорт .n42 одним выстрелом) и <code>waterfall_client.py</code> (непрерывный захват).</p>
-<p><b>Выбор места хранения на плате</b> — галочка «&#128205; хранить во Flash»:<br>
-&bull; <b>выкл</b> (по умолчанию) — водопад живёт только в кольце ОЗУ (последние ~256 строк; старое затирается новым). Экспорт .n42 берёт данные из кольца.<br>
-&bull; <b>вкл</b> — каждая строка дополнительно пишется во Flash (переживает перезагрузку).</p>
-</div>
-</details>
-</section>
-
 <section class="panel">
 <div class="row">
 <label class="lbl"><span data-i18n="lbl.axis_x">Ось X</span> <select class="sel" id="axis"><option value="ch" data-i18n="opt.channels">каналы</option><option value="kev" data-i18n="opt.kev">кэВ</option></select></label>
@@ -162,6 +147,21 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div style="padding:0 16px 14px">
 <canvas id="slc" width="900" height="180" style="display:block;width:100%;height:auto;border:1px solid var(--bd);border-radius:6px;background:#000"></canvas>
 </div>
+</section>
+
+<section class="panel pad">
+<details class="help">
+<summary data-i18n="help.summary">&#10067; Куда идёт стрим на ПК и где выбор места хранения</summary>
+<div data-i18n-html="help.body">
+<p><b>Стрим на ПК</b> — отдельно включать не нужно. Плата раздаёт каждую новую строку по WebSocket всем, кто открыл эту страницу. Источник — буфер в RAM в момент рождения строки, а <b>не</b> Flash; работает и при выключенном «хранить во Flash», и когда Flash переполнен.</p>
+<p><b>Запись в файл на ПК — две опции:</b><br>
+&bull; кнопка <code>&#128190; Стрим на диск</code>: в Chrome/Edge/Opera — нативный «Сохранить как» + потоковая запись каждой строки в .aswf (шапка обновляется каждые ~30 с); в Firefox/Safari — буфер ОЗУ + blob-download на «Стоп».<br>
+&bull; скрипты в <code>scripts/</code>: <code>waterfall_n42.py</code> (экспорт .n42 одним выстрелом) и <code>waterfall_client.py</code> (непрерывный захват).</p>
+<p><b>Выбор места хранения на плате</b> — галочка «&#128205; хранить во Flash»:<br>
+&bull; <b>выкл</b> (по умолчанию) — водопад живёт только в кольце ОЗУ (последние ~256 строк; старое затирается новым). Экспорт .n42 берёт данные из кольца.<br>
+&bull; <b>вкл</b> — каждая строка дополнительно пишется во Flash (переживает перезагрузку).</p>
+</div>
+</details>
 </section>
 
 <pre id="log"></pre>

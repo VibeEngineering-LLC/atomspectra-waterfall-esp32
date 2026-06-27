@@ -24,6 +24,12 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # WebSocket support для /ws/waterfall (live-стрим строк спектрограммы)
 CONFIG_HTTPD_WS_SUPPORT=y
 
+# #UI-33: Ctrl+F5 (hard reload) шлёт заголовки >512 Б (Authorization Basic +
+# Sec-Fetch-* + Accept* + no-cache) → httpd отвечал 431 и UI обваливался.
+# Поднимаем лимит блока заголовков и URI до 1024 Б.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=1024
+
 # LittleFS for spectrum storage
 CONFIG_LITTLEFS_MAX_PARTITIONS=3
 

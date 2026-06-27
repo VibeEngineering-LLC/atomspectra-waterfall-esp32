@@ -1,0 +1,54 @@
+21:21:35.271 I (21246) main: USB:OK WiFi:OK TCP:-- counts:1222787 cpu:52%
+21:21:45.183 I (31246) main: USB:OK WiFi:OK TCP:-- counts:1229362 cpu:52%
+21:21:45.292 I (31266) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:21:55.167 I (41246) main: USB:OK WiFi:OK TCP:-- counts:1235619 cpu:52%
+21:22:05.260 I (51246) main: USB:OK WiFi:OK TCP:-- counts:1241965 cpu:52%
+21:22:15.229 I (61246) main: USB:OK WiFi:OK TCP:-- counts:1248338 cpu:52%
+21:22:15.229 I (61246) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:22:25.615 I (71616) main: USB:OK WiFi:OK TCP:-- counts:1254843 cpu:52%
+21:22:35.563 I (81616) main: USB:OK WiFi:OK TCP:-- counts:1261286 cpu:52%
+21:22:45.601 I (91616) main: USB:OK WiFi:OK TCP:-- counts:1267736 cpu:52%
+21:22:45.601 I (91636) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:22:55.562 I (101616) main: USB:OK WiFi:OK TCP:-- counts:1274119 cpu:52%
+21:23:05.585 I (111616) main: USB:OK WiFi:OK TCP:-- counts:1280527 cpu:52%
+21:23:15.595 I (121616) main: USB:OK WiFi:OK TCP:-- counts:1286800 cpu:52%
+21:23:15.595 I (121646) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:23:25.969 I (131966) main: USB:OK WiFi:OK TCP:-- counts:1293591 cpu:52%
+21:23:35.957 I (141966) main: USB:OK WiFi:OK TCP:-- counts:1299934 cpu:52%
+21:23:45.911 I (151966) main: USB:OK WiFi:OK TCP:-- counts:1306380 cpu:52%
+21:23:45.911 I (151976) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:23:55.920 I (161966) main: USB:OK WiFi:OK TCP:-- counts:1312786 cpu:52%
+21:24:05.918 I (171966) main: USB:OK WiFi:OK TCP:-- counts:1319174 cpu:52%
+21:24:15.900 I (181966) main: USB:OK WiFi:OK TCP:-- counts:1325386 cpu:52%
+21:24:16.009 I (181996) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:24:26.298 I (192326) main: USB:OK WiFi:OK TCP:-- counts:1331799 cpu:52%
+21:24:36.249 I (202326) main: USB:OK WiFi:OK TCP:-- counts:1338107 cpu:52%
+21:24:40.294 W (206276) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:40.294 W (206276) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:40.854 I (206886) wf_web: ws client 52 connected
+21:24:41.400 W (207406) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:41.400 W (207406) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:41.835 I (207916) wf_web: ws client 52 connected
+21:24:42.382 W (208376) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:42.382 W (208376) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:42.818 I (208836) wf_web: ws client 52 connected
+21:24:43.253 W (209286) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:43.253 W (209286) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:43.686 I (209766) wf_web: ws client 52 connected
+21:24:44.453 W (210516) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:44.453 W (210516) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:45.013 I (211046) wf_web: ws client 52 connected
+21:24:45.135 W (211196) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:45.135 W (211196) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:45.678 I (211666) wf_web: ws client 52 connected
+21:24:46.226 W (212246) httpd_uri: httpd_uri: URI '/favicon.ico' not found
+21:24:46.226 W (212246) httpd_txrx: httpd_resp_send_err: 404 Not Found - Nothing matches the given URI
+21:24:46.336 I (212346) main: USB:OK WiFi:OK TCP:-- counts:1344443 cpu:52%
+21:24:46.336 I (212376) usb_cdc: Text(404): VERSION 13 RISE 11 FALL 27 NOISE 20 F 14000000.00 MAX 48613 HYST 1 MODE 0 STEP 3...
+21:24:46.662 I (212726) wf_web: ws client 52 connected
+21:24:56.282 I (222356) main: USB:OK WiFi:OK TCP:-- counts:1350810 cpu:52%
+21:25:06.369 I (232356) main: USB:OK WiFi:OK TCP:-- counts:1357114 cpu:52%
+21:25:08.772 I (234836) wf: recording started, interval=5s persist=1
+21:25:08.772 I (234836) wf_web: waterfall start -> -sta sent to analyzer (rc=0)
+21:25:08.772 I (234846) usb_cdc: Text(5): -ok
+21:25:08.772 
