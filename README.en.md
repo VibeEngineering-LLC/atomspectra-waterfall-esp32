@@ -201,7 +201,9 @@ spectra at equal intervals (5…60 s; each row = the accumulation delta over one
 channels, `uint16`). The waterfall can be viewed in the browser
 (`http://<board-IP>/waterfall`), **streamed to a PC** over WebSocket in real time, and
 **exported with the "⬇ Export .n42" button** right from the Web UI to the
-industry-standard **ANSI N42.42** (InterSpec / PeakEasy / Cambio).
+industry-standard **ANSI N42.42** (InterSpec / PeakEasy / Cambio). The spectrogram
+colour is any of **14 palettes** (Inferno by default; the choice is saved in the
+browser).
 
 > 🔴 **Live demo on real data:**
 > **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**

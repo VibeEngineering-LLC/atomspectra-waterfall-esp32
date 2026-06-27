@@ -201,7 +201,9 @@ idf.py -p COM14 flash
 `uint16`). Водопад можно смотреть в браузере (`http://<IP-платы>/waterfall`),
 **стримить на ПК** по WebSocket в реальном времени и **выгрузить кнопкой
 «⬇ Экспорт .n42»** прямо из Web UI в индустриальный **ANSI N42.42**
-(InterSpec / PeakEasy / Cambio). Интервал между строками — 5…60 с.
+(InterSpec / PeakEasy / Cambio). Интервал между строками — 5…60 с. Цвет
+спектрограммы — любая из **14 палитр** (Inferno по умолчанию; выбор сохраняется
+в браузере).
 
 > 🔴 **Живое демо на реальных данных:**
 > **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**

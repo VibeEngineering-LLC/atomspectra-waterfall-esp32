@@ -30,6 +30,34 @@ Buttons **Start / Stop / Clear / Export .n42**, an **Interval** field, a
 palette, contrast slider and channel zoom. The counter shows total rows · in ring
 (`149/256`) · in Flash.
 
+### Spectrogram palettes
+
+Row colour is set by the chosen **palette** (the selector button above the
+spectrogram). **14** palettes are available; the choice is saved in the browser
+(`localStorage`, key `aswf-pal`) and applied to the whole waterfall on the fly (the
+palette is expanded into a 256-level LUT). Default is **Inferno**.
+
+| Palette | Type | Note |
+|---|---|---|
+| **Inferno** | perceptual, warm | default, high contrast on dark background |
+| **Magma** | perceptual, warm | softer than Inferno, purple-pink |
+| **Plasma** | perceptual, warm | purple→yellow, no black |
+| **Viridis** | perceptual, cool | colour-blind friendly |
+| **Cividis** | perceptual, cool | optimised for colour-blindness |
+| **Parula** | perceptual | MATLAB default palette |
+| **Cubehelix** | monotone luminance | survives black-and-white printing |
+| **Turbo** | rainbow | Jet replacement with even luminance |
+| **Jet** | rainbow | MATLAB classic |
+| **Spectral** | diverging | blue↔yellow↔red |
+| **Hot** | thermal | black→red→yellow→white |
+| **Ocean** | cool | black→blue→white, calm |
+| **Cool** | vivid | cyan→magenta |
+| **Grayscale** | mono | for printing |
+
+> For quantitative reading prefer the perceptually-uniform palettes
+> (Inferno/Magma/Plasma/Viridis/Cividis/Parula/Cubehelix/Turbo) — they don't create
+> false intensity "bands". Jet and the other rainbow maps are for eye-candy only.
+
 ## How it works
 
 | Parameter | Value | Where in code |
