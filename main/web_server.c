@@ -459,8 +459,9 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
     if (sp->calib_valid) {
         int pos = snprintf(buf, 4096, "calibcoeff:");
 	char coeff_name = 'a';
-        for (int i = 0; i <= sp->calib_order; i++)
-            pos += snprintf(buf + pos, 4096 - pos, " %.15g", sp->calibration[i]);
+
+        //for (int i = 0; i <= sp->calib_order; i++)
+        //    pos += snprintf(buf + pos, 4096 - pos, " %.15g", sp->calibration[i]);
 
         for (int i = 3; i >=0; i--) {
 	    if (i <= sp->calib_order) {
@@ -490,7 +491,7 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
         "realtime: %" PRIu32 "\n"
         "detectorname: Atom Spectra\n"
         "SerialNumber: %s\n"
-        "starttime: %04d-%02d-%02dT%02d:%02d:%02d\n",
+        "starttime: %04d-%02d-%02dT%02d:%02d:%02d\nch,data\n",
         live_time, sp->total_time_sec,
         serial_csv,
         ts.tm_year+1900, ts.tm_mon+1, ts.tm_mday,
