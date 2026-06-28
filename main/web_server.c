@@ -457,9 +457,14 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
                  serial_csv, sizeof(serial_csv));
 
     if (sp->calib_valid) {
+        // #PR-2: InterSpec/SpecUtils-формат именованных коэффициентов. SpecUtils
+        // (SpecFile_csv.cpp) парсит как poly={d,c,b,a}: d=offset(calib[0]), c=calib[1],
+        // b=calib[2], a=старший calib[3]. Буква жёстко привязана к индексу ('a'+(3-i)) —
+        // не сползает при calib_order<3. Точность %.15g сохранена (energy-калибровка).
         int pos = snprintf(buf, 4096, "calibcoeff:");
-        for (int i = 0; i <= sp->calib_order; i++)
-            pos += snprintf(buf + pos, 4096 - pos, " %.15g", sp->calibration[i]);
+        for (int i = 3; i >= 0; i--)
+            if (i <= sp->calib_order)
+                pos += snprintf(buf + pos, 4096 - pos, " %c=%.15g", 'a' + (3 - i), sp->calibration[i]);
         pos += snprintf(buf + pos, 4096 - pos, "\n");
         httpd_resp_send_chunk(req, buf, pos);
     }
@@ -481,7 +486,7 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
         "realtime: %" PRIu32 "\n"
         "detectorname: Atom Spectra\n"
         "SerialNumber: %s\n"
-        "starttime: %04d-%02d-%02dT%02d:%02d:%02d\n",
+        "starttime: %04d-%02d-%02dT%02d:%02d:%02d\nch,data\n",   // #PR-2: заголовок столбцов для InterSpec
         live_time, sp->total_time_sec,
         serial_csv,
         ts.tm_year+1900, ts.tm_mon+1, ts.tm_mday,
