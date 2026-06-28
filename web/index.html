@@ -102,9 +102,9 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 </div>
 </div>
 <div class="row">
-<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.scale">Шкала Y</span><div class="seg" id="seg-scale"><button id="btn-lin" class="on" onclick="setLog(false)">Lin</button><button id="btn-log" onclick="setLog(true)">Log</button></div></div>
-<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.value">Величина</span><div class="seg" id="seg-y"><button id="btn-cnt" class="on" onclick="setCps(false)">Counts</button><button id="btn-cps" onclick="setCps(true)">CPS</button></div></div>
-<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.x">Ось X</span><div class="seg" id="seg-x"><button id="btn-ch" class="on" onclick="setKev(false)">Ch</button><button id="btn-kev" onclick="setKev(true)">keV</button></div></div>
+<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.scale">Шкала Y</span><div class="seg" id="seg-scale"><button id="btn-lin" onclick="setLog(false)">Lin</button><button id="btn-log" class="on" onclick="setLog(true)">Log</button></div></div>
+<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.value">Величина</span><div class="seg" id="seg-y"><button id="btn-cnt" onclick="setCps(false)">Counts</button><button id="btn-cps" class="on" onclick="setCps(true)">CPS</button></div></div>
+<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.x">Ось X</span><div class="seg" id="seg-x"><button id="btn-ch" onclick="setKev(false)">Ch</button><button id="btn-kev" class="on" onclick="setKev(true)">keV</button></div></div>
 <!-- #UI-3: оверлей энергетических линий нуклидов -->
 <div style="display:flex;align-items:center;gap:8px;position:relative">
  <button class="btn sm" id="btn-nuc" onclick="toggleNucPanel()" data-i18n-html="nuc.toggle" title="" disabled style="opacity:.5">&#9883; Линии</button>
@@ -294,7 +294,7 @@ var Ccur=document.getElementById("spcur"),Xcur=Ccur.getContext("2d");
 var cursorCh=-1;
 var logEl=document.getElementById("log");
 var overlayBins=null,overlayIdx=-1;
-var isLog=false,isCps=false,isKev=false;
+var isLog=true,isCps=true,isKev=true;  /* #UI-34: дефолты тумблеров — Log / CPS / keV */
 var calib=null,lastD=null,calibEditing=false;
 var PL=65,PT=15,PW=1120,PH=340,PR=PL+PW,PB=PT+PH;
 var csrfToken="";
