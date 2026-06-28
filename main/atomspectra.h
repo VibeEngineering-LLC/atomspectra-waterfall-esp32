@@ -32,6 +32,7 @@ typedef struct {
     uint16_t cpu_load;
     uint32_t cps;
     uint32_t lost_impulses;
+    uint32_t pulse_width;   // #DT-4: суммарная ширина импульсов (отсчёты АЦП), STAT offset 14 — диагностика; в расчёт МВ не идёт (метод BecqMoni)
     float    temperature[3];
     double   calibration[CALIB_COEFFS];
     int      calib_order;

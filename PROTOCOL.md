@@ -200,8 +200,15 @@ if (packet.cmd == 0x01) {                 // гистограмма
 | time | `long` (u32) | Секунд набора текущего спектра |
 | cpu_load | `short` (u16) | Загрузка CPU, % |
 | cps | `long` (u32) | Импульсов в секунду |
-| dead_time | `long` (u32) | Всего пропущено импульсов из-за мёртвого времени |
-| pulse_width | `long` (u32) | Суммарная ширина импульсов |
+| dead_time (invalid_pulses) | `long` (u32) | Счётчик отбракованных импульсов (offset 10). Эталон BecqMoni использует как `InvalidPulses`: `TotalPulseCount = ValidPulseCount + InvalidPulses` |
+| pulse_width | `long` (u32) | Суммарная ширина импульсов (отсчёты АЦП, offset 14). В расчёте мёртвого времени не участвует (диагностика) |
+
+> **Мёртвое/живое время (#DT-4).** Метод эталонного ПО **BecqMoni** (Am6er, `Utils/LiveTime.cs` +
+> `AtomSpectraVCPDeviceForm.cs`): мёртвое время на импульс `τ = (RISE+FALL+1) / F`, где RISE/FALL/F
+> берутся из ответа `-inf` (т.е. сообщаются прибором). Мёртвое время за набор:
+> `dead = (ValidPulseCount + InvalidPulses) · τ`, `live_time = time − dead`, где `ValidPulseCount` —
+> сумма гистограммы, `InvalidPulses` — поле offset 10. Поле `pulse_width` (offset 14) эталоном
+> **не используется** и в расчёт не идёт.
 
 ---
 

@@ -6,7 +6,8 @@ WiFi-шлюз для гамма-спектрометра **KB Radar «Atom Spect
 
 Подключается к спектрометру по **USB** (не BLE!), принимает 8192-канальный спектр
 в реальном времени и показывает его в браузере — с осями, логарифмической шкалой,
-энергетической калибровкой в keV и экспортом в форматы **BecqMoni** и **InterSpec**.
+энергетической калибровкой в keV и экспортом в форматы **BecqMoni**, **InterSpec**,
+**N42.42** и **ЛСРМ**.
 
 ![ESP32-S3](https://img.shields.io/badge/ESP32--S3-N16R8-blue) ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.4-green) ![USB](https://img.shields.io/badge/USB-OTG%20Host-orange) ![Channels](https://img.shields.io/badge/Spectrum-8192%20ch-purple)
 
@@ -19,6 +20,7 @@ WiFi-шлюз для гамма-спектрометра **KB Radar «Atom Spect
 - спектр доступен **в любом браузере** по WiFi — без проводов к ПК;
 - **BecqMoni XML** скачивается одним кликом — открывается в [BecqMoni](https://github.com/Am6er/BecqMoni) напрямую;
 - **InterSpec CSV** — для [InterSpec](https://sandialabs.github.io/InterSpec/) от Sandia;
+- **N42.42** (`RadInstrumentData`) и **ЛСРМ `.spe`** — индустриальный N42 и формат SpectraVibe для гамма-анализа;
 - **TCP-мост** (порт 8234) — BecqMoni / AtomSpectra на ПК могут подключиться через WiFi вместо COM-порта;
 - спектры **сохраняются на flash** (до ~400 штук) — можно копить и экспортировать позже.
 
@@ -71,6 +73,8 @@ Web UI открывается в браузере по адресу `http://<IP-
 - **Загрузить** сохранённый — накладывается поверх живого для сравнения (overlay)
 - **Экспорт XML** — скачать BecqMoni-совместимый файл
 - **Экспорт CSV** — скачать InterSpec-совместимый файл
+- **Экспорт N42** — скачать ANSI N42.42 (`RadInstrumentData`)
+- **Экспорт SPE** — скачать ЛСРМ `.spe` (формат SpectraVibe)
 - Удаление сохранённых спектров
 
 ## Экспорт
@@ -87,9 +91,24 @@ Web UI открывается в браузере по адресу `http://<IP-
 
 Заголовки с калибровочными коэффициентами, серийным номером, временем:
 - `calibcoeff` — полином калибровки
-- `livetime` / `realtime` — время с учётом загрузки CPU
+- `livetime` / `realtime` — реальное и живое время (с учётом мёртвого времени детектора)
 - 8192 строк `channel, count` (1-based)
 - Совместим с InterSpec: File → Open → выбрать `.csv`
+
+### ANSI N42.42 (`/api/export.n42`)
+
+Спектр в индустриальном XML-формате `RadInstrumentData` (стандарт ANSI/IEEE N42.42):
+- `EnergyCalibration` с коэффициентами полинома из прибора
+- `RealTimeDuration` / `LiveTimeDuration` (ISO-8601, `PT…S`)
+- `ChannelData` — 8192 значения
+- Импортируется в InterSpec, Cambio и другое ПО с поддержкой N42
+
+### ЛСРМ `.spe` (`/api/export.spe`)
+
+Спектр в текстовом формате ЛСРМ (используется в [SpectraVibe](https://github.com/Am6er)):
+- секции `$SPEC_ID:` / `$MEAS_TIM:` (live realtime) / `$DATA:` / `$ENER_FIT:`
+- 8192 канала по одному значению на строку
+- удобно для гамма-анализа в инструментах, читающих формат ЛСРМ
 
 ## Что нужно
 
@@ -145,6 +164,8 @@ idf.py -p COM14 flash
 | `/api/spectrum` | GET | Сырой бинарный спектр (32768 байт) |
 | `/api/export.xml` | GET | BecqMoni XML (живой спектр) |
 | `/api/export.csv` | GET | InterSpec CSV (живой спектр) |
+| `/api/export.n42` | GET | ANSI N42.42 (живой спектр) |
+| `/api/export.spe` | GET | ЛСРМ `.spe` (живой спектр) |
 | `/api/command` | POST | Послать текстовую команду прибору |
 | `/api/reset` | POST | Сбросить счётчики спектра |
 | `/api/save` | POST | Сохранить спектр на flash |

@@ -22,6 +22,36 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### BUG-AS-07: Build fails on a clean clone — undefined `spectrogram_is_recording`
+
+**Status:** fixed in [`1b21d61`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/1b21d61)
+
+The GitHub Actions `build` job (ESP-IDF v5.4) failed on a clean clone of the repository
+within ~2 minutes. Local builds passed — the bug only showed up on a fresh clone (CI, a
+different machine).
+
+**Cause:** an **unfinished fragment** of the USB reconnect logic leaked into the public
+repository. In `main/usb_host_cdc.c` (after the CDC link to the device was restored)
+there was a call to `spectrogram_is_recording()` — to resume spectrum acquisition with
+the `-sta` command if waterfall recording was active. That function is defined in the
+waterfall recording subsystem files, which were **not committed** at the time of that
+commit (the feature was unfinished local work). On the author's machine everything
+compiled because the definition was in the working copy; on a clean clone the compiler
+saw only the call with no declaration → `implicit declaration of function
+'spectrogram_is_recording'`. ESP-IDF builds with `-Werror=all`, so an implicit
+declaration is a hard build error, not a warning.
+
+**Fix:** the unfinished recording-resume hook was removed from `usb_host_cdc.c` in the
+public repository — the build again depends only on committed symbols. The
+auto-resume-on-reconnect feature itself stays in an unpublished local branch and will
+land as a single coherent commit together with the whole stream-to-disk recording
+subsystem (not as a lone dangling call).
+
+**Verification:** the CI `build` job on commit `1b21d61` is green (the prior `b0b8856`
+and `958ac19` failed with the same `implicit declaration`). Prevention going forward:
+before pushing, verify the branch "as a clean clone" — build from committed files only,
+not from a working copy that has uncommitted changes.
+
 ### BUG-AS-06: Waterfall stream-to-disk recording stops on its own
 
 **Status:** fixed (see `web/waterfall.html`, write serializer `dskEnqueue`)

@@ -81,6 +81,10 @@ void spectrum_process_stat_packet(const uint8_t *data, size_t len)
     s_spectrum.cps = data[6] | (data[7]<<8) | (data[8]<<16) | (data[9]<<24);
     if (len >= 14)
         s_spectrum.lost_impulses = data[10] | (data[11]<<8) | (data[12]<<16) | (data[13]<<24);
+    // #DT-4: суммарная ширина импульсов (отсчёты АЦП), STAT offset 14. Парсим для диагностики;
+    // мёртвое время считается методом BecqMoni (RISE+FALL+1)/F, это поле в расчёт не идёт.
+    if (len >= 18)
+        s_spectrum.pulse_width = data[14] | (data[15]<<8) | (data[16]<<16) | (data[17]<<24);
     SPEC_UNLOCK();
 }
 void spectrum_process_info_response(const char *text)
@@ -190,6 +194,7 @@ void spectrum_reset(void)
     s_spectrum.total_time_sec = 0;
     s_spectrum.cps = 0;
     s_spectrum.lost_impulses = 0;
+    s_spectrum.pulse_width = 0;
     s_spectrum.valid = false;
     SPEC_UNLOCK();
 }

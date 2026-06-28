@@ -151,19 +151,21 @@ static esp_err_t handle_spectrum(httpd_req_t *req)
     return ESP_OK;
 }
 
-// #DT-1: live_time через геометрию импульса, а не загрузку CPU.
-// Мёртвое время = total_counts * (RISE+FALL+Srise+Sfall)/F [с], где RISE/FALL/Srise/Sfall —
-// отсчёты АЦП из выдачи -inf, F — частота оцифровки (Гц). Ширина импульса = (RISE+FALL+Srise+Sfall)
-// отсчётов; делёж на F даёт секунды на импульс; умножение на число импульсов — суммарное dead-time.
-// live_time = total_time - dead_time. Если -inf ещё не прочитан (di->valid==false) или F<=0 —
-// фоллбэк на live=real (dead=0), чтобы экспорт не врал в обратную сторону.
+// #DT-4: мёртвое время берём ИЗ ДЕТЕКТОРА. STAT-кадр (cmd 0x04) несёт pulse_width
+// [offset 14, u32] = суммарная ширина импульсов (отсчёты АЦП) — реально измеренное прибором
+// занятое время (учитывает наложения). dead = pulse_width/F; live = total - dead.
+// Фоллбэк (#DT-1, модель total_counts*(RISE+FALL+Srise+Sfall)/F) — для прошивок без pulse_width
+// (kADR<18 байт → pulse_width==0) или пока -inf не прочитан / F<=0.
 static float compute_live_time(const spectrum_data_t *sp)
 {
     const device_info_t *di = spectrum_get_device_info();
     float total = (float)sp->total_time_sec;
     if (!di->valid || di->freq <= 0.0f) return total;
-    float width = (float)((uint32_t)di->rise + di->fall + di->srise + di->sfall);
-    float dead = (float)sp->total_counts * width / di->freq;
+    // #DT-4: метод BecqMoni (эталон Am6er, Utils/LiveTime.cs + AtomSpectraVCPDeviceForm.cs).
+    // Мёртвое время на импульс τ = (RISE+FALL+1)/F (RISE/FALL/F из -inf, т.е. из прибора).
+    // Мёртвое время за набор = (valid+invalid импульсы)·τ; TotalPulseCount = sum + InvalidPulses.
+    float tau = ((float)di->rise + (float)di->fall + 1.0f) / di->freq;
+    float dead = (float)(sp->total_counts + sp->lost_impulses) * tau;
     if (dead < 0.0f) dead = 0.0f;
     if (dead > total) dead = total;
     return total - dead;

@@ -53,9 +53,10 @@
       var bins = new Array(CH), total = 0;
       for (var c2 = 0; c2 < CH; c2++) { bins[c2] = acc[c2]; total += acc[c2]; }
       var time = NROWS * IVS;
-      // live_time как в прошивке: dead = total * ширина_импульса / F.
-      // Ширина для AtomSpectra = RISE(11)+FALL(27)+Srise(0)+Sfall(0) = 38 отсчётов АЦП, F = 14 МГц.
-      var dead = total * 38 / 14000000;
+      // #DT-4: мёртвое время — метод BecqMoni (эталон Am6er), та же формула, что в прошивке:
+      // dead = (valid+invalid импульсы) · (RISE+FALL+1)/F. Здесь lost=0, поэтому только total.
+      // Для AtomSpectra RISE=11, FALL=27 → (RISE+FALL+1) = 39 отсчётов АЦП, F = 14 МГц.
+      var dead = total * 39 / 14000000;
       if (dead > time) dead = time;
       SPEC = {
         calib: CAL, serial: "", bins: bins, total: total, time: time, live: time - dead,

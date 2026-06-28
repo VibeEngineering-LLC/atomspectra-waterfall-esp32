@@ -6,7 +6,8 @@ A WiFi gateway for the **KB Radar "Atom Spectra"** gamma spectrometer, built on 
 
 It connects to the spectrometer over **USB** (not BLE!), receives the 8192-channel spectrum
 in real time, and displays it in your browser — with axes, a logarithmic scale,
-energy calibration in keV, and export to the **BecqMoni** and **InterSpec** formats.
+energy calibration in keV, and export to the **BecqMoni**, **InterSpec**, **N42.42**
+and **LSRM** formats.
 
 ![ESP32-S3](https://img.shields.io/badge/ESP32--S3-N16R8-blue) ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.4-green) ![USB](https://img.shields.io/badge/USB-OTG%20Host-orange) ![Channels](https://img.shields.io/badge/Spectrum-8192%20ch-purple)
 
@@ -19,6 +20,7 @@ plugged directly into a computer over USB. This gateway turns an ESP32-S3 into a
 - the spectrum is available **in any browser** over WiFi — no cables to a PC;
 - **BecqMoni XML** downloads in one click — opens directly in [BecqMoni](https://github.com/Am6er/BecqMoni);
 - **InterSpec CSV** — for [InterSpec](https://sandialabs.github.io/InterSpec/) by Sandia;
+- **N42.42** (`RadInstrumentData`) and **LSRM `.spe`** — industrial N42 and the SpectraVibe format for gamma analysis;
 - a **TCP bridge** (port 8234) — BecqMoni / AtomSpectra on a PC can connect over WiFi instead of a COM port;
 - spectra are **stored on flash** (up to ~400) — accumulate them and export later.
 
@@ -71,6 +73,8 @@ The Web UI opens in a browser at `http://<board-IP>/`:
 - **Load** a saved one — overlaid on the live spectrum for comparison (overlay)
 - **Export XML** — download a BecqMoni-compatible file
 - **Export CSV** — download an InterSpec-compatible file
+- **Export N42** — download ANSI N42.42 (`RadInstrumentData`)
+- **Export SPE** — download LSRM `.spe` (SpectraVibe format)
 - Delete saved spectra
 
 ## Export
@@ -87,9 +91,24 @@ The full 8192-channel spectrum in the `ResultDataFile` format (FormatVersion 120
 
 Headers with calibration coefficients, serial number, and timing:
 - `calibcoeff` — calibration polynomial
-- `livetime` / `realtime` — time adjusted for CPU load
+- `livetime` / `realtime` — real and live time (live time accounts for detector dead time)
 - 8192 lines of `channel, count` (1-based)
 - Compatible with InterSpec: File → Open → select the `.csv`
+
+### ANSI N42.42 (`/api/export.n42`)
+
+Spectrum in the industrial `RadInstrumentData` XML format (ANSI/IEEE N42.42 standard):
+- `EnergyCalibration` with the polynomial coefficients from the device
+- `RealTimeDuration` / `LiveTimeDuration` (ISO-8601, `PT…S`)
+- `ChannelData` — 8192 values
+- Imports into InterSpec, Cambio and other N42-aware software
+
+### LSRM `.spe` (`/api/export.spe`)
+
+Spectrum in the LSRM text format (used by [SpectraVibe](https://github.com/Am6er)):
+- `$SPEC_ID:` / `$MEAS_TIM:` (live realtime) / `$DATA:` / `$ENER_FIT:` sections
+- 8192 channels, one value per line
+- Convenient for gamma analysis in tools that read the LSRM format
 
 ## What you need
 
@@ -145,6 +164,8 @@ idf.py -p COM14 flash
 | `/api/spectrum` | GET | Raw binary spectrum (32768 bytes) |
 | `/api/export.xml` | GET | BecqMoni XML (live spectrum) |
 | `/api/export.csv` | GET | InterSpec CSV (live spectrum) |
+| `/api/export.n42` | GET | ANSI N42.42 (live spectrum) |
+| `/api/export.spe` | GET | LSRM `.spe` (live spectrum) |
 | `/api/command` | POST | Send a text command to the instrument |
 | `/api/reset` | POST | Reset the spectrum counters |
 | `/api/save` | POST | Save the spectrum to flash |

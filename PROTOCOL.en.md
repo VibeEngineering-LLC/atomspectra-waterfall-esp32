@@ -200,8 +200,16 @@ Sequentially (little-endian):
 | time | `long` (u32) | Seconds of the current spectrum acquisition |
 | cpu_load | `short` (u16) | CPU load, % |
 | cps | `long` (u32) | Counts per second |
-| dead_time | `long` (u32) | Total pulses skipped due to dead time |
-| pulse_width | `long` (u32) | Total pulse width |
+| dead_time (invalid_pulses) | `long` (u32) | Count of rejected pulses (offset 10). The BecqMoni reference reads it as `InvalidPulses`: `TotalPulseCount = ValidPulseCount + InvalidPulses` |
+| pulse_width | `long` (u32) | Total pulse width (ADC samples, offset 14). NOT used in the dead-time calculation (diagnostics) |
+
+> **Dead/live time (#DT-4).** The method of the reference software **BecqMoni** (Am6er,
+> `Utils/LiveTime.cs` + `AtomSpectraVCPDeviceForm.cs`): per-pulse dead time `τ = (RISE+FALL+1) / F`,
+> where RISE/FALL/F come from the `-inf` reply (i.e. reported by the device). Dead time over the
+> acquisition: `dead = (ValidPulseCount + InvalidPulses) · τ`, `live_time = time − dead`, where
+> `ValidPulseCount` is the histogram sum and `InvalidPulses` is the offset-10 field. The
+> `pulse_width` field (offset 14) is **not used** by the reference and plays no part in the
+> calculation.
 
 ---
 
