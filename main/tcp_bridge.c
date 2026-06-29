@@ -214,10 +214,15 @@ void tcp_bridge_init(void)
     }
 
     usb_host_cdc_set_raw_rx_cb(usb_to_tcp_cb);
-    xTaskCreate(tcp_server_task, "tcp_srv", 4096, NULL, 5, NULL);
-    xTaskCreate(tcp_tx_task,     "tcp_tx",  4096, NULL, 6, NULL);
-    xTaskCreate(tcp_rx_task,     "tcp_rx",  4096, NULL, 5, NULL);
-    ESP_LOGI(TAG, "TCP bridge initialized, port %d", TCP_BRIDGE_PORT);
+    // #TCP-2: пинимся на core 1. USB-host и CDC-ACM driver задачи запинены на
+    // core 0 (usb_host_cdc.c: usb_lib/usb_conn prio 2, cdc driver prio 3, xCoreID=0).
+    // tcp_tx имеет prio 6 — без привязки планировщик мог поставить его на core 0 и
+    // вытеснить CDC-приёмник (6 > 3) → старвейшн приёма USB → потеря пакетов. Держим
+    // всю прикладную сеть на core 1, USB-приём на core 0 не пересекается.
+    xTaskCreatePinnedToCore(tcp_server_task, "tcp_srv", 4096, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(tcp_tx_task,     "tcp_tx",  4096, NULL, 6, NULL, 1);
+    xTaskCreatePinnedToCore(tcp_rx_task,     "tcp_rx",  4096, NULL, 5, NULL, 1);
+    ESP_LOGI(TAG, "TCP bridge initialized, port %d (net tasks pinned core 1)", TCP_BRIDGE_PORT);
 }
 
 bool tcp_bridge_client_connected(void)
