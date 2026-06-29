@@ -47,6 +47,12 @@ auto-resume-on-reconnect feature itself stays in an unpublished local branch and
 land as a single coherent commit together with the whole stream-to-disk recording
 subsystem (not as a lone dangling call).
 
+**Update:** the promised single commit has landed — the autonomous segment-recording
+subsystem (`spectrogram.[ch]`, the `/segments` and `/segment` endpoints, the reconnect
+hook in `usb_host_cdc.c`, auto-resume via `spectrogram_restore()`) is published as a
+whole in the `rec-11-autonomous-recording` branch. A clean-clone build is self-contained
+again — `spectrogram_is_recording()` is now defined within the same commit as its call.
+
 **Verification:** the CI `build` job on commit `1b21d61` is green (the prior `b0b8856`
 and `958ac19` failed with the same `implicit declaration`). Prevention going forward:
 before pushing, verify the branch "as a clean clone" — build from committed files only,
@@ -176,6 +182,20 @@ The TCP bridge (port 8234) supports **one** simultaneous connection. A second co
 ### Maximum channels — 8192
 
 The Atom Spectra instrument transmits 8192 channels. This is a hardware limitation of the spectrometer, not the firmware.
+
+### Autonomous recording: keep-last ring on flash-full has not had a long soak
+
+**Context:** branch `rec-11-autonomous-recording`.
+
+Autonomous segment recording (`seg_NNNNN.aswf`) and segment rotation when
+`WF_SEG_MAX_ROWS` (64 rows) is reached are **confirmed** on the device: `seg_00000.aswf`
+finalizes when full and `seg_00001.aswf` is created automatically.
+
+The **keep-last ring** mode (on flash-full the oldest not-yet-offloaded segment is
+overwritten; counters `seg_count` / `seg_dropped`) is implemented but **has not been
+verified by a long soak** up to actual partition exhaustion (≈763 rows, ≈5 days at a
+10-min interval). Until that test passes, the "flash full → overwrite oldest" boundary is
+considered untested; that is why the feature lives in a branch, not in `main`.
 
 ---
 

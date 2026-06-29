@@ -209,6 +209,15 @@ static void try_open_device(void)
     shproto_packet_complete(&s_tx_packet);
     esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
     ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s", (unsigned)s_tx_packet.len, esp_err_to_name(txerr));
+
+    // #REC-6: если на момент (ре)коннекта водопад пишется — возобновить набор
+    // спектра на приборе (-sta). Защищает от случайной остановки анализатора и
+    // от ситуации «ESP ребутнулся, восстановил запись, но прибор уже не набирает».
+    if (spectrogram_is_recording()) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        usb_host_send_text_command("-sta");
+        ESP_LOGW(TAG, "recording active — resent -sta to resume acquisition");
+    }
 }
 
 static void usb_connect_task(void *arg)

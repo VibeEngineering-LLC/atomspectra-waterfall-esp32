@@ -107,7 +107,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 
 <div class="row">
-<label class="lbl"><span data-i18n="lbl.interval_s">Интервал, с</span> <input class="inp" type="number" id="iv" min="5" max="60" value="5"></label>
+<label class="lbl"><span data-i18n="lbl.interval_s">Интервал, с</span> <input class="inp" type="number" id="iv" min="5" max="3600" value="5" title="5…3600 с (до 1 ч): большой интервал = автономная многосуточная запись на Flash"></label>
 <button class="btn sm" id="bIv" data-i18n="btn.apply">применить</button>
 <label class="lbl" data-i18n-title="lbl.persist_title" title="Выбор места хранения водопада"><input type="checkbox" id="persist"> <span data-i18n-html="lbl.persist_flash">&#128205; хранить во Flash <span style="color:#5b655a">(без галочки — только кольцо ОЗУ)</span></span></label>
 <span class="st warn" id="flashst"></span>
@@ -218,7 +218,8 @@ var DICT={
   "log.disk_fsa_fail":"диск: FSA fail (%1), переключаюсь в режим ОЗУ-буфера",
   "log.disk_start_ram":"диск: запись начата → %1 (буфер ОЗУ, скачается на «Стоп»)",
   "log.disk_flush_err":"диск: flush err ","log.disk_done":"диск: запись завершена (%1 стр., %2 МБ) → %3",
-  "log.disk_blob":"диск: blob скачан (%1 стр., %2 МБ) → %3","log.disk_close_err":"диск: close err ",
+  "log.disk_ckpt":"диск: контрольная точка #%1 — файл зафиксирован на диске (%2 стр., %3 МБ)",
+  "log.disk_ckpt_err":"диск: ошибка контрольной точки ","log.disk_blob":"диск: blob скачан (%1 стр., %2 МБ) → %3","log.disk_close_err":"диск: close err ",
   "log.cleared":"очищено","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)",
   "confirm.clear":"Очистить накопленную спектрограмму?",
   "unload.recording":"Идёт запись на диск. Закрыть страницу?",
@@ -285,6 +286,7 @@ function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
  LANG=l; try{localStorage.setItem("aswf-lang",l);}catch(e){}
  applyI18n();
+ try{if(typeof applyRecState==="function")applyRecState();}catch(e){}   // #REC-7: «● ЗАПИСЬ»/«● REC» сразу на новом языке
  try{if((dskWritable||dskMemChunks)&&typeof updDiskInd==="function")updDiskInd();}catch(e){}
  try{if(typeof draw==="function")draw();}catch(e){}
 }
@@ -370,9 +372,31 @@ var dskMemChunks=null;
 var dskQueue=Promise.resolve();   // сериализатор записи: ни одного конкурентного write() в поток
 var dskDataPos=0;                 // текущий байтовый офсет данных (явная позиция вместо неявного курсора)
 var dskStopping=false;            // реентранси-гард для stopDiskStream
+var dskWriteErrs=0;               // #REC-8: счётчик сбоев записи (для индикатора)
+var dskWakeLock=null;             // #REC-8: Wake Lock — не давать ПК/вкладке уснуть при долгом стриме
+var dskHandle=null;               // #REC-9: FileSystemFileHandle — нужен для переоткрытия файла на контрольной точке
+var dskCkptTimer=null;            // #REC-9: таймер контрольной точки (close→reopen)
+var dskCkptN=0;                   // #REC-9: счётчик выполненных контрольных точек
+var dskCkptMs=15*60*1000;         // #REC-9: период контрольной точки — 15 минут
+// #REC-8: устойчивая запись блока с ретраями. Раньше ЛЮБОЙ reject одного write()
+// в dskEnqueue.catch вызывал stopDiskStream() и убивал весь стрим — транзиентный
+// сбой (троттлинг вкладки / сон ПК за часы автономной записи) обрывал многосуточную
+// запись. Теперь сбой ретраится на ТОЙ ЖЕ позиции (без дыры в файле), а стрим не падает.
+function dskWrite(pos,data,tries){
+ if(tries===undefined)tries=5;
+ return dskWritable.write({type:"write",position:pos,data:data})
+  .catch(function(e){
+   if(tries>0&&dskWritable){
+    dskWriteErrs++;
+    return new Promise(function(r){setTimeout(r,400);})
+     .then(function(){if(!dskWritable)return;return dskWrite(pos,data,tries-1);});
+   }
+   throw e;
+  });
+}
 function dskEnqueue(fn){
  dskQueue=dskQueue.then(function(){if(!dskWritable)return;return fn();})
-  .catch(function(e){lg(t("log.disk_write_err")+e);stopDiskStream();});
+  .catch(function(e){dskWriteErrs++;lg(t("log.disk_write_err")+e);});   // #REC-8: НЕ останавливаем стрим — только лог
  return dskQueue;
 }
 var wf=document.getElementById("wf"), wfx=wf.getContext("2d");
@@ -745,7 +769,7 @@ function connectWS(){
  var proto=location.protocol==="https:"?"wss:":"ws:";
  ws=new WebSocket(proto+"//"+location.host+"/ws/waterfall");
  ws.binaryType="arraybuffer";
- ws.onopen=function(){lg(t("log.ws_open"));document.getElementById("state").className="st";};
+ ws.onopen=function(){lg(t("log.ws_open"));};   // #REC-7: WS-onopen не трогает #state (это индикатор записи)
  ws.onmessage=function(ev){
   if(typeof ev.data==="string"){
    try{var h=JSON.parse(ev.data);if(h.channels){CH=h.channels;chHiClamp();}if(h.interval_sec)intervalSec=h.interval_sec;
@@ -758,7 +782,7 @@ function connectWS(){
   if(dskWritable){
    var dbuf=new Uint8Array(ev.data), dpos=dskDataPos;
    dskDataPos+=dbuf.byteLength; dskRows++; dskBytes+=dbuf.byteLength;
-   dskEnqueue(function(){return dskWritable.write({type:"write",position:dpos,data:dbuf});});
+   dskEnqueue(function(){return dskWrite(dpos,dbuf);});   // #REC-8: запись с ретраями (на той же позиции)
    updDiskInd();
   }else if(dskMemChunks){
    dskMemChunks.push(new Uint8Array(ev.data));
@@ -767,7 +791,7 @@ function connectWS(){
   }
   draw();
  };
- ws.onclose=function(){lg(t("log.ws_closed"));document.getElementById("state").className="warn";
+ ws.onclose=function(){lg(t("log.ws_closed"));   // #REC-7: WS-onclose не трогает #state (это индикатор записи)
   clearTimeout(wsTimer);wsTimer=setTimeout(connectWS,2000);};
  ws.onerror=function(){try{ws.close();}catch(e){}};
 }
@@ -777,15 +801,23 @@ function chHiClamp(){
  document.getElementById("chHi").max=CH;document.getElementById("chLo").max=CH-1;
 }
 
+// #REC-7: #state — ТОЛЬКО индикатор записи. Строка #indic висит всегда; «● ЗАПИСЬ»
+// подсвечивается красным при записи, «○ стоп» — нейтрально-серый в покое. WS-события
+// (onopen/onclose) больше не трогают #state, иначе после F5 подключение WS затирало
+// красную подсветку записи (выглядело как «надпись пропала»).
+function applyRecState(){
+ var st=document.getElementById("state"); if(!st)return;
+ st.textContent=recording?t("state.rec"):t("state.stop");
+ st.className=recording?"rec":"st";
+}
+
 async function refreshStatus(){
  try{
   var s=await(await fetch("/api/waterfall/status")).json();
   recording=s.recording;intervalSec=s.interval_sec;startedAt=s.started_at;
   var ivEl=document.getElementById("iv"); if(document.activeElement!==ivEl)ivEl.value=s.interval_sec;
   document.getElementById("persist").checked=!!s.persist;
-  var st=document.getElementById("state");
-  st.textContent=s.recording?t("state.rec"):t("state.stop");   // #REC-4: счётчики строк/кольца/Flash дублируют строку #indic с барами ниже — убраны
-  st.className=s.recording?"rec":"warn";                        // #REC-4: «● ЗАПИСЬ» — красный
+  applyRecState();
   var fs=document.getElementById("flashst");
   fs.textContent=s.flash_full?t("flash.full"):"";
   fs.className=s.flash_full?"err":"st";
@@ -871,26 +903,27 @@ function writeDiskHeader(finalRows){
  prefix[0]=0x41;prefix[1]=0x53;prefix[2]=0x57;prefix[3]=0x46;
  new DataView(prefix.buffer).setUint32(4,dskHdrReserve,true);
  return dskEnqueue(function(){
-  return dskWritable.write({type:"write",position:0,data:prefix})
-   .then(function(){return dskWritable.write({type:"write",position:8,data:hdr});});
+  return dskWrite(0,prefix).then(function(){return dskWrite(8,hdr);});   // #REC-8: ретраи и для заголовка
  });
 }
 async function startDiskStream(){
  var host=(location.hostname||"esp").replace(/[^a-zA-Z0-9_.-]/g,"_");
  var name="waterfall_"+host+"_"+dskTs()+".aswf";
- dskRows=0;dskBytes=0;dskStart=Date.now();dskName=name;
+ dskRows=0;dskBytes=0;dskStart=Date.now();dskName=name;dskWriteErrs=0;
  if("showSaveFilePicker" in window){
   try{
    var handle=await window.showSaveFilePicker({
     suggestedName:name,
     types:[{description:"AtomSpectra waterfall",accept:{"application/octet-stream":[".aswf"]}}]
    });
+   dskHandle=handle;                  // #REC-9: сохранить handle для переоткрытия на контрольной точке
    dskWritable=await handle.createWritable();
    dskName=handle.name||name;
-   dskQueue=Promise.resolve(); dskStopping=false;
+   dskQueue=Promise.resolve(); dskStopping=false; dskCkptN=0;
    dskDataPos=8+dskHdrReserve;        // данные начинаются сразу за зарезервированным заголовком
    await writeDiskHeader(0);
    dskFlushTimer=setInterval(flushDiskHeader,30000);
+   dskCkptTimer=setInterval(checkpointDisk,dskCkptMs);   // #REC-9: контрольная точка каждые 15 мин
    lg(tfmt("log.disk_start_fsa",dskName));
   }catch(e){
    if(e&&e.name==="AbortError"){dskRows=0;dskBytes=0;return;}
@@ -905,18 +938,67 @@ async function startDiskStream(){
  document.getElementById("diskwrap").style.display="";
  document.getElementById("bDisk").textContent=t("btn.disk_stop");
  updDiskInd();
+ dskAcquireWake();   // #REC-8: не дать ПК/вкладке уснуть во время многочасового стрима
  window.addEventListener("beforeunload",beforeUnloadDisk);
 }
+// #REC-8: Wake Lock — держим систему/вкладку активной, пока идёт диск-стрим.
+// Браузер снимает lock при сворачивании вкладки → переполучаем по visibilitychange.
+// Это убирает основную причину транзиентного сбоя write() за часы автономной записи.
+async function dskAcquireWake(){
+ try{if(("wakeLock" in navigator)&&!dskWakeLock){
+  dskWakeLock=await navigator.wakeLock.request("screen");
+  dskWakeLock.addEventListener("release",function(){dskWakeLock=null;});
+ }}catch(e){}
+}
+function dskReleaseWake(){try{if(dskWakeLock){var w=dskWakeLock;dskWakeLock=null;w.release();}}catch(e){}}
+document.addEventListener("visibilitychange",function(){
+ if(document.visibilityState==="visible"&&(dskWritable||dskMemChunks))dskAcquireWake();
+});
 function flushDiskHeader(){
  if(!dskWritable)return;
  writeDiskHeader(dskRows);   // ставится в общую очередь, сериализуется со стримом строк
 }
+// #REC-9: контрольная точка диск-стрима. FileSystemWritableFileStream пишет в
+// браузерный swap-файл; перенос в целевой .aswf на диске происходит ТОЛЬКО при
+// close(). До этой правки close() вызывался единственный раз — на «Стоп», поэтому
+// вся многочасовая запись жила в незакоммиченном swap: краш браузера / вылет вкладки
+// / пропажа питания ПК = потеря всей записи целиком. Теперь каждые 15 минут:
+//   1) дописываем актуальный заголовок (rows = факт записанных строк),
+//   2) close() — атомарный коммит swap → целевой файл,
+//   3) createWritable({keepExistingData:true}) — переоткрываем ТОТ ЖЕ файл на
+//      дозапись, сохранив уже записанные байты; продолжаем по прежним явным позициям.
+// Вся операция идёт через общий сериализатор dskQueue, поэтому строки, пришедшие во
+// время контрольной точки, встают в очередь ПОСЛЕ неё и пишутся уже в переоткрытый
+// поток. На диске после каждой точки — целостный валидный .aswf (заголовок ⟷ данные
+// согласованы); потеря при сбое ограничена последним ≤15-мин незакрытым сегментом.
+function checkpointDisk(){
+ if(!dskWritable||!dskHandle||dskStopping)return;
+ dskEnqueue(function(){
+  if(!dskWritable||!dskHandle)return;
+  var hdr=padJson(dskHeaderObj(dskRows),dskHdrReserve);
+  var prefix=new Uint8Array(8);
+  prefix[0]=0x41;prefix[1]=0x53;prefix[2]=0x57;prefix[3]=0x46;
+  new DataView(prefix.buffer).setUint32(4,dskHdrReserve,true);
+  var w=dskWritable;
+  return dskWrite(0,prefix)
+   .then(function(){return dskWrite(8,hdr);})
+   .then(function(){return w.close();})                                  // коммит swap → файл на диске
+   .then(function(){return dskHandle.createWritable({keepExistingData:true});})  // переоткрыть на дозапись
+   .then(function(nw){
+     dskWritable=nw; dskCkptN++;
+     lg(tfmt("log.disk_ckpt",dskCkptN,dskRows,(dskBytes/1048576).toFixed(2)));
+   });
+ });
+}
 async function stopDiskStream(){
  if(dskStopping)return; dskStopping=true;
  if(dskFlushTimer){clearInterval(dskFlushTimer);dskFlushTimer=null;}
+ if(dskCkptTimer){clearInterval(dskCkptTimer);dskCkptTimer=null;}   // #REC-9
  window.removeEventListener("beforeunload",beforeUnloadDisk);
+ dskReleaseWake();   // #REC-8
  var w=dskWritable;dskWritable=null;
  var mem=dskMemChunks;dskMemChunks=null;
+ dskHandle=null;   // #REC-9: handle больше не нужен (финальный close() — на закрываемом w ниже)
  try{await dskQueue;}catch(e){}   // дождаться завершения всех записей строк, прежде чем писать финальный заголовок и close()
  try{
   if(w){
@@ -952,8 +1034,9 @@ function beforeUnloadDisk(e){
 function updDiskInd(){
  var sec=Math.floor((Date.now()-dskStart)/1000);
  var tag=(!dskWritable&&dskMemChunks)?t("disk.ram_tag"):"";   // ОЗУ-режим (Firefox/Safari) — файл скачается на «Стоп»
+ var errtag=dskWriteErrs?(" ⚠×"+dskWriteErrs):"";   // #REC-8: ⚠×N — были ретраи записи, но стрим жив
  document.getElementById("disktxt").textContent=
-  tfmt("disk.ind",dskName,dskRows,(dskBytes/1048576).toFixed(2),fmtHMS(sec))+tag;
+  tfmt("disk.ind",dskName,dskRows,(dskBytes/1048576).toFixed(2),fmtHMS(sec))+tag+errtag;
  // #REC-5: цвет надписи «💾 Диск:» по назначению записи — красный=файл на диске, янтарный=буфер ОЗУ.
  // Имя файла (b#disktxt) остаётся near-white по правилу «.ind b» — читаемо.
  document.getElementById("diskwrap").style.color=dskWritable?"#ff5247":"#f0c45a";
@@ -971,7 +1054,7 @@ document.getElementById("bClear").onclick=async function(){
 async function applyInterval(){
  var el=document.getElementById("iv");
  var v=parseInt(el.value)||5;
- if(v<5)v=5; if(v>60)v=60; el.value=v;
+ if(v<5)v=5; if(v>3600)v=3600; el.value=v;
  await post("/api/waterfall/config",{interval:v});refreshStatus();lg(tfmt("log.interval",v));}
 document.getElementById("bIv").onclick=applyInterval;
 document.getElementById("iv").onchange=applyInterval;

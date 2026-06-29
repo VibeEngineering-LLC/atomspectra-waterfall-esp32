@@ -8,15 +8,31 @@
 #include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <inttypes.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 static const char *TAG = "wf";
 
 #define STORAGE_PATH      "/sto" "rage"
-#define WF_DATA           STORAGE_PATH "/wf_data.bin"
-#define WF_META           STORAGE_PATH "/wf_meta.json"
+#define WF_SEG_DIR        STORAGE_PATH "/wf"          // каталог сегментов seg_NNNNN.aswf
+#define WF_DATA           STORAGE_PATH "/wf_data.bin" // legacy (#REC-6) — только очистка
+#define WF_META           STORAGE_PATH "/wf_meta.json"// legacy (#REC-6) — только очистка
+#define WF_STATE          STORAGE_PATH "/wf_state.bin"
 #define WF_FLASH_RESERVE  (1024 * 1024)
+#define WF_STATE_MAGIC    0x53465731u   /* 'WFS1' — persist-состояние записи (#REC-6) */
+
+// #REC-11-A1: патчируемая шапка .aswf. Поля saved_rows/saved_at идут ПЕРВЫМИ,
+// фиксированной шириной WF_F_W, чтобы их можно было перезаписать по фикс. offset
+// (WF_F_ROWS_OFF / WF_F_AT_OFF) двумя короткими fwrite, не переписывая все 4 КБ.
+// JSON допускает пробелы перед значением → число выравнивается справа ("%*u").
+#define WF_F_PRE        "{\"saved_rows\":"
+#define WF_F_MID        ",\"saved_at\":"
+#define WF_F_W          10
+#define WF_F_ROWS_OFF   (8 + (int)(sizeof(WF_F_PRE) - 1))                      /* = 22 */
+#define WF_F_AT_OFF     (WF_F_ROWS_OFF + WF_F_W + (int)(sizeof(WF_F_MID) - 1)) /* = 44 */
 
 static uint16_t        *s_ring;
 static uint32_t         s_capacity;
@@ -25,18 +41,56 @@ static uint32_t         s_count;
 static uint16_t        *s_row;
 static uint32_t        *s_prev;
 static uint32_t         s_prev_total;
-static spectrum_data_t *s_snap;     // только start()/write_meta() (serial/calib для META)
+static spectrum_data_t *s_snap;     // start()/seg_header_build() (serial/calib для шапки)
 static spectrum_data_t *s_wf_snap;  // приватный буфер периодического wf_task (P3-4)
 
 static wf_status_t       s_status;
 static wf_row_cb_t       s_row_cb;
-static FILE             *s_fp;
-static SemaphoreHandle_t s_lock;
+static SemaphoreHandle_t s_lock;     // защищает s_status / кольцо
+static SemaphoreHandle_t s_fs_lock;  // защищает файловые операции с сегментами
 
-#define LOCK()   do { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); } while (0)
-#define UNLOCK() do { if (s_lock) xSemaphoreGive(s_lock); } while (0)
+// Состояние текущего открытого сегмента (под s_fs_lock).
+static FILE     *s_seg_fp;
+static uint32_t  s_seg_cur = 0xFFFFFFFFu;  // индекс открытого сегмента (0xFFFFFFFF = нет)
+static uint32_t  s_seg_next;               // следующий индекс для нового сегмента
+static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
+static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
+static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки (только под s_fs_lock)
+
+#define LOCK()     do { if (s_lock)    xSemaphoreTake(s_lock,    portMAX_DELAY); } while (0)
+#define UNLOCK()   do { if (s_lock)    xSemaphoreGive(s_lock);    } while (0)
+// ВАЖНО про порядок захвата: разрешено брать LOCK ВНУТРИ FSLOCK (FS→status),
+// и НИКОГДА наоборот. spectrogram_get_status берёт только LOCK — взаимоблокировки нет.
+#define FSLOCK()   do { if (s_fs_lock) xSemaphoreTake(s_fs_lock, portMAX_DELAY); } while (0)
+#define FSUNLOCK() do { if (s_fs_lock) xSemaphoreGive(s_fs_lock); } while (0)
 
 static void wf_task(void *arg);
+
+// #REC-6: переживает ребут/сбой питания. Пишется на start/stop/clear; читается
+// на boot в spectrogram_restore(). Решает, возобновлять ли запись.
+typedef struct {
+    uint32_t magic;
+    uint32_t interval_sec;
+    int64_t  started_at;     // time_t — непрерывная шкала времени N42
+    uint8_t  active;         // запись была активна на момент сохранения
+    uint8_t  persist;        // писалось во Flash
+    uint8_t  _pad[6];
+} wf_state_t;
+
+static void write_state(bool active)
+{
+    wf_state_t st = {
+        .magic        = WF_STATE_MAGIC,
+        .interval_sec = s_status.interval_sec,
+        .started_at   = (int64_t)s_status.started_at,
+        .active       = active ? 1 : 0,
+        .persist      = s_status.persist ? 1 : 0,
+    };
+    FILE *f = fopen(WF_STATE, "wb");
+    if (!f) { ESP_LOGW(TAG, "cannot write state file"); return; }
+    fwrite(&st, 1, sizeof(st), f);
+    fclose(f);
+}
 
 static uint32_t flash_free_bytes(void)
 {
@@ -45,26 +99,246 @@ static uint32_t flash_free_bytes(void)
     return (uint32_t)(total - used);
 }
 
-static void write_meta(uint32_t rows)
+// ----------------------------------------------------------------------------
+//  Сегменты .aswf
+// ----------------------------------------------------------------------------
+
+static void seg_path(char *out, size_t cap, uint32_t idx)
 {
-    FILE *f = fopen(WF_META, "wb");
-    if (!f) return;
-    fprintf(f,
-        "{\"format\":\"atomspectra-waterfall\",\"version\":1,\"channels\":%d,"
-        "\"dtype\":\"uint16\",\"byte_order\":\"little\",\"interval_sec\":%" PRIu32 ","
-        "\"started_at\":%ld,\"rows\":%" PRIu32,
-        WF_CHANNELS, s_status.interval_sec, (long)s_status.started_at, rows);
-    if (s_snap && s_snap->serial_number[0])
-        fprintf(f, ",\"serial\":\"%s\"", s_snap->serial_number);
-    if (s_snap && s_snap->calib_valid) {
-        fprintf(f, ",\"calibration\":[");
-        for (int i = 0; i <= s_snap->calib_order; i++)
-            fprintf(f, "%s%.15g", i ? "," : "", s_snap->calibration[i]);
-        fprintf(f, "]");
-    }
-    fprintf(f, "}");
-    fclose(f);
+    snprintf(out, cap, WF_SEG_DIR "/seg_%05" PRIu32 ".aswf", idx);
 }
+
+// Разбор имени seg_NNNNN.aswf → индекс. false, если имя не подходит.
+static bool seg_name_index(const char *name, uint32_t *idx)
+{
+    if (strncmp(name, "seg_", 4) != 0) return false;
+    const char *p = name + 4;
+    char *end = NULL;
+    unsigned long v = strtoul(p, &end, 10);
+    if (end == p) return false;                  // ни одной цифры
+    if (strcmp(end, ".aswf") != 0) return false; // неверный суффикс
+    *idx = (uint32_t)v;
+    return true;
+}
+
+// Собрать JSON-шапку сегмента в s_hdr (добита пробелами до WF_HDR_RESERVE).
+// saved_rows/saved_at — первыми, фикс. ширины (патчатся позже). started_at —
+// время открытия ЭТОГО сегмента (каждый .aswf самосогласован по времени).
+static void seg_header_build(uint32_t rows, long saved_at, long started_at)
+{
+    int cap = (int)sizeof(s_hdr);
+    int n = snprintf(s_hdr, sizeof(s_hdr),
+        WF_F_PRE "%*" PRIu32 WF_F_MID "%*ld"
+        ",\"format\":\"atomspectra-waterfall\",\"version\":1"
+        ",\"channels\":%d,\"dtype\":\"uint16\",\"byte_order\":\"little\""
+        ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
+        WF_F_W, rows, WF_F_W, saved_at,
+        WF_CHANNELS, s_status.interval_sec, started_at);
+    if (n > 0 && n < cap && s_snap && s_snap->serial_number[0])
+        n += snprintf(s_hdr + n, cap - n, ",\"serial\":\"%s\"", s_snap->serial_number);
+    if (n > 0 && n < cap && s_snap && s_snap->calib_valid) {
+        n += snprintf(s_hdr + n, cap - n, ",\"calibration\":[");
+        for (int i = 0; i <= s_snap->calib_order && n > 0 && n < cap; i++)
+            n += snprintf(s_hdr + n, cap - n, "%s%.15g", i ? "," : "", s_snap->calibration[i]);
+        if (n > 0 && n < cap) n += snprintf(s_hdr + n, cap - n, "]");
+    }
+    if (n > 0 && n < cap) n += snprintf(s_hdr + n, cap - n, "}");
+    if (n < 0)   n = 0;
+    if (n > cap) n = cap;            // защита от переполнения (на практике ~250 Б)
+    memset(s_hdr + n, ' ', cap - n); // добить пробелами — читатели trim-ят
+}
+
+// Записать префикс "ASWF"+u32(reserve) и s_hdr с начала файла.
+static bool seg_write_full_header(FILE *f)
+{
+    uint8_t pre[8];
+    uint32_t reserve = WF_HDR_RESERVE;
+    pre[0] = 'A'; pre[1] = 'S'; pre[2] = 'W'; pre[3] = 'F';
+    pre[4] = (uint8_t)(reserve);       pre[5] = (uint8_t)(reserve >> 8);
+    pre[6] = (uint8_t)(reserve >> 16); pre[7] = (uint8_t)(reserve >> 24);
+    if (fseek(f, 0, SEEK_SET) != 0) return false;
+    if (fwrite(pre, 1, 8, f) != 8) return false;
+    if (fwrite(s_hdr, 1, WF_HDR_RESERVE, f) != (size_t)WF_HDR_RESERVE) return false;
+    return true;
+}
+
+// Перезаписать только saved_rows по фикс. offset (проверив магию "ASWF").
+static bool seg_patch_rows(FILE *f, uint32_t rows)
+{
+    char magic[4];
+    if (fseek(f, 0, SEEK_SET) != 0) return false;
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "ASWF", 4) != 0) return false;
+    char num[WF_F_W + 1];
+    snprintf(num, sizeof(num), "%*" PRIu32, WF_F_W, rows);
+    if (fseek(f, WF_F_ROWS_OFF, SEEK_SET) != 0) return false;
+    return fwrite(num, 1, WF_F_W, f) == (size_t)WF_F_W;
+}
+
+// Перезаписать saved_rows и saved_at по фикс. offset.
+static bool seg_patch_counts(FILE *f, uint32_t rows, long saved_at)
+{
+    if (!seg_patch_rows(f, rows)) return false;
+    char num[WF_F_W + 1];
+    snprintf(num, sizeof(num), "%*ld", WF_F_W, saved_at);
+    if (fseek(f, WF_F_AT_OFF, SEEK_SET) != 0) return false;
+    return fwrite(num, 1, WF_F_W, f) == (size_t)WF_F_W;
+}
+
+// Закрыть текущий открытый сегмент. rows>0 → пропатчить счётчики (валидный .aswf),
+// seg_count++. rows==0 → удалить пустой огрызок. (под s_fs_lock)
+static void seg_finalize(void)
+{
+    if (!s_seg_fp) return;
+    if (s_seg_rows > 0) {
+        if (!seg_patch_counts(s_seg_fp, s_seg_rows, (long)time(NULL))) {
+            // saved_rows/saved_at в шапке остались нулевыми — внешний вьювер/приёмник
+            // увидит "пустой" сегмент. Сигналим, но сегмент всё равно закрываем
+            // (сырые строки на месте; reconcile на ребуте перепатчит через "r+b").
+            ESP_LOGW(TAG, "seg_%05" PRIu32 ".aswf patch FAILED (saved_rows stays 0)",
+                     s_seg_cur);
+        }
+        fflush(s_seg_fp);
+        fsync(fileno(s_seg_fp));
+        fclose(s_seg_fp);
+        s_seg_fp = NULL;
+        LOCK(); s_status.seg_count++; UNLOCK();
+        ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf finalized (%" PRIu32 " rows)",
+                 s_seg_cur, s_seg_rows);
+    } else {
+        fclose(s_seg_fp);
+        s_seg_fp = NULL;
+        char p[64]; seg_path(p, sizeof(p), s_seg_cur);
+        unlink(p);
+    }
+    s_seg_cur  = 0xFFFFFFFFu;
+    s_seg_rows = 0;
+}
+
+// Открыть новый сегмент (rows=0). mkdir + 1 повтор при отсутствии каталога.
+// (под s_fs_lock)
+static bool seg_open_new(void)
+{
+    char p[64];
+    seg_path(p, sizeof(p), s_seg_next);
+    // "w+b" (НЕ "wb"): seg_patch_rows() читает магию "ASWF" через fread перед
+    // патчем saved_rows/saved_at на finalize. На write-only потоке fread=0 →
+    // патч молча проваливался, финализированный .aswf оставался saved_rows=0 (#FW-1).
+    FILE *f = fopen(p, "w+b");
+    if (!f) {
+        mkdir(WF_SEG_DIR, 0777);
+        f = fopen(p, "w+b");
+        if (!f) { ESP_LOGE(TAG, "cannot open %s", p); return false; }
+    }
+    long now = (long)time(NULL);
+    seg_header_build(0, now, now);             // saved_at=now (патчится на finalize)
+    if (!seg_write_full_header(f)) {
+        ESP_LOGE(TAG, "header write failed %s", p);
+        fclose(f); unlink(p); return false;
+    }
+    fflush(f); fsync(fileno(f));
+    s_seg_fp        = f;
+    s_seg_cur       = s_seg_next;
+    s_seg_rows      = 0;
+    s_seg_opened_at = now;
+    s_seg_next++;
+    ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf opened", s_seg_cur);
+    return true;
+}
+
+// Минимальный индекс среди ЗАВЕРШЁННЫХ сегментов (≠ текущего открытого).
+// 0xFFFFFFFF — нечего удалять. (под s_fs_lock)
+static uint32_t seg_oldest_completed(void)
+{
+    DIR *d = opendir(WF_SEG_DIR);
+    if (!d) return 0xFFFFFFFFu;
+    uint32_t best = 0xFFFFFFFFu;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        uint32_t idx;
+        if (!seg_name_index(e->d_name, &idx)) continue;
+        if (s_seg_fp && idx == s_seg_cur) continue;  // открытый — пропустить
+        if (idx < best) best = idx;
+    }
+    closedir(d);
+    return best;
+}
+
+// Кольцо keep-last: пока на Flash нет места под строку — удалять старейший
+// ЗАВЕРШЁННЫЙ сегмент. Текущий открытый не трогаем. (под s_fs_lock)
+static void make_room_for_row(void)
+{
+    while (flash_free_bytes() < (uint32_t)WF_ROW_BYTES + WF_FLASH_RESERVE) {
+        uint32_t oldest = seg_oldest_completed();
+        if (oldest == 0xFFFFFFFFu) break;        // только открытый/пусто — выйти
+        char p[64];
+        seg_path(p, sizeof(p), oldest);
+        if (unlink(p) != 0) { ESP_LOGW(TAG, "ring: unlink %s failed", p); break; }
+        LOCK();
+        s_status.seg_dropped++;
+        if (s_status.seg_count) s_status.seg_count--;
+        s_status.flash_full = true;              // индикатор: кольцо хоть раз сработало
+        UNLOCK();
+        ESP_LOGW(TAG, "ring: dropped seg_%05" PRIu32 ".aswf", oldest);
+    }
+}
+
+// Удалить все сегменты каталога. (под s_fs_lock)
+static void seg_delete_all(void)
+{
+    DIR *d = opendir(WF_SEG_DIR);
+    if (!d) return;
+    struct dirent *e;
+    char p[80];
+    while ((e = readdir(d)) != NULL) {
+        uint32_t idx;
+        if (!seg_name_index(e->d_name, &idx)) continue;
+        snprintf(p, sizeof(p), WF_SEG_DIR "/%.32s", e->d_name);  // имя ≤24 (seg_name_index), %.32s = доказуемая граница для -Wformat-truncation
+        unlink(p);
+    }
+    closedir(d);
+}
+
+// boot-реконсиляция: пройти каталог, для каждого сегмента rows = из размера файла.
+// rows==0 → удалить огрызок; иначе пропатчить saved_rows (на случай падения до
+// finalize). Восстановить s_seg_next = max_idx+1 и seg_count. (под s_fs_lock)
+static void seg_reconcile(void)
+{
+    mkdir(WF_SEG_DIR, 0777);                      // гарантировать каталог
+    DIR *d = opendir(WF_SEG_DIR);
+    uint32_t maxidx = 0, completed = 0;
+    bool any = false;
+    if (d) {
+        struct dirent *e;
+        char p[80];
+        while ((e = readdir(d)) != NULL) {
+            uint32_t idx;
+            if (!seg_name_index(e->d_name, &idx)) continue;
+            snprintf(p, sizeof(p), WF_SEG_DIR "/%.32s", e->d_name);  // имя ≤24 (seg_name_index), %.32s = доказуемая граница для -Wformat-truncation
+            struct stat sb;
+            if (stat(p, &sb) != 0) continue;
+            long payload = (long)sb.st_size - WF_SEG_HEADER;
+            uint32_t rows = payload > 0 ? (uint32_t)(payload / WF_ROW_BYTES) : 0;
+            if (rows == 0) { unlink(p); continue; }
+            FILE *f = fopen(p, "r+b");
+            if (f) {
+                seg_patch_rows(f, rows);
+                fflush(f); fsync(fileno(f));
+                fclose(f);
+            }
+            completed++;
+            if (!any || idx > maxidx) { maxidx = idx; any = true; }
+        }
+        closedir(d);
+    }
+    s_seg_next = any ? maxidx + 1 : 0;
+    s_seg_cur  = 0xFFFFFFFFu;
+    s_seg_fp   = NULL;
+    s_seg_rows = 0;
+    LOCK(); s_status.seg_count = completed; s_status.seg_dropped = 0; UNLOCK();
+    ESP_LOGI(TAG, "seg reconcile: %" PRIu32 " segments, next=%" PRIu32, completed, s_seg_next);
+}
+
+// ----------------------------------------------------------------------------
 
 static void ring_push(const uint16_t *row)
 {
@@ -75,10 +349,12 @@ static void ring_push(const uint16_t *row)
 
 void spectrogram_init(void)
 {
-    s_lock = xSemaphoreCreateMutex();
+    s_lock    = xSemaphoreCreateMutex();
+    s_fs_lock = xSemaphoreCreateMutex();
     memset(&s_status, 0, sizeof(s_status));
     s_status.interval_sec = WF_INTERVAL_DEFAULT;
     s_status.persist      = true;
+    s_seg_cur             = 0xFFFFFFFFu;
 
     s_capacity = WF_RING_ROWS_DEFAULT;
     size_t ring_bytes = (size_t)s_capacity * WF_ROW_BYTES;
@@ -103,7 +379,8 @@ void spectrogram_init(void)
     ESP_LOGI(TAG, "waterfall ready: ring=%" PRIu32 " rows (%u KB PSRAM)",
              s_capacity, (unsigned)(ring_bytes / 1024));
 
-    xTaskCreatePinnedToCore(wf_task, "wf", 4096, NULL, 3, NULL, 1);
+    // stack 8192: сегментный путь делает opendir/readdir + snprintf шапки на стеке.
+    xTaskCreatePinnedToCore(wf_task, "wf", 8192, NULL, 3, NULL, 1);
 }
 
 static void wf_task(void *arg)
@@ -130,22 +407,32 @@ static void wf_task(void *arg)
         s_status.total_rows++;
         s_status.ring_count = s_count;
         uint32_t idx     = s_status.total_rows - 1;
-        bool     persist = s_status.persist && !s_status.flash_full;
+        bool     persist = s_status.persist;   // #REC-11-A1: НЕ гейтим на flash_full (кольцо)
         UNLOCK();
 
         if (persist) {
-            if (flash_free_bytes() < (uint32_t)WF_ROW_BYTES + WF_FLASH_RESERVE) {
-                LOCK(); s_status.flash_full = true; UNLOCK();
-                ESP_LOGW(TAG, "flash full at %" PRIu32 " rows", s_status.flash_rows);
-            } else if (s_fp) {
-                size_t wr = fwrite(s_row, 1, WF_ROW_BYTES, s_fp);
-                if (wr != WF_ROW_BYTES || fflush(s_fp) != 0) {
-                    ESP_LOGE(TAG, "flash row write failed (wr=%zu), stopping persist", wr);
-                    LOCK(); s_status.flash_full = true; UNLOCK();
+            FSLOCK();
+            // финализировать текущий сегмент по лимиту строк или возраста
+            if (s_seg_fp && (s_seg_rows >= WF_SEG_MAX_ROWS ||
+                             (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC)) {
+                seg_finalize();
+            }
+            make_room_for_row();                // кольцо keep-last
+            if (!s_seg_fp) seg_open_new();      // открыть сегмент лениво
+            if (s_seg_fp) {
+                size_t wr = fwrite(s_row, 1, WF_ROW_BYTES, s_seg_fp);
+                if (wr != WF_ROW_BYTES || fflush(s_seg_fp) != 0) {
+                    ESP_LOGE(TAG, "seg row write failed (wr=%zu) — drop segment", wr);
+                    fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
                 } else {
+                    // #REC-6: fsync коммитит размер файла на Flash — после сбоя
+                    // питания reconcile восстановит число строк по размеру.
+                    fsync(fileno(s_seg_fp));
+                    s_seg_rows++;
                     LOCK(); s_status.flash_rows++; UNLOCK();
                 }
             }
+            FSUNLOCK();
         }
         if (s_row_cb) s_row_cb(s_row, WF_ROW_BYTES, idx);
     }
@@ -159,10 +446,55 @@ void spectrogram_get_status(wf_status_t *out)
     UNLOCK();
 }
 
+bool spectrogram_is_recording(void)
+{
+    return s_status.recording;
+}
+
+void spectrogram_restore(void)
+{
+    if (!s_status.ready) return;
+
+    // Всегда сверить каталог сегментов (восстановить s_seg_next/seg_count,
+    // пропатчить недописанные, удалить пустые).
+    FSLOCK();
+    seg_reconcile();
+    FSUNLOCK();
+
+    FILE *f = fopen(WF_STATE, "rb");
+    if (!f) return;                          // нет persist-состояния — чистый старт
+    wf_state_t st;
+    size_t rd = fread(&st, 1, sizeof(st), f);
+    fclose(f);
+    if (rd != sizeof(st) || st.magic != WF_STATE_MAGIC) return;
+    if (!st.active || !st.persist) return;   // запись была остановлена — не возобновляем
+
+    // Возобновляем запись в НОВЫЙ сегмент (wf_task откроет лениво на первом тике).
+    spectrum_get_snapshot(s_snap);
+    LOCK();
+    memcpy(s_prev, s_snap->bins, WF_CHANNELS * sizeof(uint32_t));
+    s_prev_total          = s_snap->total_counts;
+    s_head = 0; s_count = 0;
+    s_status.ring_count   = 0;
+    s_status.total_rows   = 0;     // счётчик ТЕКУЩЕЙ сессии записи (с момента возобновления)
+    s_status.flash_rows   = 0;
+    s_status.flash_full   = false;
+    s_status.persist      = (st.persist != 0);
+    s_status.interval_sec = st.interval_sec;
+    s_status.started_at   = (time_t)st.started_at;
+    s_status.recording    = true;
+    UNLOCK();
+    ESP_LOGW(TAG, "restore: resumed recording in new segment, interval=%" PRIu32 "s",
+             (uint32_t)st.interval_sec);
+}
+
 int spectrogram_start(void)
 {
     if (!s_status.ready) return -1;
     spectrum_get_snapshot(s_snap);
+
+    FSLOCK();
+    if (s_seg_fp) seg_finalize();          // закрыть огрызок от прошлой записи
     LOCK();
     memcpy(s_prev, s_snap->bins, WF_CHANNELS * sizeof(uint32_t));
     s_prev_total        = s_snap->total_counts;
@@ -173,14 +505,11 @@ int spectrogram_start(void)
     s_status.flash_full = false;
     s_status.flash_rows = 0;
     s_status.started_at = time(NULL);
-    if (s_fp) { fclose(s_fp); s_fp = NULL; }
-    if (s_status.persist) {
-        s_fp = fopen(WF_DATA, "wb");
-        if (!s_fp) ESP_LOGE(TAG, "cannot open data file");
-        write_meta(0);
-    }
-    s_status.recording = true;
+    s_status.recording  = true;            // старые сегменты НЕ трогаем (монотонный индекс)
     UNLOCK();
+    FSUNLOCK();
+
+    write_state(true);   // #REC-6: пометить «запись активна» для возобновления после ребута
     ESP_LOGI(TAG, "recording started, interval=%" PRIu32 "s persist=%d",
              s_status.interval_sec, s_status.persist);
     return 0;
@@ -190,28 +519,42 @@ int spectrogram_stop(void)
 {
     LOCK();
     s_status.recording = false;
-    if (s_fp) { fflush(s_fp); fclose(s_fp); s_fp = NULL; }
-    uint32_t rows    = s_status.flash_rows;
-    bool     persist = s_status.persist;
     UNLOCK();
-    if (persist) write_meta(rows);
-    ESP_LOGI(TAG, "recording stopped, flash_rows=%" PRIu32, rows);
+
+    FSLOCK();
+    seg_finalize();      // закрыть текущий сегмент как валидный .aswf
+    FSUNLOCK();
+
+    write_state(false);  // #REC-6: запись остановлена — ребут НЕ должен возобновлять
+    ESP_LOGI(TAG, "recording stopped, flash_rows=%" PRIu32, s_status.flash_rows);
     return 0;
 }
 
 int spectrogram_clear(void)
 {
+    FSLOCK();
     LOCK();
-    if (s_status.recording) { UNLOCK(); return -1; }
+    if (s_status.recording) { UNLOCK(); FSUNLOCK(); return -1; }
     s_head              = 0;
     s_count             = 0;
     s_status.ring_count = 0;
     s_status.total_rows = 0;
     s_status.flash_rows = 0;
     s_status.flash_full = false;
+    s_status.seg_count  = 0;
+    s_status.seg_dropped = 0;
     UNLOCK();
-    unlink(WF_DATA);
-    unlink(WF_META);
+
+    if (s_seg_fp) { fclose(s_seg_fp); s_seg_fp = NULL; }
+    s_seg_cur  = 0xFFFFFFFFu;
+    s_seg_rows = 0;
+    seg_delete_all();
+    s_seg_next = 0;
+    unlink(WF_DATA);     // legacy (#REC-6)
+    unlink(WF_META);     // legacy (#REC-6)
+    unlink(WF_STATE);    // #REC-6: сбросить persist-состояние записи
+    FSUNLOCK();
+
     ESP_LOGI(TAG, "waterfall cleared");
     return 0;
 }
@@ -275,7 +618,16 @@ size_t spectrogram_stream_window(uint16_t *bounce, size_t max_rows,
     return n;
 }
 
-const char *spectrogram_data_path(void)
+const char *spectrogram_seg_dir(void)
 {
-    return WF_DATA;
+    return WF_SEG_DIR;
+}
+
+uint32_t spectrogram_seg_open_index(void)
+{
+    uint32_t v;
+    FSLOCK();
+    v = s_seg_fp ? s_seg_cur : 0xFFFFFFFFu;
+    FSUNLOCK();
+    return v;
 }

@@ -30,6 +30,7 @@ void app_main(void)
     spectrum_restore_autosave();
     spectrum_load_calibration();
     spectrogram_init();
+    spectrogram_restore();   // #REC-6: возобновить запись после ребута/сбоя питания
     usb_host_cdc_init();
     web_server_init();
     tcp_bridge_init();

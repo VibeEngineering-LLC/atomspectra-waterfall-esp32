@@ -1009,7 +1009,7 @@ void web_server_init(void)
     csrf_generate();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 33;        // 20 базовых + 9 waterfall (status/start/stop/clear/config/window/export.n42/page/ws)
+    config.max_uri_handlers = 36;        // 20 базовых + 11 waterfall (status/start/stop/clear/config/window/export.n42/segments/segment/page/ws) + запас под A2 /offload
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)

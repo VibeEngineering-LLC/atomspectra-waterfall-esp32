@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <unistd.h>      // close() для web_waterfall_on_close()
+#include <dirent.h>      // #REC-11-A1: листинг /storage/wf для /segments
+#include <sys/stat.h>    // #REC-11-A1: размер файла сегмента (stat)
 
 static const char *TAG = "wf_web";
 
@@ -142,15 +144,19 @@ static esp_err_t h_status(httpd_req_t *req)
 {
     wf_status_t s;
     spectrogram_get_status(&s);
-    char buf[384];
+    char buf[448];
     int n = snprintf(buf, sizeof(buf),
         "{\"recording\":%s,\"persist\":%s,\"flash_full\":%s,\"ready\":%s,"
         "\"interval_sec\":%" PRIu32 ",\"ring_capacity\":%" PRIu32 ",\"ring_count\":%" PRIu32 ","
-        "\"total_rows\":%" PRIu32 ",\"flash_rows\":%" PRIu32 ",\"started_at\":%ld,\"channels\":%d}",
+        "\"total_rows\":%" PRIu32 ",\"flash_rows\":%" PRIu32 ","
+        "\"seg_count\":%" PRIu32 ",\"seg_dropped\":%" PRIu32 ","
+        "\"started_at\":%ld,\"channels\":%d}",
         s.recording ? "true" : "false", s.persist ? "true" : "false",
         s.flash_full ? "true" : "false", s.ready ? "true" : "false",
         s.interval_sec, s.ring_capacity, s.ring_count,
-        s.total_rows, s.flash_rows, (long)s.started_at, WF_CHANNELS);
+        s.total_rows, s.flash_rows,
+        s.seg_count, s.seg_dropped,
+        (long)s.started_at, WF_CHANNELS);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -388,6 +394,105 @@ static esp_err_t h_export_n42(httpd_req_t *req)
     if (sp) free(sp);
     return ESP_OK;
 }
+
+/* ---- #REC-11-A1: листинг и отдача сегментов /storage/wf (СТРОГО read-only) ---- */
+
+/* Строгая валидация имени сегмента — anti-traversal для /segment?name=.
+   Допускается РОВНО "seg_" + ≥1 десятичная цифра + ".aswf". Любые '/', '\\',
+   '.' (кроме расширения), пробелы — отвергаются. Длина 10..24
+   ("seg_0.aswf" = 10; запас под многозначный монотонный индекс). */
+static bool wf_seg_name_ok(const char *name)
+{
+    size_t len = name ? strlen(name) : 0;
+    if (len < 10 || len > 24) return false;
+    if (strncmp(name, "seg_", 4) != 0) return false;
+    const char *suf = name + len - 5;              // позиция ".aswf"
+    if (strcmp(suf, ".aswf") != 0) return false;
+    if (name + 4 == suf) return false;             // должна быть ≥1 цифра
+    for (const char *p = name + 4; p < suf; p++)
+        if (*p < '0' || *p > '9') return false;    // между seg_ и .aswf — только цифры
+    return true;
+}
+
+/* GET /api/waterfall/segments -> JSON-массив завершённых/открытых сегментов:
+   [{"name","idx","bytes","rows","finalized"}]. rows вычисляется из размера
+   файла (payload / WF_ROW_BYTES). finalized=false у СЕЙЧАС открытого сегмента
+   (его шапка ещё не пропатчена saved_rows) — браузеру забирать его не нужно. */
+static esp_err_t h_segments(httpd_req_t *req)
+{
+    const char *dir = spectrogram_seg_dir();
+    uint32_t open_idx = spectrogram_seg_open_index();
+    httpd_resp_set_type(req, "application/json");
+
+    DIR *d = opendir(dir);
+    if (!d) { httpd_resp_sendstr(req, "[]"); return ESP_OK; }   // каталога ещё нет
+
+    httpd_resp_send_chunk(req, "[", 1);
+    struct dirent *e;
+    char path[128], line[176];
+    bool first = true;
+    while ((e = readdir(d)) != NULL) {
+        if (!wf_seg_name_ok(e->d_name)) continue;
+        // %.90s/%.30s: dir и имя короткие, но d_name по типу до 255 — даём
+        // доказуемую границу для -Wformat-truncation (90+1+30+1=122 <= 128).
+        snprintf(path, sizeof(path), "%.90s/%.30s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        long bytes = (long)st.st_size;
+        long rows  = (bytes > WF_SEG_HEADER) ? (bytes - WF_SEG_HEADER) / WF_ROW_BYTES : 0;
+        uint32_t idx = (uint32_t)strtoul(e->d_name + 4, NULL, 10);
+        bool finalized = (idx != open_idx);
+        int n = snprintf(line, sizeof(line),
+            "%s{\"name\":\"%s\",\"idx\":%" PRIu32 ",\"bytes\":%ld,\"rows\":%ld,\"finalized\":%s}",
+            first ? "" : ",", e->d_name, idx, bytes, rows, finalized ? "true" : "false");
+        if (httpd_resp_send_chunk(req, line, n) != ESP_OK) { closedir(d); return ESP_FAIL; }
+        first = false;
+    }
+    closedir(d);
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* GET /api/waterfall/segment?name=seg_NNNNN.aswf -> сырой файл сегмента.
+   ИНВАРИАНТ #REC-11-A1: СТРОГО read-only — fopen("rb"), НИКОГДА не удаляем файл
+   при отдаче (удаление сегментов — только кольцо keep-last или фаза A2-аплоадер). */
+static esp_err_t h_segment(httpd_req_t *req)
+{
+    char query[96], name[40];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "name required");
+        return ESP_FAIL;
+    }
+    if (!wf_seg_name_ok(name)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad name");
+        return ESP_FAIL;
+    }
+    char path[128];
+    // %.90s/%.30s: доказуемая граница для -Wformat-truncation (name[40] валидно ≤24).
+    snprintf(path, sizeof(path), "%.90s/%.30s", spectrogram_seg_dir(), name);
+    FILE *f = fopen(path, "rb");      // read-only: отдаём, не трогая файл
+    if (!f) { httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found"); return ESP_FAIL; }
+
+    char *bufp = malloc(4096);
+    if (!bufp) { fclose(f); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return ESP_FAIL; }
+
+    char disp[80];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", name);
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+
+    size_t rd;
+    while ((rd = fread(bufp, 1, 4096, f)) > 0) {
+        if (httpd_resp_send_chunk(req, bufp, rd) != ESP_OK) { free(bufp); fclose(f); return ESP_FAIL; }
+    }
+    free(bufp);
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t h_page(httpd_req_t *req)
 {
     extern const uint8_t waterfall_html_start[] asm("_binary_waterfall_html_start");
@@ -461,6 +566,9 @@ void web_waterfall_register(httpd_handle_t server)
     reg(server, "/api/waterfall/config", HTTP_POST, h_config);
     reg(server, "/api/waterfall/window", HTTP_GET,  h_window);
     reg(server, "/api/waterfall/export.n42", HTTP_GET, h_export_n42);
+    // #REC-11-A1: листинг и отдача сегментов (СТРОГО read-only).
+    reg(server, "/api/waterfall/segments", HTTP_GET, h_segments);
+    reg(server, "/api/waterfall/segment",  HTTP_GET, h_segment);
 
     httpd_uri_t ws = {
         .uri = "/ws/waterfall", .method = HTTP_GET,

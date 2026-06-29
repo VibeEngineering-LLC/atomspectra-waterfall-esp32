@@ -4,6 +4,7 @@
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "esp_http_server.h"
+#include "mdns.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -219,6 +220,21 @@ static void start_captive_portal(void)
     }
 }
 
+/* ---- mDNS (atomspectra.local) ---- */
+
+static void start_mdns(void)
+{
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS init failed: %s", esp_err_to_name(err));
+        return;
+    }
+    mdns_hostname_set("atomspectra");
+    mdns_instance_name_set("AtomSpectra Gateway");
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS started: http://atomspectra.local/");
+}
+
 /* ---- STA mode ---- */
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -287,6 +303,8 @@ void wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    start_mdns();
 
     ESP_LOGI(TAG, "WiFi STA starting, SSID=%s", wifi_config.sta.ssid);
 }
