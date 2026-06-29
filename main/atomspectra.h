@@ -70,6 +70,9 @@ bool usb_host_cdc_is_connected(void);
 int  usb_host_cdc_send(const uint8_t *data, size_t len);
 void usb_host_cdc_set_raw_rx_cb(usb_raw_rx_cb_t cb);
 int  usb_host_send_text_command(const char *cmd);
+// #FW-2/#FW-3: настройки автозапуска/очистки при старте платы. Вызвать ОДИН раз
+// ДО usb_host_cdc_init() — флаги применяются однократно при первом USB-коннекте.
+void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfall, bool clear_spectrum);
 
 void wifi_manager_init(void);
 bool wifi_is_connected(void);

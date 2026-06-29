@@ -1,6 +1,7 @@
 #include "atomspectra.h"
 #include "shproto.h"
 #include "web_waterfall.h"
+#include "boot_config.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "cJSON.h"
@@ -265,6 +266,54 @@ static esp_err_t handle_reset(httpd_req_t *req)
     usb_host_cdc_send(pkt.data, pkt.len);
     spectrum_reset();
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+// #FW-2/#FW-3: GET текущих настроек «Поведение при старте платы» (NVS).
+static esp_err_t handle_boot_config_get(httpd_req_t *req)
+{
+    boot_config_t bc;
+    boot_config_load(&bc);
+    char resp[200];
+    snprintf(resp, sizeof(resp),
+        "{\"autostart_spectrum\":%s,\"autostart_waterfall\":%s,"
+        "\"clear_spectrum\":%s,\"clear_waterfall\":%s}",
+        bc.autostart_spectrum  ? "true" : "false",
+        bc.autostart_waterfall ? "true" : "false",
+        bc.clear_spectrum      ? "true" : "false",
+        bc.clear_waterfall     ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+// #FW-2/#FW-3: POST настроек. Отсутствующие в теле ключи сохраняют текущее значение.
+static esp_err_t handle_boot_config_set(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    char body[256] = {0};
+    int recv_len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (recv_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[recv_len] = '\0';
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad JSON");
+        return ESP_FAIL;
+    }
+    boot_config_t bc;
+    boot_config_load(&bc);   // стартуем от текущего, перекрываем переданными ключами
+    cJSON *it;
+    if ((it = cJSON_GetObjectItem(root, "autostart_spectrum")))  bc.autostart_spectrum  = cJSON_IsTrue(it);
+    if ((it = cJSON_GetObjectItem(root, "autostart_waterfall"))) bc.autostart_waterfall = cJSON_IsTrue(it);
+    if ((it = cJSON_GetObjectItem(root, "clear_spectrum")))      bc.clear_spectrum      = cJSON_IsTrue(it);
+    if ((it = cJSON_GetObjectItem(root, "clear_waterfall")))     bc.clear_waterfall     = cJSON_IsTrue(it);
+    cJSON_Delete(root);
+    int rc = boot_config_save(&bc);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, rc == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
     return ESP_OK;
 }
 
@@ -1011,7 +1060,7 @@ void web_server_init(void)
     csrf_generate();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 36;        // 20 базовых + 11 waterfall (status/start/stop/clear/config/window/export.n42/segments/segment/page/ws) + запас под A2 /offload
+    config.max_uri_handlers = 40;        // 26 базовых (вкл. 2× /api/boot-config #FW-2/3) + 11 waterfall + запас под A2 /offload
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1037,6 +1086,8 @@ void web_server_init(void)
         {"/api/spectrum.json",           HTTP_GET,  handle_spectrum_json,    NULL},
         {"/api/command",                 HTTP_POST, handle_command,          NULL},
         {"/api/reset",                   HTTP_POST, handle_reset,            NULL},
+        {"/api/boot-config",             HTTP_GET,  handle_boot_config_get,  NULL},
+        {"/api/boot-config",             HTTP_POST, handle_boot_config_set,  NULL},
         {"/api/save",                    HTTP_POST, handle_save,             NULL},
         {"/api/list",                    HTTP_GET,  handle_list,             NULL},
         {"/api/export.xml",              HTTP_GET,  handle_export_xml,       NULL},

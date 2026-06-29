@@ -1,5 +1,6 @@
 ﻿#include "atomspectra.h"
 #include "spectrogram.h"
+#include "boot_config.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include <inttypes.h>
@@ -26,11 +27,31 @@ void app_main(void)
         while (1) { vTaskDelay(pdMS_TO_TICKS(10000)); }
     }
 
+    // #FW-2/#FW-3: настройки поведения при старте платы (NVS, по умолчанию всё OFF).
+    boot_config_t bc;
+    boot_config_load(&bc);
+    ESP_LOGI(TAG, "boot-config: as_spec=%d as_wf=%d clr_spec=%d clr_wf=%d",
+             bc.autostart_spectrum, bc.autostart_waterfall, bc.clear_spectrum, bc.clear_waterfall);
+
     spectrum_init();
     spectrum_restore_autosave();
     spectrum_load_calibration();
+    // #FW-3: очистка накопленного спектра при старте — после restore, до того как
+    // спектрограмма снимет baseline. -rst прибору пошлётся на первом USB-коннекте.
+    if (bc.clear_spectrum) {
+        spectrum_reset();
+        ESP_LOGW(TAG, "FW-3: accumulated spectrum cleared on boot");
+    }
     spectrogram_init();
+    // #FW-3: очистка водопада при старте — ДО spectrogram_restore(), иначе restore
+    // возобновит прежнюю запись из сохранённого состояния.
+    if (bc.clear_waterfall) {
+        spectrogram_clear();
+        ESP_LOGW(TAG, "FW-3: waterfall cleared on boot");
+    }
     spectrogram_restore();   // #REC-6: возобновить запись после ребута/сбоя питания
+    // #FW-2: передать флаги автозапуска в USB-модуль ДО его инициализации.
+    usb_host_cdc_set_autostart(bc.autostart_spectrum, bc.autostart_waterfall, bc.clear_spectrum);
     usb_host_cdc_init();
     web_server_init();
     tcp_bridge_init();

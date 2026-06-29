@@ -35,6 +35,13 @@ static int s_rx_cb_count = 0;
 static char s_text_accum[4096];
 static int  s_text_accum_len = 0;
 
+// #FW-2/#FW-3: однократные действия при ПЕРВОМ USB-коннекте после ребута.
+// Значения задаёт usb_host_cdc_set_autostart() из main.c (читая boot_config из NVS).
+static bool s_boot_autostart_spec = false;
+static bool s_boot_autostart_wf   = false;
+static bool s_boot_clear_spectrum = false;
+static bool s_boot_once_done      = false;
+
 // #CMD-1: распознать завершённый ответ на -cal (дамп 40 регистров).
 // Формат подтверждён на реальном приборе (Text(400), один CDC-пакет):
 // строки ровно по 8 hex, разделённые \r\n; первые 12 — калибровка+CRC, 39-я — серийник.
@@ -210,14 +217,49 @@ static void try_open_device(void)
     esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
     ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s", (unsigned)s_tx_packet.len, esp_err_to_name(txerr));
 
-    // #REC-6: если на момент (ре)коннекта водопад пишется — возобновить набор
-    // спектра на приборе (-sta). Защищает от случайной остановки анализатора и
-    // от ситуации «ESP ребутнулся, восстановил запись, но прибор уже не набирает».
+    // Однократно отметить, что первый коннект после ребута состоялся: автозапуск
+    // (#FW-2) и очистка прибора (#FW-3) применяются ровно один раз за boot, не на
+    // каждый реконнект.
+    bool first_connect = !s_boot_once_done;
+    s_boot_once_done = true;
+
     if (spectrogram_is_recording()) {
+        // #REC-6: если на момент (ре)коннекта водопад пишется — возобновить набор
+        // спектра на приборе (-sta). Защищает от случайной остановки анализатора и
+        // от ситуации «ESP ребутнулся, восстановил запись, но прибор уже не набирает».
+        // Запись уже идёт → автозапуск #FW-2 не нужен (намеренно пропускаем).
         vTaskDelay(pdMS_TO_TICKS(100));
         usb_host_send_text_command("-sta");
         ESP_LOGW(TAG, "recording active — resent -sta to resume acquisition");
+    } else if (first_connect) {
+        // #FW-3: очистка спектра при старте — сбросить гистограмму прибора тем же
+        // путём, что кнопка «Сброс» (-rst). Локальный spectrum_reset() уже сделан в
+        // main.c на boot; -rst синхронизирует прибор, чтобы первый пакет не «поднял»
+        // обнулённый спектр обратно.
+        if (s_boot_clear_spectrum) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            usb_host_send_text_command("-rst");
+            ESP_LOGW(TAG, "FW-3: boot clear spectrum — sent -rst to device");
+        }
+        // #FW-2: автозапуск при старте платы (по настройкам NVS, по умолчанию OFF).
+        if (s_boot_autostart_wf) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            spectrogram_start();              // начать запись водопада (сегменты)
+            usb_host_send_text_command("-sta");
+            ESP_LOGW(TAG, "FW-2: boot autostart — waterfall recording started");
+        } else if (s_boot_autostart_spec) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            usb_host_send_text_command("-sta");
+            ESP_LOGW(TAG, "FW-2: boot autostart — spectrum acquisition started");
+        }
     }
+}
+
+void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfall, bool clear_spectrum)
+{
+    s_boot_autostart_spec = autostart_spectrum;
+    s_boot_autostart_wf   = autostart_waterfall;
+    s_boot_clear_spectrum = clear_spectrum;
 }
 
 static void usb_connect_task(void *arg)

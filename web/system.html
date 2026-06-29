@@ -39,6 +39,8 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 .btn:hover{ filter:brightness(1.2); }
 .chip.lang{ cursor:pointer; color:var(--accent); border-color:rgba(52,211,192,.4); font-weight:600; padding:3px 8px; font-size:10.5px; line-height:1.2; min-width:28px; text-align:center; }
 .chip.lang:hover{ filter:brightness(1.15); }
+.boot-row{ display:flex; align-items:center; gap:9px; padding:8px 0; font-size:12.5px; cursor:pointer; border-bottom:1px solid #161c15; color:#dfe5dc; }
+.boot-row input{ width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
 @media (max-width:900px){ .grid{ grid-template-columns:1fr } }
 </style>
 </head>
@@ -132,6 +134,17 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 </section>
 
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.title">Поведение при старте платы</span></div>
+<label class="boot-row"><input type="checkbox" id="bc-as-spec"><span data-i18n="boot.asSpec">Автозапуск набора спектра</span></label>
+<label class="boot-row"><input type="checkbox" id="bc-as-wf"><span data-i18n="boot.asWf">Автозапуск записи водопада</span></label>
+<label class="boot-row"><input type="checkbox" id="bc-clr-spec"><span data-i18n="boot.clrSpec">Очищать спектр при старте</span></label>
+<label class="boot-row"><input type="checkbox" id="bc-clr-wf"><span data-i18n="boot.clrWf">Очищать водопад при старте</span></label>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
+<button class="btn green" id="bc-save" onclick="saveBootConfig()" data-i18n="boot.save">Сохранить</button>
+<div class="mut" id="bc-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</section>
+
 </div>
 </div>
 
@@ -160,6 +173,13 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra на ПК подключаются к <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> вместо COM-порта.",
   "tcp.clientConnected":"клиент подключён","tcp.free":"свободен",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Обновить",
+  "boot.title":"Поведение при старте платы",
+  "boot.asSpec":"Автозапуск набора спектра",
+  "boot.asWf":"Автозапуск записи водопада",
+  "boot.clrSpec":"Очищать спектр при старте",
+  "boot.clrWf":"Очищать водопад при старте",
+  "boot.hint":"Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.",
+  "boot.save":"Сохранить","boot.saved":"Сохранено","boot.saveErr":"Ошибка сохранения",
   "cal.set":"задана (%1 коэфф., порядок %2)","cal.unset":"не задана",
   "confirm.rebootDev":"Перезагрузить прибор?","confirm.rebootEsp":"Перезагрузить ESP32?","confirm.resetWifi":"Сбросить WiFi и войти в режим настройки?",
   "up.d":"д","up.h":"ч","up.m":"м","up.s":"с",
@@ -187,6 +207,13 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra on PC connect to <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> instead of COM port.",
   "tcp.clientConnected":"client connected","tcp.free":"free",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Refresh",
+  "boot.title":"Board start behavior",
+  "boot.asSpec":"Autostart spectrum acquisition",
+  "boot.asWf":"Autostart waterfall recording",
+  "boot.clrSpec":"Clear spectrum on start",
+  "boot.clrWf":"Clear waterfall on start",
+  "boot.hint":"Applied once on power-up / board reboot. Everything is off by default.",
+  "boot.save":"Save","boot.saved":"Saved","boot.saveErr":"Save error",
   "cal.set":"set (%1 coef., order %2)","cal.unset":"not set",
   "confirm.rebootDev":"Reboot device?","confirm.rebootEsp":"Reboot ESP32?","confirm.resetWifi":"Reset WiFi and enter setup mode?",
   "up.d":"d","up.h":"h","up.m":"m","up.s":"s",
@@ -334,6 +361,30 @@ async function refreshSpectrum(){
  }catch(e){}
 }
 
+async function loadBootConfig(){
+ try{
+  var r=await(await fetch("/api/boot-config")).json();
+  document.getElementById("bc-as-spec").checked=!!r.autostart_spectrum;
+  document.getElementById("bc-as-wf").checked=!!r.autostart_waterfall;
+  document.getElementById("bc-clr-spec").checked=!!r.clear_spectrum;
+  document.getElementById("bc-clr-wf").checked=!!r.clear_waterfall;
+ }catch(e){}
+}
+async function saveBootConfig(){
+ var s=document.getElementById("bc-status");
+ var body={
+  autostart_spectrum:document.getElementById("bc-as-spec").checked,
+  autostart_waterfall:document.getElementById("bc-as-wf").checked,
+  clear_spectrum:document.getElementById("bc-clr-spec").checked,
+  clear_waterfall:document.getElementById("bc-clr-wf").checked
+ };
+ try{
+  var r=await(await post("/api/boot-config",{headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+  s.textContent=r.ok?t("boot.saved"):t("boot.saveErr");
+  s.style.color=r.ok?"var(--accent)":"#ff8a82";
+ }catch(e){ s.textContent=t("boot.saveErr"); s.style.color="#ff8a82"; }
+ setTimeout(function(){s.textContent="";},2500);
+}
 async function rebootDevice(){if(!confirm(t("confirm.rebootDev")))return;await post("/api/reboot-device");}
 async function rebootEsp(){if(!confirm(t("confirm.rebootEsp")))return;await post("/api/reboot-esp");}
 async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post("/api/wifi/reset");}
@@ -346,6 +397,7 @@ async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post
  await refreshSystem();
  await refreshDevice();
  await refreshSpectrum();
+ await loadBootConfig();
  setInterval(refreshSystem,2000);
  setInterval(refreshDevice,5000);
  setInterval(refreshSpectrum,2000);
