@@ -102,7 +102,10 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn amber" id="bStop"><span data-i18n="btn.stop">&#9632; Стоп</span></button>
 <button class="btn red" id="bClear"><span data-i18n="btn.clear">&#128465; Очистить</span></button>
 <button class="btn" id="bExportN42"><span data-i18n="btn.export_n42">&#11015; Экспорт .n42</span></button>
-<button class="btn" id="bDisk" data-i18n-title="btn.disk_title" title="Сохранять входящий стрим в .aswf-файл на диске ПК"><span id="bDiskTxt" data-i18n="btn.disk">&#128190; Стрим на диск&hellip;</span></button>
+<!-- #REC-11-A1: FSA-стрим на диск деприкейтнут (был #REC-9; F5 терял данные).
+     Запись теперь автономна на плате (сегменты на Flash); забор — внешним вьювером.
+     Кнопка скрыта; JS оставлен спящим (срабатывает только по клику). -->
+<button class="btn" id="bDisk" data-i18n-title="btn.disk_title" title="Сохранять входящий стрим в .aswf-файл на диске ПК" style="display:none"><span id="bDiskTxt" data-i18n="btn.disk">&#128190; Стрим на диск&hellip;</span></button>
 </div>
 </div>
 
@@ -119,6 +122,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <span class="ind" data-i18n-title="lbl.ring_title" title="заполнение кольца в PSRAM — последние строки"><span data-i18n="lbl.ring">Кольцо ОЗУ</span> <b id="ringtxt">0/0</b><span class="bar"><i id="ringfi" style="width:0%;background:var(--accent)"></i></span></span>
 <span class="ind" id="flashwrap" data-i18n-title="lbl.flash_title" title="занятость флэш-памяти платы"><span data-i18n="lbl.flash">Flash</span> <b id="flashtxt">—</b><span class="bar"><i id="flashfi" style="width:0%;background:var(--accent)"></i></span></span>
 <span class="ind" id="diskwrap" data-i18n-title="lbl.disk_title" title="Файл, в который идёт запись стрима (браузер показывает только имя, не путь к папке)" style="display:none"><span data-i18n="lbl.disk">&#128190; Диск:</span> <b id="disktxt">—</b></span>
+<span class="ind" id="segwrap" data-i18n-title="lbl.seg_title" title="Завершённые сегменты водопада на Flash платы (единица автономной записи и забора)"><span data-i18n="lbl.seg">&#128190; Сегменты</span> <b id="segtxt">0</b><span id="segdrop" class="err" style="margin-left:6px;display:none"></span></span>
 </div>
 </section>
 
@@ -160,15 +164,12 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 
 <section class="panel pad">
 <details class="help">
-<summary data-i18n="help.summary">&#10067; Куда идёт стрим на ПК и где выбор места хранения</summary>
+<summary data-i18n="help.summary">&#10067; Как идёт автономная запись и забор данных</summary>
 <div data-i18n-html="help.body">
-<p><b>Стрим на ПК</b> — отдельно включать не нужно. Плата раздаёт каждую новую строку по WebSocket всем, кто открыл эту страницу. Источник — буфер в RAM в момент рождения строки, а <b>не</b> Flash; работает и при выключенном «хранить во Flash», и когда Flash переполнен.</p>
-<p><b>Запись в файл на ПК — две опции:</b><br>
-&bull; кнопка <code>&#128190; Стрим на диск</code>: в Chrome/Edge/Opera — нативный «Сохранить как» + потоковая запись каждой строки в .aswf (шапка обновляется каждые ~30 с); в Firefox/Safari — буфер ОЗУ + blob-download на «Стоп».<br>
-&bull; скрипты в <code>scripts/</code>: <code>waterfall_n42.py</code> (экспорт .n42 одним выстрелом) и <code>waterfall_client.py</code> (непрерывный захват).</p>
-<p><b>Выбор места хранения на плате</b> — галочка «&#128205; хранить во Flash»:<br>
-&bull; <b>выкл</b> (по умолчанию) — водопад живёт только в кольце ОЗУ (последние ~256 строк; старое затирается новым). Экспорт .n42 берёт данные из кольца.<br>
-&bull; <b>вкл</b> — каждая строка дополнительно пишется во Flash (переживает перезагрузку).</p>
+<p><b>Автономная запись.</b> Нажмите «Старт» — плата сама пишет водопад сегментами (<code>.aswf</code>) во Flash. Браузер нужен только чтобы нажать Старт/Стоп; после старта страницу можно закрыть — запись продолжится на плате.</p>
+<p><b>Хранилище — кольцо keep-last.</b> Сегменты копятся во Flash; когда место кончается, затирается старейший незабранный сегмент (индикатор «&#8722;N (кольцо)»). На Flash всегда остаётся последний отрезок.</p>
+<p><b>Забор данных.</b> Готовые сегменты берёт внешний вьювер по сети (список — <code>/api/waterfall/segments</code>, файл — <code>/api/waterfall/segment?name=</code>) и при необходимости сшивает несколько <code>.aswf</code> в один. Live-картинка на этой странице идёт по WebSocket из кольца ОЗУ и Flash не требует.</p>
+<p><b>Экспорт .n42</b> — снимок текущего кольца ОЗУ (последние ~256 строк), работает всегда.</p>
 </div>
 </details>
 </section>
@@ -199,10 +200,12 @@ var DICT={
   "lbl.persist_title":"Выбор места хранения водопада",
   "lbl.rec_time":"⏱ Время записи:","lbl.ring":"Кольцо ОЗУ","lbl.ring_title":"заполнение кольца в PSRAM — последние строки",
   "lbl.flash":"Flash","lbl.flash_title":"занятость флэш-памяти платы","lbl.disk":"💾 Диск:",
+  "lbl.seg":"💾 Сегменты","lbl.seg_title":"Завершённые сегменты водопада на Flash платы (единица автономной записи и забора)",
+  "seg.dropped":" −%1 (кольцо)",
   "lbl.disk_title":"Файл, в который идёт запись стрима. Браузер по приватности не раскрывает путь к папке — показано только имя файла (папку вы выбрали в диалоге «Сохранить как»).",
   "disk.ind":"%1 · %2 стр. · %3 МБ · %4","disk.ram_tag":" · буфер ОЗУ (скачается на «Стоп»)",
-  "help.summary":"❓ Куда идёт стрим на ПК и где выбор места хранения",
-  "help.body":"<p><b>Стрим на ПК</b> — отдельно включать не нужно. Плата раздаёт каждую новую строку по WebSocket всем, кто открыл эту страницу. Источник — буфер в RAM в момент рождения строки, а <b>не</b> Flash; работает и при выключенном «хранить во Flash», и когда Flash переполнен.</p><p><b>Запись в файл на ПК — две опции:</b><br>&bull; кнопка <code>💾 Стрим на диск</code>: в Chrome/Edge/Opera — нативный «Сохранить как» + потоковая запись каждой строки в .aswf (шапка обновляется каждые ~30 с); в Firefox/Safari — буфер ОЗУ + blob-download на «Стоп».<br>&bull; скрипты в <code>scripts/</code>: <code>waterfall_n42.py</code> (экспорт .n42 одним выстрелом) и <code>waterfall_client.py</code> (непрерывный захват).</p><p><b>Выбор места хранения на плате</b> — галочка «📍 хранить во Flash»:<br>&bull; <b>выкл</b> (по умолчанию) — водопад живёт только в кольце ОЗУ (последние ~256 строк; старое затирается новым). Экспорт .n42 берёт данные из кольца.<br>&bull; <b>вкл</b> — каждая строка дополнительно пишется во Flash (переживает перезагрузку).</p>",
+  "help.summary":"❓ Как идёт автономная запись и забор данных",
+  "help.body":"<p><b>Автономная запись.</b> Нажмите «Старт» — плата сама пишет водопад сегментами (<code>.aswf</code>) во Flash. Браузер нужен только чтобы нажать Старт/Стоп; после старта страницу можно закрыть — запись продолжится на плате.</p><p><b>Хранилище — кольцо keep-last.</b> Сегменты копятся во Flash; когда место кончается, затирается старейший незабранный сегмент (индикатор «−N (кольцо)»). На Flash всегда остаётся последний отрезок.</p><p><b>Забор данных.</b> Готовые сегменты берёт внешний вьювер по сети (список — <code>/api/waterfall/segments</code>, файл — <code>/api/waterfall/segment?name=</code>) и при необходимости сшивает несколько <code>.aswf</code> в один. Live-картинка на этой странице идёт по WebSocket из кольца ОЗУ и Flash не требует.</p><p><b>Экспорт .n42</b> — снимок текущего кольца ОЗУ (последние ~256 строк), работает всегда.</p>",
   "lbl.axis_x":"Ось X","opt.channels":"каналы","opt.kev":"кэВ","lbl.brightness":"Яркость",
   "opt.log":"лог","opt.lin":"лин","lbl.contrast":"Контраст","lbl.palette":"Палитра",
   "lbl.palette_title":"Сменить цветовую палитру","lbl.channels":"Каналы","btn.fit_reset":"сброс зума",
@@ -238,10 +241,12 @@ var DICT={
   "lbl.persist_title":"Where to keep the waterfall",
   "lbl.rec_time":"⏱ Rec time:","lbl.ring":"RAM ring","lbl.ring_title":"PSRAM ring fill — last rows",
   "lbl.flash":"Flash","lbl.flash_title":"on-board flash usage","lbl.disk":"💾 Disk:",
+  "lbl.seg":"💾 Segments","lbl.seg_title":"Completed waterfall segments on the board Flash (unit of autonomous recording and offload)",
+  "seg.dropped":" −%1 (ring)",
   "lbl.disk_title":"The file the stream is being written to. For privacy the browser does not reveal the folder path — only the file name is shown (you chose the folder in the «Save As» dialog).",
   "disk.ind":"%1 · %2 rows · %3 MB · %4","disk.ram_tag":" · RAM buffer (downloads on «Stop»)",
-  "help.summary":"❓ Where the stream goes on the PC and where to choose storage",
-  "help.body":"<p><b>PC streaming</b> — no need to enable it separately. The board broadcasts every new row over WebSocket to anyone with this page open. Source is the RAM buffer at the moment the row is born, <b>not</b> Flash; works even with «store in Flash» off and when Flash is full.</p><p><b>Recording to PC disk — two options:</b><br>&bull; the <code>💾 Stream to disk</code> button: in Chrome/Edge/Opera — native «Save As» + streaming write of every row to .aswf (header refreshed every ~30 s); in Firefox/Safari — RAM buffer + blob download on «Stop».<br>&bull; scripts in <code>scripts/</code>: <code>waterfall_n42.py</code> (one-shot .n42 export) and <code>waterfall_client.py</code> (continuous capture).</p><p><b>Storage choice on the board</b> — the «📍 store in Flash» checkbox:<br>&bull; <b>off</b> (default) — waterfall lives only in the RAM ring (last ~256 rows; old rows overwritten). .n42 export reads from the ring.<br>&bull; <b>on</b> — each row is also written to Flash (survives reboot).</p>",
+  "help.summary":"❓ How autonomous recording and data offload work",
+  "help.body":"<p><b>Autonomous recording.</b> Press «Start» — the board records the waterfall to Flash as segments (<code>.aswf</code>) on its own. The browser is only needed to press Start/Stop; after starting you may close the page — recording continues on the board.</p><p><b>Storage — keep-last ring.</b> Segments accumulate on Flash; when space runs out, the oldest not-yet-offloaded segment is dropped (the «−N (ring)» indicator). The latest stretch is always kept on Flash.</p><p><b>Data offload.</b> An external viewer pulls finished segments over the network (list — <code>/api/waterfall/segments</code>, file — <code>/api/waterfall/segment?name=</code>) and stitches several <code>.aswf</code> into one if needed. The live image on this page comes over WebSocket from the RAM ring and needs no Flash.</p><p><b>.n42 export</b> — a snapshot of the current RAM ring (last ~256 rows), always available.</p>",
   "lbl.axis_x":"Axis X","opt.channels":"channels","opt.kev":"keV","lbl.brightness":"Brightness",
   "opt.log":"log","opt.lin":"lin","lbl.contrast":"Contrast","lbl.palette":"Palette",
   "lbl.palette_title":"Change colour palette","lbl.channels":"Channels","btn.fit_reset":"reset zoom",
@@ -257,7 +262,8 @@ var DICT={
   "log.disk_fsa_fail":"disk: FSA fail (%1), switching to RAM-buffer mode",
   "log.disk_start_ram":"disk: recording started → %1 (RAM buffer, downloads on «Stop»)",
   "log.disk_flush_err":"disk: flush err ","log.disk_done":"disk: recording finished (%1 rows, %2 MB) → %3",
-  "log.disk_blob":"disk: blob downloaded (%1 rows, %2 MB) → %3","log.disk_close_err":"disk: close err ",
+  "log.disk_ckpt":"disk: checkpoint #%1 — file committed to disk (%2 rows, %3 MB)",
+  "log.disk_ckpt_err":"disk: checkpoint error ","log.disk_blob":"disk: blob downloaded (%1 rows, %2 MB) → %3","log.disk_close_err":"disk: close err ",
   "log.cleared":"cleared","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)",
   "confirm.clear":"Clear the accumulated spectrogram?",
   "unload.recording":"Disk recording in progress. Close the page?",
@@ -838,6 +844,12 @@ async function refreshStatus(){
   }else{
    fw.style.opacity="1";
   }
+  // #REC-11-A1: сегменты на Flash (автономная запись). seg_dropped>0 — кольцо
+  // keep-last затёрло старейшие отрезки (Flash был полон).
+  document.getElementById("segtxt").textContent=(s.seg_count||0);
+  var sd=document.getElementById("segdrop");
+  if(s.seg_dropped>0){sd.style.display="";sd.textContent=t("seg.dropped").replace("%1",s.seg_dropped);}
+  else{sd.style.display="none";}
   tickRecTime();
  }catch(e){}
 }

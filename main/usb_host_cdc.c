@@ -31,9 +31,35 @@ static shproto_struct s_tx_packet;
 
 static usb_raw_rx_cb_t s_raw_rx_cb = NULL;
 static int s_rx_cb_count = 0;
+static volatile uint32_t s_usb_rx_err = 0;  // #TCP-4: FTDI line-status RX errors (OE/PE/FE/FIFO)
 
 static char s_text_accum[4096];
 static int  s_text_accum_len = 0;
+
+// #UI-1: кольцо последних текстовых ответов прибора для веб-лога команд (/api/devlog).
+// devlog_push() вызывается из cdc-acm data_cb (handle_rx_packet, CMD_TEXT); чтение —
+// из httpd-таска (usb_host_cdc_devlog_json). Синхронизация — отдельный мьютекс.
+#define DEVLOG_RING   8
+#define DEVLOG_TEXTSZ 480
+static char     s_devlog_text[DEVLOG_RING][DEVLOG_TEXTSZ];
+static uint16_t s_devlog_len [DEVLOG_RING];
+static uint32_t s_devlog_seq [DEVLOG_RING];   // seq записи в слоте (0 = пусто)
+static uint32_t s_devlog_next = 1;            // seq для следующей записи (монотонный)
+static SemaphoreHandle_t s_devlog_mutex = NULL;
+
+static void devlog_push(const uint8_t *txt, int len)
+{
+    if (len <= 0 || !s_devlog_mutex) return;
+    if (len > DEVLOG_TEXTSZ - 1) len = DEVLOG_TEXTSZ - 1;
+    xSemaphoreTake(s_devlog_mutex, portMAX_DELAY);
+    uint32_t seq = s_devlog_next++;
+    int slot = seq % DEVLOG_RING;
+    memcpy(s_devlog_text[slot], txt, len);
+    s_devlog_text[slot][len] = '\0';
+    s_devlog_len[slot] = (uint16_t)len;
+    s_devlog_seq[slot] = seq;
+    xSemaphoreGive(s_devlog_mutex);
+}
 
 // #FW-2/#FW-3: однократные действия при ПЕРВОМ USB-коннекте после ребута.
 // Значения задаёт usb_host_cdc_set_autostart() из main.c (читая boot_config из NVS).
@@ -72,6 +98,7 @@ static void handle_rx_packet(void)
             s_rx_packet.data[s_rx_packet.len] = '\0';
             ESP_LOGI(TAG, "Text(%u): %.80s%s", (unsigned)s_rx_packet.len,
                      (const char*)s_rx_packet.data, s_rx_packet.len>80?"...":"");
+            devlog_push(s_rx_packet.data, (int)s_rx_packet.len);  // #UI-1: в веб-лог команд
             int sp = sizeof(s_text_accum)-s_text_accum_len-1;
             int cp = (int)s_rx_packet.len < sp ? (int)s_rx_packet.len : sp;
             memcpy(s_text_accum+s_text_accum_len, s_rx_packet.data, cp);
@@ -119,6 +146,7 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
     }
     for (size_t off=0; off<data_len; ) {
         size_t ch=data_len-off; if(ch>64)ch=64; if(ch<=2)break;
+        if (data[off+1] & 0x8E) s_usb_rx_err++;  // #TCP-4: FTDI line-status byte = OE|PE|FE|FIFO
         if(s_raw_rx_cb) s_raw_rx_cb(data+off+2,ch-2);
         feed_shproto(data+off+2,ch-2);
         off+=ch;
@@ -275,6 +303,7 @@ void usb_host_cdc_init(void)
     shproto_init(&s_rx_packet, s_rx_buf, sizeof(s_rx_buf));
     shproto_init(&s_tx_packet, s_tx_buf, sizeof(s_tx_buf));
     s_tx_mutex = xSemaphoreCreateMutex();
+    s_devlog_mutex = xSemaphoreCreateMutex();  // #UI-1
 
     const usb_host_config_t host_config = {
         .skip_phy_setup = false,
@@ -327,6 +356,60 @@ int usb_host_cdc_send(const uint8_t *data, size_t len)
 void usb_host_cdc_set_raw_rx_cb(usb_raw_rx_cb_t cb)
 {
     s_raw_rx_cb = cb;
+}
+
+uint32_t usb_host_cdc_rx_errors(void)
+{
+    return s_usb_rx_err;
+}
+
+// #UI-1: JSON-массив текстовых ответов прибора с seq>since:
+//   {"lines":[{"seq":N,"text":"..."},...],"next":M}
+// Вызывается из httpd-таска (handle_devlog). Текст эскейпится для JSON: " \ → \" \\,
+// \n → \\n, \r/\t и непечатные/не-ASCII символы отбрасываются. out должен быть ≥ ~9 КБ.
+void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz)
+{
+    if (!out || outsz < 32) { if (out && outsz) out[0] = '\0'; return; }
+    uint32_t next, start;
+    if (s_devlog_mutex) xSemaphoreTake(s_devlog_mutex, portMAX_DELAY);
+    next = s_devlog_next - 1;                 // последний присвоенный seq (0 если пусто)
+    if (s_devlog_mutex) xSemaphoreGive(s_devlog_mutex);
+
+    size_t pos = 0;
+    pos += snprintf(out + pos, outsz - pos, "{\"lines\":[");
+    // окно: только то, что ещё в кольце (последние DEVLOG_RING записей)
+    start = since + 1;
+    if (next >= DEVLOG_RING && start < next - DEVLOG_RING + 1) start = next - DEVLOG_RING + 1;
+
+    char tmp[DEVLOG_TEXTSZ];
+    int emitted = 0;
+    for (uint32_t s = start; s <= next && next != 0; s++) {
+        int tlen = -1;
+        if (s_devlog_mutex) xSemaphoreTake(s_devlog_mutex, portMAX_DELAY);
+        int slot = s % DEVLOG_RING;
+        if (s_devlog_seq[slot] == s) {        // ещё не вытеснен
+            tlen = s_devlog_len[slot];
+            if (tlen > DEVLOG_TEXTSZ - 1) tlen = DEVLOG_TEXTSZ - 1;
+            memcpy(tmp, s_devlog_text[slot], tlen);
+        }
+        if (s_devlog_mutex) xSemaphoreGive(s_devlog_mutex);
+        if (tlen < 0) continue;
+
+        // запас под объект; если мало места — прекращаем (next всё равно отдадим)
+        if (pos + (size_t)tlen * 2 + 48 >= outsz) break;
+        pos += snprintf(out + pos, outsz - pos, "%s{\"seq\":%" PRIu32 ",\"text\":\"",
+                        emitted ? "," : "", s);
+        for (int i = 0; i < tlen && pos + 8 < outsz; i++) {
+            unsigned char c = (unsigned char)tmp[i];
+            if (c == '"' || c == '\\')      { out[pos++] = '\\'; out[pos++] = c; }
+            else if (c == '\n')             { out[pos++] = '\\'; out[pos++] = 'n'; }
+            else if (c >= 0x20 && c < 0x7f) { out[pos++] = c; }
+            // \r, \t, прочие управляющие/не-ASCII — пропускаем
+        }
+        pos += snprintf(out + pos, outsz - pos, "\"}");
+        emitted++;
+    }
+    snprintf(out + pos, outsz - pos, "],\"next\":%" PRIu32 "}", next);
 }
 
 int usb_host_send_text_command(const char *cmd)

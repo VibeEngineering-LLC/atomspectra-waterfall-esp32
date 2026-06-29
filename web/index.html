@@ -296,6 +296,8 @@ var logEl=document.getElementById("log");
 var overlayBins=null,overlayIdx=-1;
 var isLog=true,isCps=true,isKev=true;  /* #UI-34: дефолты тумблеров — Log / CPS / keV */
 var calib=null,lastD=null,calibEditing=false;
+var devSeq=0;  /* #UI-1: курсор seq последнего показанного ответа прибора (/api/devlog) */
+var failStreak=0;  /* #UI-2: подряд-неудачи fetch спектра; гасим экран только после >=3 (одиночный 503 при конкуренции — не гасит) */
 var PL=65,PT=15,PW=1120,PH=340,PR=PL+PW,PB=PT+PH;
 var csrfToken="";
 
@@ -303,6 +305,8 @@ async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json()
 function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
 
 function lg(m){logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight}
+/* #UI-1: подтянуть текстовые ответы прибора из /api/devlog и показать их в логе команд («← ...») */
+async function pollDevLog(){try{var r=await(await fetch("/api/devlog?since="+devSeq)).json();if(r.lines&&r.lines.length){r.lines.forEach(function(e){var t=(e.text||"").replace(/\n+$/,"");lg("← "+t)})}if(typeof r.next==="number")devSeq=r.next}catch(e){}}
 function fmtTime(s){s=Math.round(s);var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;return(h>0?h+"h ":"")+(m>0?m+"m ":"")+ss+"s"}
 function fmtHMS(s){var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(ss).padStart(2,"0")}
 function fmtNum(n){return Math.round(n).toLocaleString(lcl())}
@@ -327,8 +331,9 @@ function clearCanvas(){
 async function update(){
  try{
   var r=await fetch("/api/spectrum.json");
-  if(!r.ok){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");return}
+  if(!r.ok){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд */
   var d=await r.json();
+  failStreak=0;  /* #UI-2: успешный кадр — сброс счётчика подряд-неудач */
   if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib);nucBtnEnable(true);} else if(!calib){nucBtnEnable(false);}
   if(d.serial)document.getElementById("device-chip").textContent=d.serial;
   document.getElementById("ip-chip").textContent=location.hostname;
@@ -350,7 +355,8 @@ async function update(){
   document.getElementById("big-cps").textContent=d.cps;
   document.getElementById("big-total").textContent=d.total.toLocaleString(lcl());
   draw(d);
- }catch(e){clearCanvas();document.getElementById("status").textContent=tfmt("err.prefix",e)}
+ }catch(e){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
+ finally{pollDevLog();}   /* #UI-2: devlog (#UI-1) теперь ПОСЛЕ спектра, не конкурентно — устраняет лишний сокет → меньше 503 */
 }
 
 function draw(d){
@@ -507,8 +513,8 @@ async function startAcq(){await post("/api/command",{body:"-sta"});lg(tr("log.st
 async function stopAcq(){await post("/api/command",{body:"-sto"});lg(tr("log.stop"))}
 async function resetSpectrum(){clearCanvas();lastD=null;document.getElementById("big-time").textContent="00:00:00";document.getElementById("big-cps").textContent="0";document.getElementById("big-total").textContent="0";await post("/api/reset");lg(tr("log.reset"))}
 async function saveSpectrum(){var r=await(await post("/api/save")).json();lg(r.ok?tfmt("saved.savedAs",r.index):tr("saved.saveErr"));if(r.ok){loadSaved();loadFlashInfo()}}
-async function requestInfo(){calibEditing=false;await post("/api/command",{body:"-inf"});await post("/api/command",{body:"-cal"});lg(tr("log.info"));setTimeout(update,800)}
-async function sendCmd(){var c=document.getElementById("cmd").value;if(!c)return;await post("/api/command",{body:c});lg(tfmt("log.sent",c));setTimeout(update,500)}
+async function requestInfo(){calibEditing=false;await post("/api/command",{body:"-inf"});await post("/api/command",{body:"-cal"});lg(tr("log.info"));setTimeout(update,800);setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}  /* #UI-1: быстро подхватить ответы -inf/-cal */
+async function sendCmd(){var c=document.getElementById("cmd").value;if(!c)return;await post("/api/command",{body:c});lg(tfmt("log.sent",c));setTimeout(update,500);setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}  /* #UI-1: быстро подхватить ответ прибора */
 function toggleLogPanel(){logEl.style.display=logEl.style.display==="none"?"block":"none"}
 async function rebootDevice(){if(!confirm(tr("confirm.rebootDev")))return;await post("/api/reboot-device");lg(tr("log.rebootDev"))}
 async function rebootEsp(){if(!confirm(tr("confirm.rebootEsp")))return;await post("/api/reboot-esp");document.getElementById("status").textContent=tr("status.rebooting")}

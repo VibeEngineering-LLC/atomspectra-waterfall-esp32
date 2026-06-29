@@ -167,6 +167,7 @@ idf.py -p COM14 flash
 | `/api/export.n42` | GET | ANSI N42.42 (live spectrum) |
 | `/api/export.spe` | GET | LSRM `.spe` (live spectrum) |
 | `/api/command` | POST | Send a text command to the instrument |
+| `/api/devlog` | GET | Recent instrument text replies (ring buffer, `?since=N` param) |
 | `/api/reset` | POST | Reset the spectrum counters |
 | `/api/save` | POST | Save the spectrum to flash |
 | `/api/list` | GET | List saved spectra (JSON) |

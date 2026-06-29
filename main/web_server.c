@@ -192,11 +192,11 @@ static esp_err_t render_spectrum_json(httpd_req_t *req, const spectrum_data_t *s
     if (pos > 0) httpd_resp_send_chunk(req, buf, pos);
     int n = snprintf(buf, 4096,
         "],\"total\":%" PRIu32 ",\"cpu\":%u,\"cps\":%" PRIu32 ",\"lost\":%" PRIu32 ",\"time\":%" PRIu32 ",\"live\":%.1f,"
-        "\"bridge_drop\":%" PRIu32 ","
+        "\"bridge_drop\":%" PRIu32 ",\"usb_rx_err\":%" PRIu32 ","
         "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\"",
         sp->total_counts, sp->cpu_load, sp->cps, sp->lost_impulses,
         sp->total_time_sec, compute_live_time(sp),
-        tcp_bridge_dropped_bytes(),
+        tcp_bridge_dropped_bytes(), usb_host_cdc_rx_errors(),
         sp->temperature[0], sp->temperature[1], sp->temperature[2],
         sp->serial_number[0] ? sp->serial_number : "");
     httpd_resp_send_chunk(req, buf, n);
@@ -249,6 +249,27 @@ static esp_err_t handle_command(httpd_req_t *req)
     shproto_packet_complete(&pkt);
     int ret = usb_host_cdc_send(pkt.data, pkt.len);
     httpd_resp_sendstr(req, ret == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
+    return ESP_OK;
+}
+
+// #UI-1: лог текстовых ответов прибора для веб-UI. GET /api/devlog?since=N
+// Read-only (CSRF не нужен). Отдаёт {"lines":[{"seq":N,"text":"..."}],"next":M}.
+static esp_err_t handle_devlog(httpd_req_t *req)
+{
+    uint32_t since = 0;
+    char q[48], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK)
+        since = strtoul(v, NULL, 10);
+    char *buf = malloc(9000);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    usb_host_cdc_devlog_json(since, buf, 9000);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    free(buf);
     return ESP_OK;
 }
 
@@ -1060,7 +1081,7 @@ void web_server_init(void)
     csrf_generate();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 40;        // 26 базовых (вкл. 2× /api/boot-config #FW-2/3) + 11 waterfall + запас под A2 /offload
+    config.max_uri_handlers = 40;        // 27 базовых (вкл. 2× /api/boot-config #FW-2/3, /api/devlog #UI-1) + 11 waterfall + запас под A2 /offload
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1085,6 +1106,7 @@ void web_server_init(void)
         {"/api/spectrum",                HTTP_GET,  handle_spectrum,         NULL},
         {"/api/spectrum.json",           HTTP_GET,  handle_spectrum_json,    NULL},
         {"/api/command",                 HTTP_POST, handle_command,          NULL},
+        {"/api/devlog",                  HTTP_GET,  handle_devlog,           NULL},
         {"/api/reset",                   HTTP_POST, handle_reset,            NULL},
         {"/api/boot-config",             HTTP_GET,  handle_boot_config_get,  NULL},
         {"/api/boot-config",             HTTP_POST, handle_boot_config_set,  NULL},
