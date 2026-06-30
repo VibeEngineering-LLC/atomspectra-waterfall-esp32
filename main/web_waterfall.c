@@ -1,6 +1,7 @@
 #include "atomspectra.h"
 #include "spectrogram.h"
 #include "web_waterfall.h"
+#include "wf_offload.h"   // #REC-11-A2: конфиг/статус автономной выгрузки
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -271,6 +272,12 @@ typedef struct {
     time_t       started_at;
     bool         have_cal;
     uint32_t     r;
+    /* #FW-5: реальные длительности срезов окна (сек). durs[] выровнен с потоком
+       строк stream_window; локальный индекс = r - r0. row_start — накопительное
+       реальное начало текущего среза (StartDateTime). */
+    const uint16_t *durs;
+    uint32_t     r0;
+    time_t       row_start;
 } n42_ctx_t;
 
 static bool n42_row_emit(void *vctx, const uint16_t *row, size_t bytes)
@@ -280,12 +287,19 @@ static bool n42_row_emit(void *vctx, const uint16_t *row, size_t bytes)
     char *acc = c->acc, tbuf[40];
     struct tm tmv;
     uint32_t r = c->r++;
-    time_t ts = c->started_at + (time_t)r * (time_t)c->interval_sec;
+    /* #FW-5: реальная длительность среза (дельта живого времени прибора) вместо
+       номинального interval_sec. dur==0 (или durs нет) → подставляем номинал, чтобы
+       CPS = counts/dur не делился на ноль и таймлайн не застывал. */
+    uint32_t local = r - c->r0;
+    uint32_t dur = c->durs ? c->durs[local] : 0;
+    if (dur == 0) dur = c->interval_sec;
+    time_t ts = c->row_start;
     gmtime_r(&ts, &tmv);
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tmv);
     int n = snprintf(acc, 8192,
         "  <RadMeasurement id=\"m-%" PRIu32 "\">\n    <MeasurementClassCode>Foreground</MeasurementClassCode>\n    <StartDateTime>%s</StartDateTime>\n    <RealTimeDuration>PT%" PRIu32 "S</RealTimeDuration>\n    <Spectrum id=\"m-%" PRIu32 "-s-1\" radDetectorInformationReference=\"det-1\"%s>\n      <LiveTimeDuration>PT%" PRIu32 "S</LiveTimeDuration>\n      <ChannelData compressionCode=\"CountedZeroes\">",
-        r, tbuf, c->interval_sec, r, c->have_cal ? " energyCalibrationReference=\"ecal-1\"" : "", c->interval_sec);
+        r, tbuf, dur, r, c->have_cal ? " energyCalibrationReference=\"ecal-1\"" : "", dur);
+    c->row_start += dur;   /* #FW-5: следующий срез стартует после этого */
     if (httpd_resp_send_chunk(c->req, acc, n) != ESP_OK) return false;
     int off = 0; bool first = true; uint32_t i = 0;
     while (i < WF_CHANNELS) {
@@ -374,14 +388,25 @@ static esp_err_t h_export_n42(httpd_req_t *req)
         httpd_resp_send_chunk(req, acc, n);
     }
 
+    /* #FW-5: реальные длительности строк окна (сек). calloc → незаполненные
+       элементы = 0 → n42_row_emit подставит номинал. NULL (oom) тоже безопасен. */
+    uint16_t *durs = calloc(s.ring_count, sizeof(uint16_t));
+    if (durs) spectrogram_copy_window_durations(durs, s.ring_count);
+
     /* Источник — кольцо PSRAM: row служит bounce-буфером, каждая строка
-       отдаётся колбэком n42_row_emit() ВНЕ лока рекордера. */
+       отдаётся колбэком n42_row_emit() ВНЕ лока рекордера. r0 — глобальный индекс
+       первой строки окна; строки до окна уже выпали из кольца, поэтому их суммарное
+       время приближаем номиналом (r0*interval), а внутри окна время честное. */
+    uint32_t r0 = (s.ring_count <= s.total_rows) ? (s.total_rows - s.ring_count) : 0;
     n42_ctx_t ctx = {
         .req = req, .acc = acc,
         .interval_sec = s.interval_sec,
         .started_at = s.started_at,
         .have_cal = have_cal,
-        .r = (s.ring_count <= s.total_rows) ? (s.total_rows - s.ring_count) : 0,
+        .r = r0,
+        .durs = durs,
+        .r0 = r0,
+        .row_start = s.started_at + (time_t)r0 * (time_t)s.interval_sec,
     };
     spectrogram_stream_window(row, s.ring_count, NULL, n42_row_emit, &ctx);
 
@@ -391,6 +416,7 @@ static esp_err_t h_export_n42(httpd_req_t *req)
 
     heap_caps_free(row);
     free(acc);
+    if (durs) free(durs);   /* #FW-5 */
     if (sp) free(sp);
     return ESP_OK;
 }
@@ -545,6 +571,67 @@ static esp_err_t h_ws(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* #REC-11-A2: GET /api/waterfall/offload — конфиг + рантайм-статистика выгрузки.
+   Пароль НИКОГДА не отдаётся наружу — только флаг has_pass. */
+static esp_err_t h_offload_get(httpd_req_t *req)
+{
+    wf_offload_cfg_t  c; wf_offload_get_cfg(&c);
+    wf_offload_stat_t s; wf_offload_get_stat(&s);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject  (root, "enabled",     c.enabled);
+    cJSON_AddStringToObject(root, "url",         c.url);
+    cJSON_AddStringToObject(root, "user",        c.user);
+    cJSON_AddBoolToObject  (root, "has_pass",    c.pass[0] != 0);
+    cJSON_AddNumberToObject(root, "sent_ok",     s.sent_ok);
+    cJSON_AddNumberToObject(root, "failed",      s.failed);
+    cJSON_AddNumberToObject(root, "last_status", s.last_status);
+    cJSON_AddNumberToObject(root, "last_ok_at",  (double)s.last_ok_at);
+    cJSON_AddBoolToObject  (root, "busy",        s.busy);
+    char *out = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out ? out : "{}");
+    if (out) free(out);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* #REC-11-A2: POST /api/waterfall/offload — задать конфиг выгрузки.
+   Стартуем от текущего конфига: ключ "pass" отсутствует → прежний пароль
+   сохраняется (UI не пересылает пароль обратно). */
+static esp_err_t h_offload_set(httpd_req_t *req)
+{
+    if (!web_csrf_check(req)) return ESP_FAIL;
+    char body[512] = { 0 };
+    int rl = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rl <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
+    body[rl] = 0;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json"); return ESP_FAIL; }
+
+    wf_offload_cfg_t c;
+    wf_offload_get_cfg(&c);                              // сохранить pass при отсутствии ключа
+    cJSON *en   = cJSON_GetObjectItem(root, "enabled");
+    if (cJSON_IsBool(en))     c.enabled = cJSON_IsTrue(en);
+    cJSON *url  = cJSON_GetObjectItem(root, "url");
+    if (cJSON_IsString(url))  snprintf(c.url,  sizeof(c.url),  "%s", url->valuestring);
+    cJSON *user = cJSON_GetObjectItem(root, "user");
+    if (cJSON_IsString(user)) snprintf(c.user, sizeof(c.user), "%s", user->valuestring);
+    cJSON *pass = cJSON_GetObjectItem(root, "pass");
+    if (cJSON_IsString(pass)) snprintf(c.pass, sizeof(c.pass), "%s", pass->valuestring);
+    cJSON_Delete(root);
+
+    int r = wf_offload_set_cfg(&c);
+    httpd_resp_set_type(req, "application/json");
+    if (r == WF_OFFLOAD_OK) { httpd_resp_sendstr(req, "{\"ok\":true}"); return ESP_OK; }
+    const char *e = (r == WF_OFFLOAD_ERR_BLOCKED) ? "narodmon-blocked"
+                  : (r == WF_OFFLOAD_ERR_INVALID) ? "invalid-url"
+                  : (r == WF_OFFLOAD_ERR_NVS)     ? "nvs" : "error";
+    char msg[64];
+    snprintf(msg, sizeof(msg), "{\"ok\":false,\"err\":\"%s\"}", e);
+    httpd_resp_sendstr(req, msg);
+    return ESP_OK;
+}
+
 static void reg(httpd_handle_t srv, const char *uri, httpd_method_t m,
                 esp_err_t (*h)(httpd_req_t *))
 {
@@ -569,6 +656,9 @@ void web_waterfall_register(httpd_handle_t server)
     // #REC-11-A1: листинг и отдача сегментов (СТРОГО read-only).
     reg(server, "/api/waterfall/segments", HTTP_GET, h_segments);
     reg(server, "/api/waterfall/segment",  HTTP_GET, h_segment);
+    // #REC-11-A2: конфиг/статус автономной выгрузки сегментов.
+    reg(server, "/api/waterfall/offload",  HTTP_GET,  h_offload_get);
+    reg(server, "/api/waterfall/offload",  HTTP_POST, h_offload_set);
 
     httpd_uri_t ws = {
         .uri = "/ws/waterfall", .method = HTTP_GET,

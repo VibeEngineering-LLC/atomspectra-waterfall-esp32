@@ -41,6 +41,8 @@ static uint32_t         s_count;
 static uint16_t        *s_row;
 static uint32_t        *s_prev;
 static uint32_t         s_prev_total;
+static uint16_t        *s_dur;       // #FW-5: кольцо реальных длительностей строк (сек), параллельно s_ring
+static uint32_t         s_prev_time; // #FW-5: предыдущее device total_time_sec (дельта = живое время среза)
 static spectrum_data_t *s_snap;     // start()/seg_header_build() (serial/calib для шапки)
 static spectrum_data_t *s_wf_snap;  // приватный буфер периодического wf_task (P3-4)
 
@@ -55,6 +57,7 @@ static uint32_t  s_seg_cur = 0xFFFFFFFFu;  // индекс открытого с
 static uint32_t  s_seg_next;               // следующий индекс для нового сегмента
 static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
 static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
+static uint32_t  s_seg_pinned = 0xFFFFFFFFu; // #REC-11-A2: сегмент в процессе выгрузки (claim) — кольцо его не трогает
 static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки (только под s_fs_lock)
 
 #define LOCK()     do { if (s_lock)    xSemaphoreTake(s_lock,    portMAX_DELAY); } while (0)
@@ -127,13 +130,17 @@ static bool seg_name_index(const char *name, uint32_t *idx)
 static void seg_header_build(uint32_t rows, long saved_at, long started_at)
 {
     int cap = (int)sizeof(s_hdr);
+    // #FW-5: v2 — после 16384 Б спектра каждая строка несёт 2 Б реальной
+    // длительности (uint16 LE, сек). Шапка самоописываема: row_stride = размер
+    // записи строки, row_time.offset = смещение длительности внутри записи.
     int n = snprintf(s_hdr, sizeof(s_hdr),
         WF_F_PRE "%*" PRIu32 WF_F_MID "%*ld"
-        ",\"format\":\"atomspectra-waterfall\",\"version\":1"
+        ",\"format\":\"atomspectra-waterfall\",\"version\":2"
         ",\"channels\":%d,\"dtype\":\"uint16\",\"byte_order\":\"little\""
+        ",\"row_stride\":%d,\"row_time\":{\"dtype\":\"uint16\",\"unit\":\"sec\",\"offset\":%d}"
         ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
         WF_F_W, rows, WF_F_W, saved_at,
-        WF_CHANNELS, s_status.interval_sec, started_at);
+        WF_CHANNELS, WF_ROW_STRIDE, WF_ROW_BYTES, s_status.interval_sec, started_at);
     if (n > 0 && n < cap && s_snap && s_snap->serial_number[0])
         n += snprintf(s_hdr + n, cap - n, ",\"serial\":\"%s\"", s_snap->serial_number);
     if (n > 0 && n < cap && s_snap && s_snap->calib_valid) {
@@ -257,6 +264,7 @@ static uint32_t seg_oldest_completed(void)
         uint32_t idx;
         if (!seg_name_index(e->d_name, &idx)) continue;
         if (s_seg_fp && idx == s_seg_cur) continue;  // открытый — пропустить
+        if (idx == s_seg_pinned) continue;           // #REC-11-A2: выгружается прямо сейчас — не удалять
         if (idx < best) best = idx;
     }
     closedir(d);
@@ -267,7 +275,7 @@ static uint32_t seg_oldest_completed(void)
 // ЗАВЕРШЁННЫЙ сегмент. Текущий открытый не трогаем. (под s_fs_lock)
 static void make_room_for_row(void)
 {
-    while (flash_free_bytes() < (uint32_t)WF_ROW_BYTES + WF_FLASH_RESERVE) {
+    while (flash_free_bytes() < (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE) {
         uint32_t oldest = seg_oldest_completed();
         if (oldest == 0xFFFFFFFFu) break;        // только открытый/пусто — выйти
         char p[64];
@@ -298,6 +306,25 @@ static void seg_delete_all(void)
     closedir(d);
 }
 
+// #FW-5: определить размер записи строки в существующем сегменте по JSON-шапке.
+// v2 (есть "row_stride":NNNNN) → это значение (16386); legacy v1 (нет поля) →
+// WF_ROW_BYTES (16384, без длительностей). Читает только начало шапки; позиция
+// файла восстанавливается на 0. Так reconcile-по-размеру корректен для обоих форматов.
+static uint32_t seg_detect_stride(FILE *f)
+{
+    char hdr[320];
+    if (fseek(f, 8, SEEK_SET) != 0) { fseek(f, 0, SEEK_SET); return WF_ROW_BYTES; }
+    size_t rd = fread(hdr, 1, sizeof(hdr) - 1, f);
+    fseek(f, 0, SEEK_SET);
+    hdr[rd] = '\0';
+    const char *p = strstr(hdr, "\"row_stride\":");
+    if (p) {
+        unsigned long v = strtoul(p + 13, NULL, 10);   // 13 = strlen("\"row_stride\":")
+        if (v >= WF_ROW_BYTES && v <= (unsigned long)WF_ROW_BYTES + 64) return (uint32_t)v;
+    }
+    return WF_ROW_BYTES;   // legacy v1 — без длительностей
+}
+
 // boot-реконсиляция: пройти каталог, для каждого сегмента rows = из размера файла.
 // rows==0 → удалить огрызок; иначе пропатчить saved_rows (на случай падения до
 // finalize). Восстановить s_seg_next = max_idx+1 и seg_count. (под s_fs_lock)
@@ -316,15 +343,15 @@ static void seg_reconcile(void)
             snprintf(p, sizeof(p), WF_SEG_DIR "/%.32s", e->d_name);  // имя ≤24 (seg_name_index), %.32s = доказуемая граница для -Wformat-truncation
             struct stat sb;
             if (stat(p, &sb) != 0) continue;
-            long payload = (long)sb.st_size - WF_SEG_HEADER;
-            uint32_t rows = payload > 0 ? (uint32_t)(payload / WF_ROW_BYTES) : 0;
-            if (rows == 0) { unlink(p); continue; }
             FILE *f = fopen(p, "r+b");
-            if (f) {
-                seg_patch_rows(f, rows);
-                fflush(f); fsync(fileno(f));
-                fclose(f);
-            }
+            if (!f) continue;
+            uint32_t stride = seg_detect_stride(f);   // #FW-5: v2=16386 (с длит.), v1=16384
+            long payload = (long)sb.st_size - WF_SEG_HEADER;
+            uint32_t rows = payload > 0 ? (uint32_t)(payload / stride) : 0;
+            if (rows == 0) { fclose(f); unlink(p); continue; }
+            seg_patch_rows(f, rows);
+            fflush(f); fsync(fileno(f));
+            fclose(f);
             completed++;
             if (!any || idx > maxidx) { maxidx = idx; any = true; }
         }
@@ -340,9 +367,10 @@ static void seg_reconcile(void)
 
 // ----------------------------------------------------------------------------
 
-static void ring_push(const uint16_t *row)
+static void ring_push(const uint16_t *row, uint16_t dur)
 {
     memcpy(s_ring + (size_t)s_head * WF_CHANNELS, row, WF_ROW_BYTES);
+    s_dur[s_head] = dur;                 // #FW-5: реальная длительность среза (сек)
     s_head = (s_head + 1) % s_capacity;
     if (s_count < s_capacity) s_count++;
 }
@@ -364,12 +392,14 @@ void spectrogram_init(void)
         ring_bytes = (size_t)s_capacity * WF_ROW_BYTES;
         s_ring = heap_caps_malloc(ring_bytes, MALLOC_CAP_SPIRAM);
     }
+    // #FW-5: параллельное кольцо длительностей (s_capacity уже финализирована выше).
+    s_dur  = heap_caps_malloc((size_t)s_capacity * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     s_prev = heap_caps_malloc(WF_CHANNELS * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     s_row  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
     s_snap = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
     s_wf_snap = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
 
-    if (!s_ring || !s_prev || !s_row || !s_snap || !s_wf_snap) {
+    if (!s_ring || !s_dur || !s_prev || !s_row || !s_snap || !s_wf_snap) {
         ESP_LOGE(TAG, "PSRAM alloc failed");
         s_status.ready = false;
         return;
@@ -402,8 +432,18 @@ static void wf_task(void *arg)
         }
         s_prev_total = s_wf_snap->total_counts;
 
+        // #FW-5: реальная длительность среза = дельта живого времени прибора
+        // (total_time_sec, целые секунды). reset (счётчики прибора обнулились) →
+        // считать от 0. dur==0 (прибор не продвинул живое время за тик) хранится
+        // как есть; потребитель (N42-экспорт) подставит номинал при делении.
+        uint32_t cur_time = s_wf_snap->total_time_sec;
+        uint32_t dt = reset ? cur_time
+                            : (cur_time >= s_prev_time ? cur_time - s_prev_time : 0);
+        s_prev_time = cur_time;
+        uint16_t dur = dt > 65535 ? 65535 : (uint16_t)dt;
+
         LOCK();
-        ring_push(s_row);
+        ring_push(s_row, dur);
         s_status.total_rows++;
         s_status.ring_count = s_count;
         uint32_t idx     = s_status.total_rows - 1;
@@ -420,8 +460,11 @@ static void wf_task(void *arg)
             make_room_for_row();                // кольцо keep-last
             if (!s_seg_fp) seg_open_new();      // открыть сегмент лениво
             if (s_seg_fp) {
-                size_t wr = fwrite(s_row, 1, WF_ROW_BYTES, s_seg_fp);
-                if (wr != WF_ROW_BYTES || fflush(s_seg_fp) != 0) {
+                // #FW-5: запись строки = 16384 Б спектра + 2 Б длительности (uint16 LE).
+                uint8_t durle[WF_DUR_BYTES] = { (uint8_t)(dur & 0xFF), (uint8_t)(dur >> 8) };
+                size_t wr  = fwrite(s_row, 1, WF_ROW_BYTES, s_seg_fp);
+                size_t wrd = (wr == WF_ROW_BYTES) ? fwrite(durle, 1, WF_DUR_BYTES, s_seg_fp) : 0;
+                if (wr != WF_ROW_BYTES || wrd != WF_DUR_BYTES || fflush(s_seg_fp) != 0) {
                     ESP_LOGE(TAG, "seg row write failed (wr=%zu) — drop segment", wr);
                     fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
                 } else {
@@ -474,6 +517,7 @@ void spectrogram_restore(void)
     LOCK();
     memcpy(s_prev, s_snap->bins, WF_CHANNELS * sizeof(uint32_t));
     s_prev_total          = s_snap->total_counts;
+    s_prev_time           = s_snap->total_time_sec;   // #FW-5: база для дельты длительности
     s_head = 0; s_count = 0;
     s_status.ring_count   = 0;
     s_status.total_rows   = 0;     // счётчик ТЕКУЩЕЙ сессии записи (с момента возобновления)
@@ -498,6 +542,7 @@ int spectrogram_start(void)
     LOCK();
     memcpy(s_prev, s_snap->bins, WF_CHANNELS * sizeof(uint32_t));
     s_prev_total        = s_snap->total_counts;
+    s_prev_time         = s_snap->total_time_sec;   // #FW-5: база для дельты длительности
     s_head              = 0;
     s_count             = 0;
     s_status.ring_count = 0;
@@ -546,7 +591,8 @@ int spectrogram_clear(void)
     UNLOCK();
 
     if (s_seg_fp) { fclose(s_seg_fp); s_seg_fp = NULL; }
-    s_seg_cur  = 0xFFFFFFFFu;
+    s_seg_cur    = 0xFFFFFFFFu;
+    s_seg_pinned = 0xFFFFFFFFu;   // #REC-11-A2: индексы сбрасываются (next=0) — снять устаревший пин
     s_seg_rows = 0;
     seg_delete_all();
     s_seg_next = 0;
@@ -591,6 +637,24 @@ size_t spectrogram_copy_window(uint16_t *dst, size_t max_rows, uint32_t *first_t
     return n;
 }
 
+// #FW-5: реальные длительности (сек) до max_rows новейших строк кольца,
+// выровненные с spectrogram_copy_window/stream_window (старейшая из окна первой).
+// Возвращает число записанных элементов. 0 в элементе = device-время не
+// продвинулось (потребитель подставит номинал).
+size_t spectrogram_copy_window_durations(uint16_t *dst, size_t max_rows)
+{
+    LOCK();
+    size_t n = s_count;
+    if (n > max_rows) n = max_rows;
+    size_t start = ((size_t)s_head + s_capacity - n) % s_capacity;
+    for (size_t i = 0; i < n; i++) {
+        size_t ri = (start + i) % s_capacity;
+        dst[i] = s_dur[ri];
+    }
+    UNLOCK();
+    return n;
+}
+
 size_t spectrogram_stream_window(uint16_t *bounce, size_t max_rows,
                                  uint32_t *first_total_index,
                                  wf_emit_cb_t emit, void *ctx)
@@ -630,4 +694,58 @@ uint32_t spectrogram_seg_open_index(void)
     v = s_seg_fp ? s_seg_cur : 0xFFFFFFFFu;
     FSUNLOCK();
     return v;
+}
+
+// ----------------------------------------------------------------------------
+//  #REC-11-A2: координация выгрузки с кольцом keep-last (под s_fs_lock).
+//  claim → pin старейшего завершённого сегмента (кольцо его не удалит);
+//  done  → удалить с Flash после подтверждённого 2xx; release → снять пин (retry).
+// ----------------------------------------------------------------------------
+
+bool spectrogram_offload_claim(uint32_t *idx_out, char *name_out, size_t name_cap,
+                               char *path_out, size_t path_cap, long *size_out)
+{
+    bool got = false;
+    FSLOCK();
+    if (s_seg_pinned == 0xFFFFFFFFu) {                 // не заняты другой выгрузкой
+        uint32_t oldest = seg_oldest_completed();
+        if (oldest != 0xFFFFFFFFu) {
+            char p[80];
+            seg_path(p, sizeof(p), oldest);
+            struct stat sb;
+            if (stat(p, &sb) == 0 && (long)sb.st_size > WF_SEG_HEADER) {
+                s_seg_pinned = oldest;
+                if (idx_out)  *idx_out  = oldest;
+                if (name_out) snprintf(name_out, name_cap, "seg_%05" PRIu32 ".aswf", oldest);
+                if (path_out) snprintf(path_out, path_cap, "%s", p);
+                if (size_out) *size_out = (long)sb.st_size;
+                got = true;
+            }
+        }
+    }
+    FSUNLOCK();
+    return got;
+}
+
+void spectrogram_offload_done(uint32_t idx)
+{
+    FSLOCK();
+    if (idx == s_seg_pinned) {
+        char p[80];
+        seg_path(p, sizeof(p), idx);
+        if (unlink(p) != 0) ESP_LOGW(TAG, "offload_done: unlink %s failed", p);
+        LOCK();
+        if (s_status.seg_count) s_status.seg_count--;
+        UNLOCK();
+        s_seg_pinned = 0xFFFFFFFFu;
+        ESP_LOGI(TAG, "offload_done: seg_%05" PRIu32 " removed from flash", idx);
+    }
+    FSUNLOCK();
+}
+
+void spectrogram_offload_release(uint32_t idx)
+{
+    FSLOCK();
+    if (idx == s_seg_pinned) s_seg_pinned = 0xFFFFFFFFu;  // файл оставляем для повтора
+    FSUNLOCK();
 }
