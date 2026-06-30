@@ -531,7 +531,7 @@ function syncScroll(){
  var sb=document.getElementById("wf-scroll");
  if(!sb)return;
  var lastIdx=baseIndex+rows.length-1;
- var mx=Math.max(0,lastIdx-(WFH-1));
+ var mx=Math.max(0,rows.length-Math.min(WFH,rows.length)); // #UI-4: учёт baseIndex (кольцо) — max v = rows.length-WFH, не allow over-scroll в чёрное снизу
  if(parseInt(sb.max)!==mx)sb.max=mx;
  sb.disabled=(mx<=0);
  if(document.activeElement===sb)return;
@@ -1117,7 +1117,8 @@ wf.addEventListener("wheel",function(e){
   var bottom=(viewBottom<0)?lastIdx:viewBottom;
   var step=e.deltaY<0?-3:3;
   bottom+=step;
-  if(bottom>=lastIdx){viewBottom=-1;}else{if(bottom<baseIndex)bottom=baseIndex;viewBottom=bottom;}
+  // #UI-4: lo = низший допустимый bottom (окно нижним краем = baseIndex); при rows.length<WFH lo==lastIdx
+  var lo=baseIndex+Math.min(WFH,rows.length)-1;if(bottom<lo)bottom=lo;viewBottom=(bottom>=lastIdx)?-1:bottom;
   draw();
  }
 },{passive:false});
@@ -1132,7 +1133,7 @@ wf.addEventListener("wheel",function(e){
   var lastIdx=baseIndex+rows.length-1;
   var v=parseInt(sb.value)||0;
   if(v<=0){viewBottom=-1;}
-  else{var bottom=lastIdx-v;var lo=baseIndex+WFH-1;if(bottom<lo)bottom=lo;viewBottom=bottom;}
+  else{var win=Math.min(WFH,rows.length);var lo=baseIndex+win-1;var bottom=lastIdx-v;if(bottom<lo)bottom=lo;viewBottom=(bottom>=lastIdx)?-1:bottom;} // #UI-4: win=min(WFH,rows.length) — при малом числе строк lo не уходит выше lastIdx (нет чёрного сверху)
   draw();
  });
  var savedPal="Inferno";
