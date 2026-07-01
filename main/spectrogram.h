@@ -114,3 +114,7 @@ bool spectrogram_offload_claim(uint32_t *idx_out, char *name_out, size_t name_ca
                                char *path_out, size_t path_cap, long *size_out);
 void spectrogram_offload_done(uint32_t idx);
 void spectrogram_offload_release(uint32_t idx);
+
+// #REC-11 pull: удалить завершённый сегмент по индексу (PC подтвердил приём через
+// POST /api/waterfall/segment/delete). Не трогает открытый/pinned сегмент. true=удалён.
+bool spectrogram_seg_delete(uint32_t idx);

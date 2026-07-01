@@ -808,3 +808,35 @@ void spectrogram_offload_release(uint32_t idx)
     if (idx == s_seg_pinned) s_seg_pinned = 0xFFFFFFFFu;  // файл оставляем для повтора
     FSUNLOCK();
 }
+
+// #REC-11 pull: удалить завершённый сегмент по индексу (PC-клиент подтвердил приём
+// через POST /api/waterfall/segment/delete). В отличие от offload_done (снимает pin
+// именно push-выгрузки), работает для любого завершённого сегмента, выбранного ПК.
+// НИКОГДА не трогает СЕЙЧАС открытый сегмент и pin активной push-выгрузки. Так
+// pull-модель освобождает Flash без входящих портов на ПК (ПК сам инициирует связь).
+// Возвращает true, если файл удалён.
+bool spectrogram_seg_delete(uint32_t idx)
+{
+    bool ok = false;
+    FSLOCK();
+    bool is_open   = (s_seg_fp && idx == s_seg_cur);
+    bool is_pinned = (idx == s_seg_pinned);
+    if (!is_open && !is_pinned) {
+        char p[80];
+        seg_path(p, sizeof(p), idx);
+        struct stat sb;
+        if (stat(p, &sb) == 0) {
+            if (unlink(p) == 0) {
+                LOCK();
+                if (s_status.seg_count) s_status.seg_count--;
+                UNLOCK();
+                ok = true;
+                ESP_LOGI(TAG, "seg_delete: seg_%05" PRIu32 ".aswf removed (pull-ack)", idx);
+            } else {
+                ESP_LOGW(TAG, "seg_delete: unlink seg_%05" PRIu32 " failed", idx);
+            }
+        }
+    }
+    FSUNLOCK();
+    return ok;
+}
