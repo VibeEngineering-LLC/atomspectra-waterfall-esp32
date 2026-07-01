@@ -151,11 +151,16 @@ static esp_err_t handle_setup_connect(httpd_req_t *req)
     nvs_handle_t nvs;
     if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_str(nvs, "ssid", ssid);
-        // P2-6: пароль WiFi пишется в NVS открытым текстом. Это осознанный
-        // дизайн для модели "доверенный LAN"; единственная корректная защита —
-        // включить NVS-encryption через flash-encryption в sdkconfig
-        // (CONFIG_NVS_ENCRYPTION + secure boot). Менять sdkconfig — gate оператора,
-        // здесь не трогаем.
+        // P2-6 / #SEC-1: пароль WiFi пишется в NVS открытым текстом. Любой с
+        // физическим доступом к плате может вычитать flash
+        // (esptool read_flash 0x9000 0x6000 nvs.bin) и достать пароль строкой —
+        // шифрования нет. Это осознанный компромисс для модели "доверенный
+        // домашний LAN". Единственная корректная защита — включить шифрование
+        // flash (NVS-encryption работает поверх него): заготовка
+        // CONFIG_SECURE_FLASH_ENC_ENABLED + CONFIG_NVS_ENCRYPTION лежит
+        // закомментированной в sdkconfig.defaults. ⚠ Необратимо (прожигает eFuse),
+        // поэтому по умолчанию выкл — это gate оператора, здесь не трогаем.
+        // Подробности и последствия — INSTALL.md, раздел "9. Безопасность".
         nvs_set_str(nvs, "pass", pass ? pass : "");
         nvs_commit(nvs);
         nvs_close(nvs);

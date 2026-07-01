@@ -192,6 +192,59 @@ storage,  data, littlefs, ,         12944K      (12.9 MB — saved spectra)
 - **3 MB** for the firmware (current size ~800 KB — large headroom)
 - **12.9 MB** LittleFS — ~400 spectra of 32 KB each
 
+## 9. Security
+
+### WiFi password in flash
+
+Your WiFi password is stored in the `nvs` partition **in plaintext**. Anyone with
+physical access to the board can read the flash contents with a standard tool and
+extract the password:
+
+```bash
+esptool.py -p COM14 read_flash 0x9000 0x6000 nvs.bin
+strings nvs.bin        # the SSID and password will be among the strings
+```
+
+The Web UI (basic auth) and OTA passwords are stored the same way (unencrypted). This
+is a deliberate trade-off for the typical scenario — the board sits on a trusted home
+LAN and only the owner has physical access to it.
+
+### When it matters
+
+Enable encryption if:
+
+- the board is in a publicly accessible / untrusted location (office, lab, public space);
+- strangers may gain physical access to it;
+- sensitive credentials are stored in NVS.
+
+### How to enable it (NVS encryption + flash encryption)
+
+The only correct way to protect the password in NVS is **flash encryption** (NVS
+encryption works on top of it). The template in [`sdkconfig.defaults`](sdkconfig.defaults)
+is commented out:
+
+```
+#CONFIG_SECURE_FLASH_ENC_ENABLED=y
+#CONFIG_NVS_ENCRYPTION=y
+```
+
+> ⚠ **IRREVERSIBLE.** Flash encryption burns eFuses on the ESP32-S3 chip. The process
+> cannot be rolled back, the chip cannot be returned to its original state, and in
+> Release mode reflashing over UART is blocked forever. A configuration mistake can
+> brick the board.
+
+Steps (only deliberately, after reading the Espressif documentation):
+
+1. Study the official docs:
+   [Flash Encryption](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/security/flash-encryption.html)
+   and [NVS Encryption](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/storage/nvs_encryption.html).
+2. Uncomment the two lines in `sdkconfig.defaults`.
+3. Rebuild from scratch: `idf.py fullclean && idf.py build`.
+4. Flash. On first boot the chip generates a key and encrypts the flash.
+
+The firmware **ships with encryption disabled by default** — the decision is left to
+you precisely because it is irreversible.
+
 ## Troubleshooting
 
 ### The spectrometer is not detected over USB
