@@ -34,6 +34,19 @@
     <span id="meta">файл не загружен</span>
   </div>
   <div id="drop">Перетащи сюда файл <code>.n42</code> или <code>.aswf</code> (или нажми «Открыть файл…»)</div>
+  <div class="row" id="collectRow">
+    <strong>Сбор с платы</strong>
+    <label>хост <input id="host" type="text" value="" style="width:210px"></label>
+    <button id="wait" title="авто-опрос платы: подхватывает завершённые сегменты по мере готовности">Ждать сегменты</button>
+    <button id="collect">Собрать сегменты</button>
+    <label title="после успешной сборки послать плате ack-delete → освобождает Flash"><input id="wipe" type="checkbox"> стереть на плате</label>
+    <span class="sep"></span>
+    <button id="recStart" title="POST /api/waterfall/start — плата начинает копить сегменты">▶ Старт записи</button>
+    <button id="recStop" title="POST /api/waterfall/stop — финализирует текущий сегмент">⏸ Стоп</button>
+    <span class="sep"></span>
+    <button id="dl" disabled>Скачать .aswf</button>
+    <span id="cstat" style="color:#9ad"></span>
+  </div>
   <div class="row">
     <label>Канал от <input id="chMin" type="number" value="0" min="0"></label>
     <label>до <input id="chMax" type="number" value="8191" min="1"></label>
@@ -288,6 +301,189 @@ cv.addEventListener("mousemove",e=>{
   tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px";
 });
 cv.addEventListener("mouseleave",()=>tip.style.display="none");
+
+// ---- сбор сегментов водопада прямо с платы ----
+// База запросов: если страница ОТДАНА платой (http/https) — same-origin
+// (пустая база = относительные пути, CORS не нужен). Если открыта как file:// —
+// берём абсолютный хост из поля (но кросс-origin fetch к плате браузер обычно
+// заблокирует по CORS; надёжный путь — открыть http://<плата>/viewer).
+const servedOverHttp = /^https?:$/.test(location.protocol);
+function boardBase(){
+  if(servedOverHttp) return "";                       // same-origin
+  return ($("host").value||"").trim().replace(/\/+$/,"");
+}
+function cstat(msg,err){ const el=$("cstat"); el.textContent=msg; el.style.color=err?"#f88":"#9ad"; }
+
+// COMBINED накапливается инкрементально между проходами (одноразовый сбор И авто-ожидание)
+let COMBINED=null;         // {channels, interval_sec, started_at, serial, calib, rows:[Uint32Array...]}
+const seen=new Set();      // имена уже проглоченных сегментов (dedup между проходами)
+const pendingDelete=[];    // имена, ожидающие ack-delete (если включён wipe)
+let wipedCount=0, csrfTok=null, waitTimer=null;
+
+async function jget(url,binary){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error("HTTP "+r.status+" "+url);
+  return binary ? await r.arrayBuffer() : await r.json();
+}
+function corsHint(){ return servedOverHttp?"":" (file:// → CORS; открой http://<плата>/viewer)"; }
+
+function resetCollection(){
+  COMBINED=null; seen.clear(); pendingDelete.length=0; wipedCount=0; csrfTok=null;
+  $("dl").disabled=true;
+}
+function metaLine(){
+  if(!COMBINED) return "нет данных";
+  const c=COMBINED;
+  return `СБОРКА с платы  •  сегментов: ${seen.size}  •  строк: ${c.rows.length}  •  каналов: ${c.channels}`+
+         `  •  калибровка: ${c.calib?("есть ["+c.calib.map(x=>(+x).toPrecision(4)).join(", ")+"]"):"нет"}`;
+}
+// построить ST из накопленного COMBINED и перерисовать
+function applyCombined(){
+  if(!COMBINED||!COMBINED.rows.length) return;
+  const {channels,interval_sec:interval,started_at:started,serial,calib,rows}=COMBINED;
+  ST={ channels, calib, _aswf:{channels,started_at:started,interval_sec:interval,
+                               saved_rows:rows.length,serial,calibration:calib},
+       rows: rows.map((counts,i)=>{
+         const t=started>0?(started+i*interval):0;
+         return { comp:"", start:t>0?new Date(t*1000).toISOString():"строка #"+i,
+                  real:"PT"+interval+"S", counts };
+       }) };
+  $("chMax").value=channels-1;
+  refresh();
+  $("dl").disabled=false;
+}
+
+// скачать все завершённые сегменты, которых ещё нет в seen → дописать в COMBINED. Вернуть #новых сегментов.
+async function ingestNewFinalized(base){
+  const list = await jget(base+"/api/waterfall/segments");
+  const segs = (Array.isArray(list)?list:[]).filter(s=>s.finalized && !seen.has(s.name))
+                 .sort((a,b)=>a.idx-b.idx);
+  let added=0;
+  for(const s of segs){
+    cstat(`скачиваю ${s.name}…`);
+    const buf = await jget(base+"/api/waterfall/segment?name="+encodeURIComponent(s.name), true);
+    if(buf.byteLength!==s.bytes) throw new Error(`${s.name}: размер ${buf.byteLength}≠${s.bytes} (листинг)`);
+    const p = parseAswf(buf);                 // {channels, rows, calib, _aswf}
+    if(!COMBINED){
+      const h=p._aswf||{};
+      COMBINED={ channels:p.channels, interval_sec:+(h.interval_sec)||0,
+                 started_at:+(h.started_at)||0, serial:h.serial||null,
+                 calib:p.calib||null, rows:[] };
+    } else if(p.channels!==COMBINED.channels){
+      throw new Error(`${s.name}: channels ${p.channels}≠${COMBINED.channels}`);
+    }
+    if(!COMBINED.calib && p.calib) COMBINED.calib=p.calib;
+    for(const r of p.rows) COMBINED.rows.push(r.counts);
+    seen.add(s.name);
+    if($("wipe").checked) pendingDelete.push(s.name);
+    added++;
+  }
+  return added;
+}
+
+// послать ack-delete для проглоченных сегментов → плата освобождает Flash
+async function wipeSeen(base){
+  if(!pendingDelete.length) return;
+  if(!csrfTok){ try{ csrfTok=(await jget(base+"/api/csrf-token")).token||""; }catch(e){ return; } }
+  for(let i=pendingDelete.length-1;i>=0;i--){
+    const name=pendingDelete[i];
+    try{
+      const r=await fetch(base+"/api/waterfall/segment/delete?name="+encodeURIComponent(name),
+                          {method:"POST",headers:{"X-CSRF-Token":csrfTok}});
+      if(r.ok){ let ok=true; try{ ok=(await r.json()).ok!==false; }catch(e){} if(ok){ wipedCount++; pendingDelete.splice(i,1); } }
+    }catch(e){}
+  }
+}
+
+// одноразовый сбор: сброс + один проход
+async function collectFromBoard(){
+  const base=boardBase();
+  $("collect").disabled=true;
+  try{
+    resetCollection();
+    cstat("запрашиваю список сегментов…");
+    const added=await ingestNewFinalized(base);
+    if(!added){ cstat("нет завершённых сегментов (Старт→накопление→Стоп)",true); return; }
+    applyCombined();
+    $("meta").textContent=metaLine();
+    if($("wipe").checked){ cstat("сборка ок, стираю на плате…"); await wipeSeen(base); }
+    cstat(`готово: собрано ${COMBINED.rows.length} строк из ${seen.size} сегм.`+
+          ($("wipe").checked?`, стёрто ${wipedCount}`:""));
+  }catch(e){
+    cstat("ошибка: "+e.message+corsHint(),true);
+  }finally{
+    $("collect").disabled=false;
+  }
+}
+
+// авто-ожидание: периодический проход без сброса, дописывает новые сегменты
+async function waitTick(){
+  const base=boardBase();
+  try{
+    const added=await ingestNewFinalized(base);
+    if(added){ applyCombined(); $("meta").textContent=metaLine(); if($("wipe").checked) await wipeSeen(base); }
+    const n=COMBINED?COMBINED.rows.length:0;
+    cstat(`жду сегменты… собрано ${seen.size} сегм. / ${n} строк`+
+          (added?` (+${added} нов.)`:"")+($("wipe").checked?`, стёрто ${wipedCount}`:""));
+  }catch(e){
+    cstat("ожидание: "+e.message+corsHint(),true);
+  }
+}
+function toggleWait(){
+  if(waitTimer){ clearInterval(waitTimer); waitTimer=null; $("wait").textContent="Ждать сегменты";
+                 cstat("ожидание остановлено"); return; }
+  $("wait").textContent="⏹ Стоп ожидания";
+  waitTick();                               // первый проход сразу
+  waitTimer=setInterval(waitTick, 8000);    // далее каждые 8 с
+}
+
+// Старт/Стоп записи прямо со страницы (POST + CSRF)
+async function recCmd(path){
+  const base=boardBase();
+  try{
+    if(!csrfTok) csrfTok=(await jget(base+"/api/csrf-token")).token||"";
+    const r=await fetch(base+"/api/waterfall/"+path,{method:"POST",headers:{"X-CSRF-Token":csrfTok}});
+    cstat(path==="start"?("запись: HTTP "+r.status+" — плата копит сегменты"):("стоп: HTTP "+r.status),!r.ok);
+  }catch(e){ cstat(path+": "+e.message+corsHint(),true); }
+}
+
+function buildAswfBlob(){
+  if(!COMBINED) return null;
+  const {channels,interval_sec,started_at,serial,calib,rows}=COMBINED;
+  const hdrObj={channels,interval_sec,started_at,saved_rows:rows.length};
+  if(serial) hdrObj.serial=serial;
+  if(calib)  hdrObj.calibration=calib;
+  const hdrStr=JSON.stringify(hdrObj);
+  const hdrBytes=new TextEncoder().encode(hdrStr);
+  const rowBytes=channels*2;
+  const total=8+hdrBytes.length+rows.length*rowBytes;
+  const out=new Uint8Array(total), dv=new DataView(out.buffer);
+  out[0]=0x41;out[1]=0x53;out[2]=0x57;out[3]=0x46;      // ASWF
+  dv.setUint32(4,hdrBytes.length,true);
+  out.set(hdrBytes,8);
+  let off=8+hdrBytes.length;
+  for(const counts of rows){
+    const u16=new Uint16Array(out.buffer,off,channels);
+    for(let k=0;k<channels;k++){ const v=counts[k]; u16[k]=v>65535?65535:v; }
+    off+=rowBytes;
+  }
+  return new Blob([out],{type:"application/octet-stream"});
+}
+
+$("collect").onclick=collectFromBoard;
+$("wait").onclick=toggleWait;
+$("recStart").onclick=()=>recCmd("start");
+$("recStop").onclick=()=>recCmd("stop");
+$("dl").onclick=()=>{
+  const b=buildAswfBlob(); if(!b) return;
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(b);
+  a.download="waterfall_collected.aswf";
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+};
+// префилл хоста + подсказка про CORS для file://
+if(servedOverHttp){ $("host").value=location.origin; $("host").readOnly=true; }
+else{ $("host").value="http://atomspectra.local"; }
 
 // ---- optional ?src= auto-load (when served over http) ----
 const src = new URLSearchParams(location.search).get("src");
