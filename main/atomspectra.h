@@ -17,6 +17,10 @@
 
 #define TCP_BRIDGE_PORT       8234
 
+// #DEDUP-1: единая точка монтирования LittleFS. Раньше дублировалась локальными
+// #define в spectrum.c / spectrogram.c / web_server.c.
+#define STORAGE_PATH          "/storage"
+
 #define CMD_HISTOGRAM         0x01
 #define CMD_OSCILLOSCOPE      0x02
 #define CMD_TEXT              0x03
@@ -83,11 +87,22 @@ void web_server_init(void);
 void tcp_bridge_init(void);
 bool tcp_bridge_client_connected(void);
 uint32_t tcp_bridge_dropped_bytes(void);
+uint32_t usb_host_cdc_rx_errors(void);  // #TCP-4
+void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz);  // #UI-1
 
 void spectrum_init(void);
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len);
 void spectrum_process_stat_packet(const uint8_t *data, size_t len);
 void spectrum_process_info_response(const char *text);
+// #DEV-6: ответ на -tc_pot? ("Tcpot [...]") — таблица баз. темп. компенсации,
+// НЕ входит в -inf (см. #DOC-3/BUG-AS-08). Хранится сырым текстом для бэкапа.
+void spectrum_process_tcpot_response(const char *text);
+// Сырые тексты последних ответов -inf / -tc_pot? (байт-в-байт, формат как у
+// автосейва MCA.exe) — для /api/settings/backup. *out_seq — монотонный счётчик,
+// растёт при каждом новом ответе; используется вызывающим для ожидания свежего
+// ответа после отправки команды (сравнить seq до/после).
+int spectrum_get_info_raw(char *out, size_t outsz, uint32_t *out_seq);
+int spectrum_get_tcpot_raw(char *out, size_t outsz, uint32_t *out_seq);
 void spectrum_reset(void);
 const spectrum_data_t *spectrum_get_current(void);
 bool spectrum_get_snapshot(spectrum_data_t *out);

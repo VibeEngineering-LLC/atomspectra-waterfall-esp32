@@ -167,6 +167,7 @@ idf.py -p COM14 flash
 | `/api/export.n42` | GET | ANSI N42.42 (живой спектр) |
 | `/api/export.spe` | GET | ЛСРМ `.spe` (живой спектр) |
 | `/api/command` | POST | Послать текстовую команду прибору |
+| `/api/devlog` | GET | Последние текстовые ответы прибора (кольцо, параметр `?since=N`) |
 | `/api/reset` | POST | Сбросить счётчики спектра |
 | `/api/save` | POST | Сохранить спектр на flash |
 | `/api/list` | GET | Список сохранённых спектров (JSON) |

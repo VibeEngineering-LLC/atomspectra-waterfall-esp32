@@ -26,6 +26,16 @@
 #define WF_HDR_RESERVE        4096            // .aswf JSON-заголовок (добивается пробелами)
 #define WF_SEG_HEADER         (8 + WF_HDR_RESERVE)  // offset payload в сегменте (= 4104)
 
+// #FW-5: формат сегмента v2 — к каждой строке в файле (16384 Б спектра uint16 LE)
+// приписаны 2 Б реальной длительности среза (uint16 LE, секунды = дельта живого
+// времени прибора total_time_sec). Запись фикс. размера WF_ROW_STRIDE → reconcile
+// по размеру файла остаётся тривиальным. Старые сегменты v1 (без длительностей,
+// stride = WF_ROW_BYTES) распознаются по отсутствию "row_stride" в JSON-шапке.
+// Шапка v2 самоописываема: "version":2, "row_stride":16386,
+// "row_time":{"dtype":"uint16","unit":"sec","offset":16384}.
+#define WF_DUR_BYTES          2                              // uint16 LE, секунды
+#define WF_ROW_STRIDE         (WF_ROW_BYTES + WF_DUR_BYTES)  // = 16386, запись строки в сегмент
+
 typedef struct {
     bool     recording;
     bool     persist;        // писать строки во флэш
@@ -67,6 +77,12 @@ void   spectrogram_set_row_cb(wf_row_cb_t cb);
 // *first_total_index = total-индекс первой возвращённой строки.
 size_t spectrogram_copy_window(uint16_t *dst, size_t max_rows, uint32_t *first_total_index);
 
+// #FW-5: копирует реальные длительности (сек) до max_rows новейших строк кольца,
+// выровненные со spectrogram_copy_window/stream_window (старейшая из окна первой).
+// Возвращает число элементов. Элемент 0 = device-время не продвинулось за тик
+// (потребитель N42 подставляет номинальный interval_sec при делении на длительность).
+size_t spectrogram_copy_window_durations(uint16_t *dst, size_t max_rows);
+
 // Колбэк отдачи одной строки окна (возврат false прерывает стрим).
 typedef bool (*wf_emit_cb_t)(void *ctx, const uint16_t *row, size_t bytes);
 
@@ -87,3 +103,18 @@ const char *spectrogram_seg_dir(void);
 // нет. Web-слой помечает его finalized:false в /segments (его шапка ещё не
 // пропатчена — saved_rows=0; забирать его в браузер не нужно до finalize).
 uint32_t spectrogram_seg_open_index(void);
+
+// #REC-11-A2: координация автономной выгрузки с кольцом keep-last.
+// claim — застолбить (pin) старейший завершённый сегмент: кольцо его не удалит,
+//   пока он выгружается. Возвращает true и заполняет idx/name/path/size, либо
+//   false (уже занято другой выгрузкой, либо нечего слать).
+// done — вызвать после подтверждённого 2xx: удалить файл с Flash и снять пин.
+// release — снять пин без удаления (выгрузка не удалась, файл оставить для повтора).
+bool spectrogram_offload_claim(uint32_t *idx_out, char *name_out, size_t name_cap,
+                               char *path_out, size_t path_cap, long *size_out);
+void spectrogram_offload_done(uint32_t idx);
+void spectrogram_offload_release(uint32_t idx);
+
+// #REC-11 pull: удалить завершённый сегмент по индексу (PC подтвердил приём через
+// POST /api/waterfall/segment/delete). Не трогает открытый/pinned сегмент. true=удалён.
+bool spectrogram_seg_delete(uint32_t idx);

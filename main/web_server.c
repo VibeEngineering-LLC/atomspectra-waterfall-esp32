@@ -1,11 +1,13 @@
 #include "atomspectra.h"
 #include "shproto.h"
 #include "web_waterfall.h"
+#include "web_util.h"
 #include "boot_config.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "cJSON.h"
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -23,8 +25,6 @@
 #include <dirent.h>
 
 static const char *TAG = "web";
-
-#define STORAGE_PATH "/sto" "rage"
 
 // CSRF-токен: генерируется при старте, выдаётся по GET /api/csrf-token,
 // требуется в заголовке X-CSRF-Token на всех мутирующих POST. Защищает
@@ -64,23 +64,6 @@ static bool csrf_check(httpd_req_t *req)
 bool web_csrf_check(httpd_req_t *req)
 {
     return csrf_check(req);
-}
-
-// P3-9: serial с прибора уходит в XML-разметку → экранировать &<>"'.
-static void xml_escape(const char *in, char *out, size_t cap)
-{
-    size_t o = 0;
-    for (const char *p = in; *p && o + 6 < cap; p++) {
-        switch (*p) {
-        case '&':  o += snprintf(out + o, cap - o, "&amp;");  break;
-        case '<':  o += snprintf(out + o, cap - o, "&lt;");   break;
-        case '>':  o += snprintf(out + o, cap - o, "&gt;");   break;
-        case '"':  o += snprintf(out + o, cap - o, "&quot;"); break;
-        case '\'': o += snprintf(out + o, cap - o, "&apos;"); break;
-        default:   out[o++] = *p; break;
-        }
-    }
-    out[o] = '\0';
 }
 
 static esp_err_t handle_csrf_token(httpd_req_t *req)
@@ -192,11 +175,11 @@ static esp_err_t render_spectrum_json(httpd_req_t *req, const spectrum_data_t *s
     if (pos > 0) httpd_resp_send_chunk(req, buf, pos);
     int n = snprintf(buf, 4096,
         "],\"total\":%" PRIu32 ",\"cpu\":%u,\"cps\":%" PRIu32 ",\"lost\":%" PRIu32 ",\"time\":%" PRIu32 ",\"live\":%.1f,"
-        "\"bridge_drop\":%" PRIu32 ","
+        "\"bridge_drop\":%" PRIu32 ",\"usb_rx_err\":%" PRIu32 ","
         "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\"",
         sp->total_counts, sp->cpu_load, sp->cps, sp->lost_impulses,
         sp->total_time_sec, compute_live_time(sp),
-        tcp_bridge_dropped_bytes(),
+        tcp_bridge_dropped_bytes(), usb_host_cdc_rx_errors(),
         sp->temperature[0], sp->temperature[1], sp->temperature[2],
         sp->serial_number[0] ? sp->serial_number : "");
     httpd_resp_send_chunk(req, buf, n);
@@ -249,6 +232,27 @@ static esp_err_t handle_command(httpd_req_t *req)
     shproto_packet_complete(&pkt);
     int ret = usb_host_cdc_send(pkt.data, pkt.len);
     httpd_resp_sendstr(req, ret == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
+    return ESP_OK;
+}
+
+// #UI-1: лог текстовых ответов прибора для веб-UI. GET /api/devlog?since=N
+// Read-only (CSRF не нужен). Отдаёт {"lines":[{"seq":N,"text":"..."}],"next":M}.
+static esp_err_t handle_devlog(httpd_req_t *req)
+{
+    uint32_t since = 0;
+    char q[48], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK)
+        since = strtoul(v, NULL, 10);
+    char *buf = malloc(9000);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    usb_host_cdc_devlog_json(since, buf, 9000);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    free(buf);
     return ESP_OK;
 }
 
@@ -381,6 +385,7 @@ static esp_err_t handle_list(httpd_req_t *req)
 EMBED_HTML_HANDLER(handle_index,        index_html)
 EMBED_HTML_HANDLER(handle_saved_page,   saved_html)
 EMBED_HTML_HANDLER(handle_system_page,  system_html)
+EMBED_HTML_HANDLER(handle_service_page, service_html)
 
 static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp, const char *filename)
 {
@@ -409,7 +414,7 @@ static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp
     localtime_r(&end_time, &te);
 
     char serial_esc[160];
-    xml_escape(sp->serial_number[0] ? sp->serial_number : "AtomSpectra",
+    web_xml_escape(sp->serial_number[0] ? sp->serial_number : "AtomSpectra",
                serial_esc, sizeof(serial_esc));
     int n = snprintf(buf, 4096,
         "      <SampleInfo>\r\n"
@@ -1003,6 +1008,263 @@ static esp_err_t handle_set_calibration(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ---- #DEV-6: бэкап/восстановление настроек прибора (вкладка «Сервис») ----
+//
+// Формат — сырой текст ответов -inf + -tc_pot?, байт-в-байт совместимый с
+// автосейвом MCA.exe (references/atomspectra_settings_backup_2026-07-01.md).
+// Ниже — общий key/value-парсер этого текста для восстановления.
+
+static inline bool is_kv_boundary(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// Ищет "KEY" на границе слова (не внутри другого токена — напр. не путает
+// "POT" с "POT2", "TC" с "TCpot") и возвращает указатель на начало значения
+// (сразу после разделяющего пробела), либо NULL.
+// Граница слова — пробел/таб/CR/LF (не только пробел): бэкап — две строки
+// через "\r\n" ("Tcpot [...]" начинается сразу после перевода строки), якорь
+// только на ' ' пропускал бы этот ключ (#DEV-7, 2026-07-01).
+static const char *find_kv(const char *text, const char *key)
+{
+    size_t klen = strlen(key);
+    const char *p = text;
+    while ((p = strstr(p, key)) != NULL) {
+        bool left_ok  = (p == text) || is_kv_boundary(p[-1]);
+        bool right_ok = (p[klen] == '\0') || is_kv_boundary(p[klen]);
+        if (left_ok && right_ok)
+            return p + klen + (is_kv_boundary(p[klen]) && p[klen] != '\0' ? 1 : 0);
+        p += 1;
+    }
+    return NULL;
+}
+
+static bool kv_get_int(const char *text, const char *key, long *out)
+{
+    const char *v = find_kv(text, key);
+    if (!v) return false;
+    char *end;
+    long val = strtol(v, &end, 10);
+    if (end == v) return false;
+    *out = val;
+    return true;
+}
+
+static bool kv_get_double(const char *text, const char *key, double *out)
+{
+    const char *v = find_kv(text, key);
+    if (!v) return false;
+    char *end;
+    double val = strtod(v, &end);
+    if (end == v) return false;
+    *out = val;
+    return true;
+}
+
+// Копирует значение-токен до пробела (для "ON"/"OFF" и т.п.)
+static bool kv_get_token(const char *text, const char *key, char *buf, size_t bufsz)
+{
+    const char *v = find_kv(text, key);
+    if (!v) return false;
+    size_t n = 0;
+    while (v[n] && v[n] != ' ' && n < bufsz - 1) { buf[n] = v[n]; n++; }
+    buf[n] = '\0';
+    return n > 0;
+}
+
+// Парсит "KEY [n1 n2 ...]" -> массив long (до max элементов). Возвращает
+// число элементов (0 для "[]"), либо -1 если ключ/скобка не найдены.
+static int kv_get_array(const char *text, const char *key, long *out, int max)
+{
+    const char *v = find_kv(text, key);
+    if (!v) return -1;
+    while (*v == ' ') v++;
+    if (*v != '[') return -1;
+    v++;
+    int n = 0;
+    while (*v && *v != ']') {
+        char *end;
+        long val = strtol(v, &end, 10);
+        if (end == v) break;
+        if (n < max) out[n++] = val;
+        v = end;
+        while (*v == ' ') v++;
+    }
+    return n;
+}
+
+// GET /api/settings/backup — read-only относительно физического состояния
+// прибора: шлёт -inf/-tc_pot? и отдаёт сырые ответы (см. spectrum_get_info_raw/
+// spectrum_get_tcpot_raw, atomspectra.h). CSRF не требуется (не мутирует прибор).
+static esp_err_t handle_settings_backup(httpd_req_t *req)
+{
+    if (!usb_host_cdc_is_connected()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Device not connected");
+        return ESP_FAIL;
+    }
+
+    char line[700];
+    uint32_t seq_before = 0, seq_after = 0;
+
+    spectrum_get_info_raw(line, sizeof(line), &seq_before);
+    usb_host_send_text_command("-inf");
+    for (int waited = 0; waited < 2000; waited += 50) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        spectrum_get_info_raw(line, sizeof(line), &seq_after);
+        if (seq_after != seq_before) break;
+    }
+    if (seq_after == seq_before) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No response to -inf (device busy/offline?)");
+        return ESP_FAIL;
+    }
+    char info_line[700];
+    spectrum_get_info_raw(info_line, sizeof(info_line), NULL);
+
+    spectrum_get_tcpot_raw(line, sizeof(line), &seq_before);
+    usb_host_send_text_command("-tc_pot?");
+    seq_after = seq_before;
+    for (int waited = 0; waited < 2000; waited += 50) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        spectrum_get_tcpot_raw(line, sizeof(line), &seq_after);
+        if (seq_after != seq_before) break;
+    }
+    if (seq_after == seq_before) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No response to -tc_pot? (older firmware?)");
+        return ESP_FAIL;
+    }
+    char tcpot_line[700];
+    spectrum_get_tcpot_raw(tcpot_line, sizeof(tcpot_line), NULL);
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"atomspectra_backup.txt\"");
+    httpd_resp_sendstr_chunk(req, info_line);
+    httpd_resp_sendstr_chunk(req, "\r\n");
+    httpd_resp_sendstr_chunk(req, tcpot_line);
+    httpd_resp_sendstr_chunk(req, "\r\n");
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static void send_cmd_delayed(const char *cmd)
+{
+    usb_host_send_text_command(cmd);
+    // Пауза между командами настройки — не заваливать вход прибора пачкой
+    // текстовых команд подряд (см. -t/-t_pot до 20 точек каждая).
+    vTaskDelay(pdMS_TO_TICKS(30));
+}
+
+// POST /api/settings/restore — body = текст бэкапа (тот же формат, что
+// отдаёт handle_settings_backup). Разбирает поля и шлёт прибору
+// последовательность команд настройки по PROTOCOL.md.
+// ⚠ МЕНЯЕТ физическую конфигурацию прибора (RISE/FALL/NOISE/MAX/HYST/F/POT/
+// POT2/термокомпенсацию/pile-up). CSRF обязателен. Первый реальный тест на
+// железе — только по явному отдельному «да» оператора (см. CLAUDE.md #DEV-6,
+// прецедент #DEV-5 — оператор ранее сказал «не сейчас» именно для -frq).
+static esp_err_t handle_settings_restore(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    if (!usb_host_cdc_is_connected()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Device not connected");
+        return ESP_FAIL;
+    }
+
+    char *body = malloc(1600);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    int total = 0, r;
+    while (total < 1599 && (r = httpd_req_recv(req, body + total, 1599 - total)) > 0)
+        total += r;
+    if (total <= 0) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[total] = '\0';
+
+    if (!strstr(body, "VERSION ") || !strstr(body, "RISE ")) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Not an AtomSpectra backup (VERSION/RISE missing)");
+        return ESP_FAIL;
+    }
+
+    char cmd[160];
+    long v;
+    double d;
+    char tok[16];
+    long arr[40];
+    int n;
+
+    if (kv_get_int(body, "RISE", &v))  { snprintf(cmd, sizeof(cmd), "-ris %ld", v);  send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "FALL", &v))  { snprintf(cmd, sizeof(cmd), "-fall %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "NOISE", &v)) { snprintf(cmd, sizeof(cmd), "-nos %ld", v);  send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "HYST", &v))  { snprintf(cmd, sizeof(cmd), "-hyst %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "MAX", &v))   { snprintf(cmd, sizeof(cmd), "-max %ld", v);  send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "STEP", &v))  { snprintf(cmd, sizeof(cmd), "-step %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_double(body, "F", &d) && d > 0) {
+        snprintf(cmd, sizeof(cmd), "-frq %ld", (long)(d + 0.5));
+        send_cmd_delayed(cmd);
+    }
+    // POT/POT2 = значения U (HV) и V (baseline) соответственно (см.
+    // atomspectra_protocol_official_spec.txt:141). Синтаксис без пробела.
+    if (kv_get_int(body, "POT", &v))  { snprintf(cmd, sizeof(cmd), "-U%ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "POT2", &v)) { snprintf(cmd, sizeof(cmd), "-V%ld", v); send_cmd_delayed(cmd); }
+
+    if (kv_get_int(body, "Prise", &v)) { snprintf(cmd, sizeof(cmd), "-prise %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "Srise", &v)) { snprintf(cmd, sizeof(cmd), "-srise %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "Pfall", &v)) { snprintf(cmd, sizeof(cmd), "-pfall %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_int(body, "Sfall", &v)) { snprintf(cmd, sizeof(cmd), "-sfall %ld", v); send_cmd_delayed(cmd); }
+
+    if (kv_get_int(body, "PileUpThr", &v)) { snprintf(cmd, sizeof(cmd), "-pthr %ld", v); send_cmd_delayed(cmd); }
+    n = kv_get_array(body, "PileUp", arr, 100);
+    if (n > 0) {
+        int off = snprintf(cmd, sizeof(cmd), "-pileup");
+        for (int i = 0; i < n && off < (int)sizeof(cmd) - 8; i++)
+            off += snprintf(cmd + off, sizeof(cmd) - off, " %ld", arr[i]);
+        send_cmd_delayed(cmd);
+    }
+
+    // Tco[] — до 20 точек (temp, max_integral) термокомпенсации макс. интеграла.
+    n = kv_get_array(body, "Tco", arr, 40);
+    if (n >= 2) {
+        send_cmd_delayed("-tclear");
+        int npoints = n / 2;
+        if (npoints > 20) npoints = 20;
+        for (int i = 0; i < npoints; i++) {
+            snprintf(cmd, sizeof(cmd), "-t %d %ld %ld", i + 1, arr[2 * i], arr[2 * i + 1]);
+            send_cmd_delayed(cmd);
+        }
+    }
+    if (kv_get_int(body, "TP", &v)) { snprintf(cmd, sizeof(cmd), "-tp %ld", v); send_cmd_delayed(cmd); }
+    if (kv_get_token(body, "TC", tok, sizeof(tok))) {
+        snprintf(cmd, sizeof(cmd), "-tc %s", strcasecmp(tok, "ON") == 0 ? "on" : "off");
+        send_cmd_delayed(cmd);
+    }
+
+    // Вторая строка бэкапа: "Tcpot [...]" (регистр отличается от "TCpot" выше,
+    // strstr — регистрозависим, поэтому find_kv не путает две строки) —
+    // до 20 точек компенсации baseline (#DOC-3/BUG-AS-08).
+    n = kv_get_array(body, "Tcpot", arr, 40);
+    if (n >= 2) {
+        int npoints = n / 2;
+        if (npoints > 20) npoints = 20;
+        for (int i = 0; i < npoints; i++) {
+            snprintf(cmd, sizeof(cmd), "-t_pot %d %ld %ld", i + 1, arr[2 * i], arr[2 * i + 1]);
+            send_cmd_delayed(cmd);
+        }
+    }
+    if (kv_get_token(body, "TCpot", tok, sizeof(tok))) {
+        snprintf(cmd, sizeof(cmd), "-tc_pot %s", strcasecmp(tok, "ON") == 0 ? "on" : "off");
+        send_cmd_delayed(cmd);
+    }
+
+    free(body);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 static esp_err_t handle_reboot_esp(httpd_req_t *req)
 {
     if (!csrf_check(req)) return ESP_FAIL;
@@ -1060,7 +1322,7 @@ void web_server_init(void)
     csrf_generate();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 40;        // 26 базовых (вкл. 2× /api/boot-config #FW-2/3) + 11 waterfall + запас под A2 /offload
+    config.max_uri_handlers = 45;        // 30 базовых (27 + /api/settings/backup,/restore,/service #DEV-6) + 13 waterfall (11 A1 вкл. websocket + 2× /api/waterfall/offload A2) = 43, +2 запас
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1085,6 +1347,7 @@ void web_server_init(void)
         {"/api/spectrum",                HTTP_GET,  handle_spectrum,         NULL},
         {"/api/spectrum.json",           HTTP_GET,  handle_spectrum_json,    NULL},
         {"/api/command",                 HTTP_POST, handle_command,          NULL},
+        {"/api/devlog",                  HTTP_GET,  handle_devlog,           NULL},
         {"/api/reset",                   HTTP_POST, handle_reset,            NULL},
         {"/api/boot-config",             HTTP_GET,  handle_boot_config_get,  NULL},
         {"/api/boot-config",             HTTP_POST, handle_boot_config_set,  NULL},
@@ -1102,9 +1365,12 @@ void web_server_init(void)
         {"/api/wifi/reset",              HTTP_POST, handle_wifi_reset,       NULL},
         {"/api/reboot-esp",              HTTP_POST, handle_reboot_esp,       NULL},
         {"/api/calibration",             HTTP_POST, handle_set_calibration,  NULL},
+        {"/api/settings/backup",         HTTP_GET,  handle_settings_backup,  NULL},
+        {"/api/settings/restore",        HTTP_POST, handle_settings_restore, NULL},
         {"/healthcheck",                 HTTP_GET,  handle_healthcheck,      NULL},
         {"/saved",                       HTTP_GET,  handle_saved_page,       NULL},
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
+        {"/service",                     HTTP_GET,  handle_service_page,     NULL},
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };
 

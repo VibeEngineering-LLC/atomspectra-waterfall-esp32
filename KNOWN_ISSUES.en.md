@@ -13,8 +13,14 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 The "Atom Spectra" instrument stores its pulse-processing tuning (DSP tuning) **inside
 itself**: pulse-shape thresholds `RISE` / `FALL` / `NOISE`, `MAX` / `HYST` / `MODE` /
 `STEP`, the sampling frequency `F`, the hardware HV/gain potentiometers `POT` / `POT2`,
-and the pile-up / thermal-compensation profiles. These values are visible in the
-instrument's reply to the `-inf` command.
+the pile-up table and the thermal compensation.
+
+Most of these values are visible in the instrument's reply to the `-inf` command —
+including the pile-up table (`PileUp […]` / `PileUpThr`) and the **MAX** thermal-
+compensation table (`Tco […]`). **However, the baseline thermal-compensation table**
+(`POT2` / `V` versus temperature, the `-t_pot` points) **is NOT returned by `-inf`** —
+only the `TCpot ON/OFF` flag is present there. The full baseline thermal-compensation
+snapshot is given by the separate **`-tc_pot?`** command.
 
 **What was observed.** A case was recorded where this entire tuning **reset to zero**:
 `-inf` started returning `RISE 0 FALL 0 NOISE 0 F 1.00 MAX 0 HYST 0 ... POT 0 POT2 0`,
@@ -42,10 +48,16 @@ restoring the factory detector profile is done by the manufacturer. Do not try t
 the tuning parameters yourself "blind" (see the warning above).
 
 **Recommendation going forward:** the gateway can **read** `-inf` (it shows the fields in
-the Web UI) but does not back them up. It is worth saving the full working `-inf` reply
-once (a reference "snapshot" of the DSP configuration) while the instrument is correctly
-tuned — then a future reset can be detected and the snapshot handed to the manufacturer
-as a reference.
+the Web UI) but does not back them up. While the instrument is correctly tuned it is worth
+saving **two** of its replies once, as a reference "snapshot" of the DSP configuration:
+
+1. the reply to **`-inf`** — the main thresholds, `POT` / `POT2`, the MAX thermal-
+   compensation table (`Tco […]`) and pile-up;
+2. the reply to **`-tc_pot?`** — the baseline thermal-compensation table (`POT2` / `V`
+   versus temperature); **it is not present in `-inf`** (see above).
+
+Then a future reset can be detected and both snapshots handed to the manufacturer
+(KB Radar) as a reference of the factory tuning.
 
 ### BUG-AS-03: Serial number is not read
 

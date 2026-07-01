@@ -1,0 +1,16 @@
+name: host-tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  shproto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & run host tests
+        run: cd tests/host && make test
+      - name: Sanitizer run (ASan + UBSan)
+        run: cd tests/host && make asan
