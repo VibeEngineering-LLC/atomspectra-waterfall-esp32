@@ -503,6 +503,32 @@ static esp_err_t h_segment(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* #REC-11 pull: POST /api/waterfall/segment/delete?name=seg_NNNNN.aswf
+   PC-клиент подтверждает приём сегмента → удаляем его с Flash. CSRF-protected
+   (мутирующий). Имя валидируется wf_seg_name_ok (anti-traversal); удаляется ТОЛЬКО
+   завершённый сегмент (не открытый, не pinned). Pull-модель: ПК сам инициирует
+   соединение и забирает сегмент через GET /segment, затем этим POST освобождает
+   Flash — нулевая входящая поверхность на рабочем ПК (никаких открытых портов). */
+static esp_err_t h_segment_delete(httpd_req_t *req)
+{
+    if (!web_csrf_check(req)) return ESP_FAIL;
+    char query[96], name[40];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "name required");
+        return ESP_FAIL;
+    }
+    if (!wf_seg_name_ok(name)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad name");
+        return ESP_FAIL;
+    }
+    uint32_t idx = (uint32_t)strtoul(name + 4, NULL, 10);
+    bool ok = spectrogram_seg_delete(idx);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"not-deletable\"}");
+    return ESP_OK;
+}
+
 static esp_err_t h_page(httpd_req_t *req)
 {
     extern const uint8_t waterfall_html_start[] asm("_binary_waterfall_html_start");
@@ -640,6 +666,8 @@ void web_waterfall_register(httpd_handle_t server)
     // #REC-11-A1: листинг и отдача сегментов (СТРОГО read-only).
     reg(server, "/api/waterfall/segments", HTTP_GET, h_segments);
     reg(server, "/api/waterfall/segment",  HTTP_GET, h_segment);
+    // #REC-11 pull: удаление сегмента по ack от PC-клиента (CSRF, только завершённый).
+    reg(server, "/api/waterfall/segment/delete", HTTP_POST, h_segment_delete);
     // #REC-11-A2: конфиг/статус автономной выгрузки сегментов.
     reg(server, "/api/waterfall/offload",  HTTP_GET,  h_offload_get);
     reg(server, "/api/waterfall/offload",  HTTP_POST, h_offload_set);
