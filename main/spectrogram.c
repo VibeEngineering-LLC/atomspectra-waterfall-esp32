@@ -16,7 +16,6 @@
 
 static const char *TAG = "wf";
 
-#define STORAGE_PATH      "/sto" "rage"
 #define WF_SEG_DIR        STORAGE_PATH "/wf"          // каталог сегментов seg_NNNNN.aswf
 #define WF_DATA           STORAGE_PATH "/wf_data.bin" // legacy (#REC-6) — только очистка
 #define WF_META           STORAGE_PATH "/wf_meta.json"// legacy (#REC-6) — только очистка
@@ -60,6 +59,14 @@ static long      s_seg_opened_at;          // время открытия тек
 static uint32_t  s_seg_pinned = 0xFFFFFFFFu; // #REC-11-A2: сегмент в процессе выгрузки (claim) — кольцо его не трогает
 static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки (только под s_fs_lock)
 
+// #FW-6: расцепление acquisition↔flash. wf_task (producer) только набирает строки
+// в кольцо и будит wf_fs_task (consumer), который пишет сегменты в своём темпе —
+// латентность стирания флеша (1МБ unlink на границе ~31с) больше НЕ тормозит такт.
+static SemaphoreHandle_t s_fs_sig;     // будит consumer на новую строку
+static uint32_t          s_fs_flushed; // глоб. индекс следующей строки к записи на флеш
+static uint8_t          *s_fs_buf;     // PSRAM-буфер строки для consumer (16384 Б)
+static uint16_t          s_fs_dur;     // длительность копируемой строки (только в consumer)
+
 #define LOCK()     do { if (s_lock)    xSemaphoreTake(s_lock,    portMAX_DELAY); } while (0)
 #define UNLOCK()   do { if (s_lock)    xSemaphoreGive(s_lock);    } while (0)
 // ВАЖНО про порядок захвата: разрешено брать LOCK ВНУТРИ FSLOCK (FS→status),
@@ -68,6 +75,8 @@ static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки
 #define FSUNLOCK() do { if (s_fs_lock) xSemaphoreGive(s_fs_lock); } while (0)
 
 static void wf_task(void *arg);
+static void wf_fs_task(void *arg);                            // #FW-6 consumer
+static void seg_write_row(const uint8_t *row, uint16_t dur);  // #FW-6 (под s_fs_lock сам)
 
 // #REC-6: переживает ребут/сбой питания. Пишется на start/stop/clear; читается
 // на boot в spectrogram_restore(). Решает, возобновлять ли запись.
@@ -398,8 +407,9 @@ void spectrogram_init(void)
     s_row  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
     s_snap = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
     s_wf_snap = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
+    s_fs_buf  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);   // #FW-6 consumer
 
-    if (!s_ring || !s_dur || !s_prev || !s_row || !s_snap || !s_wf_snap) {
+    if (!s_ring || !s_dur || !s_prev || !s_row || !s_snap || !s_wf_snap || !s_fs_buf) {
         ESP_LOGE(TAG, "PSRAM alloc failed");
         s_status.ready = false;
         return;
@@ -409,8 +419,43 @@ void spectrogram_init(void)
     ESP_LOGI(TAG, "waterfall ready: ring=%" PRIu32 " rows (%u KB PSRAM)",
              s_capacity, (unsigned)(ring_bytes / 1024));
 
-    // stack 8192: сегментный путь делает opendir/readdir + snprintf шапки на стеке.
+    // #FW-6: семафор-будильник consumer'а создаём ДО запуска producer'а.
+    s_fs_sig = xSemaphoreCreateBinary();
+    if (!s_fs_sig) { ESP_LOGE(TAG, "fs sig create failed"); s_status.ready = false; return; }
+    // wf_fs_task (consumer, prio 2 < producer): весь flash-I/O (opendir/readdir +
+    // snprintf шапки на стеке → 8192). Producer prio 3 всегда вытесняет — такт точнее.
+    xTaskCreatePinnedToCore(wf_fs_task, "wf_fs", 8192, NULL, 2, NULL, 1);
+    // stack 8192: producer теперь без FS, но оставляем запас (snapshot + row_cb).
     xTaskCreatePinnedToCore(wf_task, "wf", 8192, NULL, 3, NULL, 1);
+}
+
+// #FW-6: запись одной строки в сегмент. Вызывается ТОЛЬКО из wf_fs_task без
+// удержанных локов — берёт s_fs_lock сам. Логика идентична прежнему inline-блоку
+// wf_task: финализация по лимиту строк/возраста, кольцо keep-last, ленивое
+// открытие сегмента, запись 16384 Б спектра + 2 Б длительности (uint16 LE) + fsync.
+static void seg_write_row(const uint8_t *row, uint16_t dur)
+{
+    FSLOCK();
+    if (s_seg_fp && (s_seg_rows >= WF_SEG_MAX_ROWS ||
+                     (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC)) {
+        seg_finalize();
+    }
+    make_room_for_row();
+    if (!s_seg_fp) seg_open_new();
+    if (s_seg_fp) {
+        uint8_t durle[WF_DUR_BYTES] = { (uint8_t)(dur & 0xFF), (uint8_t)(dur >> 8) };
+        size_t wr  = fwrite(row, 1, WF_ROW_BYTES, s_seg_fp);
+        size_t wrd = (wr == WF_ROW_BYTES) ? fwrite(durle, 1, WF_DUR_BYTES, s_seg_fp) : 0;
+        if (wr != WF_ROW_BYTES || wrd != WF_DUR_BYTES || fflush(s_seg_fp) != 0) {
+            ESP_LOGE(TAG, "seg row write failed (wr=%zu) — drop segment", wr);
+            fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
+        } else {
+            fsync(fileno(s_seg_fp));
+            s_seg_rows++;
+            LOCK(); s_status.flash_rows++; UNLOCK();
+        }
+    }
+    FSUNLOCK();
 }
 
 static void wf_task(void *arg)
@@ -446,38 +491,39 @@ static void wf_task(void *arg)
         ring_push(s_row, dur);
         s_status.total_rows++;
         s_status.ring_count = s_count;
-        uint32_t idx     = s_status.total_rows - 1;
-        bool     persist = s_status.persist;   // #REC-11-A1: НЕ гейтим на flash_full (кольцо)
+        uint32_t idx = s_status.total_rows - 1;
         UNLOCK();
 
-        if (persist) {
-            FSLOCK();
-            // финализировать текущий сегмент по лимиту строк или возраста
-            if (s_seg_fp && (s_seg_rows >= WF_SEG_MAX_ROWS ||
-                             (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC)) {
-                seg_finalize();
-            }
-            make_room_for_row();                // кольцо keep-last
-            if (!s_seg_fp) seg_open_new();      // открыть сегмент лениво
-            if (s_seg_fp) {
-                // #FW-5: запись строки = 16384 Б спектра + 2 Б длительности (uint16 LE).
-                uint8_t durle[WF_DUR_BYTES] = { (uint8_t)(dur & 0xFF), (uint8_t)(dur >> 8) };
-                size_t wr  = fwrite(s_row, 1, WF_ROW_BYTES, s_seg_fp);
-                size_t wrd = (wr == WF_ROW_BYTES) ? fwrite(durle, 1, WF_DUR_BYTES, s_seg_fp) : 0;
-                if (wr != WF_ROW_BYTES || wrd != WF_DUR_BYTES || fflush(s_seg_fp) != 0) {
-                    ESP_LOGE(TAG, "seg row write failed (wr=%zu) — drop segment", wr);
-                    fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
-                } else {
-                    // #REC-6: fsync коммитит размер файла на Flash — после сбоя
-                    // питания reconcile восстановит число строк по размеру.
-                    fsync(fileno(s_seg_fp));
-                    s_seg_rows++;
-                    LOCK(); s_status.flash_rows++; UNLOCK();
-                }
-            }
-            FSUNLOCK();
-        }
+        // #FW-6: вся flash-запись вынесена в wf_fs_task. Producer лишь будит
+        // consumer; решение persist и запись строки из кольца (по s_fs_flushed)
+        // делает consumer. Латентность флеша больше НЕ влияет на такт набора.
+        if (s_fs_sig) xSemaphoreGive(s_fs_sig);
         if (s_row_cb) s_row_cb(s_row, WF_ROW_BYTES, idx);
+    }
+}
+
+// #FW-6 consumer: единственный писатель сегментов. Сливает все накопленные строки
+// кольца по глоб. индексу; отставание при всплеске стирания (≈7 строк) << ёмкости.
+static void wf_fs_task(void *arg)
+{
+    for (;;) {
+        xSemaphoreTake(s_fs_sig, portMAX_DELAY);
+        for (;;) {
+            LOCK();
+            uint32_t g = s_fs_flushed, total = s_status.total_rows;
+            bool have = (g < total), pst = s_status.persist;
+            bool lost = have && (total - g > s_capacity);
+            if (have && !lost) {
+                uint32_t slot = g % s_capacity;
+                memcpy(s_fs_buf, s_ring + (size_t)slot * WF_CHANNELS, WF_ROW_BYTES);
+                s_fs_dur = s_dur[slot];
+            }
+            UNLOCK();
+            if (!have) break;
+            if (lost) { LOCK(); s_fs_flushed = total - s_capacity; UNLOCK(); continue; }
+            if (pst) seg_write_row(s_fs_buf, s_fs_dur);
+            LOCK(); s_fs_flushed++; UNLOCK();
+        }
     }
 }
 
@@ -521,6 +567,7 @@ void spectrogram_restore(void)
     s_head = 0; s_count = 0;
     s_status.ring_count   = 0;
     s_status.total_rows   = 0;     // счётчик ТЕКУЩЕЙ сессии записи (с момента возобновления)
+    s_fs_flushed          = 0;     // #FW-6: consumer стартует с нуля
     s_status.flash_rows   = 0;
     s_status.flash_full   = false;
     s_status.persist      = (st.persist != 0);
@@ -547,6 +594,7 @@ int spectrogram_start(void)
     s_count             = 0;
     s_status.ring_count = 0;
     s_status.total_rows = 0;
+    s_fs_flushed        = 0;     // #FW-6: consumer стартует с нуля
     s_status.flash_full = false;
     s_status.flash_rows = 0;
     s_status.started_at = time(NULL);
@@ -566,6 +614,16 @@ int spectrogram_stop(void)
     s_status.recording = false;
     UNLOCK();
 
+    // #FW-6: дождаться, пока consumer допишет хвост строк из кольца (он —
+    // единственный писатель), затем финализировать. Bounded (≤60с): при
+    // зависшем FS не блокируемся навсегда.
+    if (s_fs_sig) xSemaphoreGive(s_fs_sig);
+    for (int i = 0; i < 60; i++) {
+        LOCK(); bool drained = (s_fs_flushed >= s_status.total_rows); UNLOCK();
+        if (drained) break;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
     FSLOCK();
     seg_finalize();      // закрыть текущий сегмент как валидный .aswf
     FSUNLOCK();
@@ -584,6 +642,7 @@ int spectrogram_clear(void)
     s_count             = 0;
     s_status.ring_count = 0;
     s_status.total_rows = 0;
+    s_fs_flushed        = 0;     // #FW-6: consumer стартует с нуля
     s_status.flash_rows = 0;
     s_status.flash_full = false;
     s_status.seg_count  = 0;

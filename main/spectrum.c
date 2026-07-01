@@ -10,7 +10,6 @@
 #include "freertos/semphr.h"
 
 static const char *TAG = "spectrum";
-#define STORAGE_PATH "/sto" "rage"
 #define AUTOSAVE_FILE STORAGE_PATH "/current.bin"
 #define CALIB_FILE    STORAGE_PATH "/calib.bin"
 #define AUTOSAVE_RESERVE (1024 * 1024)
@@ -24,6 +23,16 @@ typedef struct {
 
 static spectrum_data_t s_spectrum;
 static device_info_t   s_device_info;
+
+// #DEV-6: сырые тексты последних -inf / -tc_pot? ответов — источник для бэкапа
+// настроек (см. spectrum_process_info_response/_tcpot_response). 700Б с запасом:
+// реальный -inf ~404Б (комментарий #CMD-1), Tcpot-строка короче.
+static char     s_info_raw[700];
+static int      s_info_raw_len = 0;
+static uint32_t s_info_raw_seq = 0;
+static char     s_tcpot_raw[700];
+static int      s_tcpot_raw_len = 0;
+static uint32_t s_tcpot_raw_seq = 0;
 
 // Защищает s_spectrum от гонки между CDC-таском (писатель) и httpd-таском (читатель).
 static SemaphoreHandle_t s_spec_lock;
@@ -87,9 +96,26 @@ void spectrum_process_stat_packet(const uint8_t *data, size_t len)
         s_spectrum.pulse_width = data[14] | (data[15]<<8) | (data[16]<<16) | (data[17]<<24);
     SPEC_UNLOCK();
 }
+// Копирует text (без хвостовых \r\n\пробел) в raw-буфер фиксированного размера,
+// бампает seq. Общий хелпер для -inf и -tc_pot? (вызывать ТОЛЬКО под SPEC_LOCK).
+static void store_raw_trimmed(const char *text, char *buf, size_t bufsz, int *out_len, uint32_t *out_seq)
+{
+    size_t n = strlen(text);
+    while (n > 0 && (text[n-1] == '\n' || text[n-1] == '\r' || text[n-1] == ' ')) n--;
+    if (n >= bufsz) n = bufsz - 1;
+    memcpy(buf, text, n);
+    buf[n] = '\0';
+    *out_len = (int)n;
+    (*out_seq)++;
+}
+
 void spectrum_process_info_response(const char *text)
 {
     SPEC_LOCK();
+    // #DEV-6: сырой текст -inf для бэкапа настроек — независимо от того, что
+    // структурный парсер ниже хранит лишь подмножество полей (POT2/Tco[]/
+    // PileUp[]/PileUpThr/Prise/Pfall/TCpot он молча пропускает).
+    store_raw_trimmed(text, s_info_raw, sizeof(s_info_raw), &s_info_raw_len, &s_info_raw_seq);
     device_info_t *d = &s_device_info;
     memset(d, 0, sizeof(*d));
     // static: 3 КБ парс-буфера не на стеке CDC-таска (P1-1). Функция целиком
@@ -186,6 +212,37 @@ void spectrum_process_info_response(const char *text)
     s_spectrum.temperature[2] = d->t3;
     SPEC_UNLOCK();
 }
+// #DEV-6: ответ на -tc_pot? ("Tcpot [-40 51 -16 45 ...]") — отдельная команда,
+// таблица баз. темп. компенсации НЕ входит в -inf (см. #DOC-3/BUG-AS-08).
+void spectrum_process_tcpot_response(const char *text)
+{
+    SPEC_LOCK();
+    store_raw_trimmed(text, s_tcpot_raw, sizeof(s_tcpot_raw), &s_tcpot_raw_len, &s_tcpot_raw_seq);
+    SPEC_UNLOCK();
+}
+
+int spectrum_get_info_raw(char *out, size_t outsz, uint32_t *out_seq)
+{
+    SPEC_LOCK();
+    int n = s_info_raw_len < (int)outsz - 1 ? s_info_raw_len : (int)outsz - 1;
+    if (n > 0) memcpy(out, s_info_raw, n);
+    out[n] = '\0';
+    if (out_seq) *out_seq = s_info_raw_seq;
+    SPEC_UNLOCK();
+    return n;
+}
+
+int spectrum_get_tcpot_raw(char *out, size_t outsz, uint32_t *out_seq)
+{
+    SPEC_LOCK();
+    int n = s_tcpot_raw_len < (int)outsz - 1 ? s_tcpot_raw_len : (int)outsz - 1;
+    if (n > 0) memcpy(out, s_tcpot_raw, n);
+    out[n] = '\0';
+    if (out_seq) *out_seq = s_tcpot_raw_seq;
+    SPEC_UNLOCK();
+    return n;
+}
+
 void spectrum_reset(void)
 {
     SPEC_LOCK();

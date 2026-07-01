@@ -1,6 +1,7 @@
 #include "atomspectra.h"
 #include "spectrogram.h"
 #include "web_waterfall.h"
+#include "web_util.h"
 #include "wf_offload.h"   // #REC-11-A2: конфиг/статус автономной выгрузки
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
@@ -105,23 +106,6 @@ static void wf_broadcast(const uint16_t *row, size_t bytes, uint32_t idx)
         else s_ws_inflight[i]++;
     }
     WS_UNLOCK();
-}
-
-/* P3-9: XML-escape для значений из прибора (serial), идущих в N42-разметку. */
-static void xml_escape(const char *in, char *out, size_t cap)
-{
-    size_t o = 0;
-    for (const char *p = in; *p && o + 6 < cap; p++) {
-        switch (*p) {
-        case '&':  o += snprintf(out + o, cap - o, "&amp;");  break;
-        case '<':  o += snprintf(out + o, cap - o, "&lt;");   break;
-        case '>':  o += snprintf(out + o, cap - o, "&gt;");   break;
-        case '"':  o += snprintf(out + o, cap - o, "&quot;"); break;
-        case '\'': o += snprintf(out + o, cap - o, "&apos;"); break;
-        default:   out[o++] = *p; break;
-        }
-    }
-    out[o] = '\0';
 }
 
 static int append_calib_json(char *buf, int off, int cap)
@@ -362,7 +346,7 @@ static esp_err_t h_export_n42(httpd_req_t *req)
     httpd_resp_send_chunk(req, acc, n);
     if (sp && sp->serial_number[0]) {
         char esc[512];
-        xml_escape(sp->serial_number, esc, sizeof(esc));
+        web_xml_escape(sp->serial_number, esc, sizeof(esc));
         n = snprintf(acc, 8192,
             "    <RadInstrumentIdentifier>%s</RadInstrumentIdentifier>\n", esc);
         httpd_resp_send_chunk(req, acc, n);
