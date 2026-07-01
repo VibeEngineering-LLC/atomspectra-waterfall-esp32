@@ -115,6 +115,15 @@ static void handle_rx_packet(void)
                 (strstr(s_text_accum,"PileUpThr ") && strstr(s_text_accum,"VERSION "))) {
                 spectrum_process_info_response(s_text_accum);
                 s_text_accum_len = 0;
+            } else if (s_text_accum_len >= 6 && s_text_accum[s_text_accum_len-1] == ']' &&
+                       strstr(s_text_accum,"Tcpot ") != NULL) {
+                // #DEV-6: ответ на -tc_pot? — один Text-пакет "Tcpot [...]", завершение
+                // маркируется закрывающей скобкой (у -inf/-cal свои триггеры выше).
+                // Живой прибор шлёт ведущий пробел перед "Tcpot" (подтверждено devlog
+                // seq 18, 2026-07-01: " Tcpot [...]") — ищем подстроку, как у -inf,
+                // а не якорим strncmp на позицию 0 (иначе триггер не срабатывал никогда).
+                spectrum_process_tcpot_response(strstr(s_text_accum,"Tcpot "));
+                s_text_accum_len = 0;
             } else if (s_text_accum_len >= (int)sizeof(s_text_accum) - 128) {
                 ESP_LOGW(TAG, "text accum overflow without trigger, reset");
                 s_text_accum_len = 0;
@@ -199,7 +208,7 @@ static void try_open_device(void)
     const cdc_acm_host_device_config_t dev_config = {
         .connection_timeout_ms = 5000,
         .out_buffer_size = 1024,
-        .in_buffer_size = 1024,
+        .in_buffer_size = 1024,  /* #TCP-5 ОТКАТ: 1024*36 → ESP_ERR_NO_MEM на нашей S3 (DMA-RAM < 36КБ, мост мёртв). Вернул проверенный 1024; #TCP-5 переоткрыт — нужен подбор размера/освобождение DMA-RAM */
         .event_cb = handle_event,
         .data_cb = handle_rx,
         .user_arg = NULL,
