@@ -426,8 +426,9 @@ static bool wf_seg_name_ok(const char *name)
 
 /* GET /api/waterfall/segments -> JSON-массив завершённых/открытых сегментов:
    [{"name","idx","bytes","rows","finalized"}]. rows вычисляется из размера
-   файла (payload / WF_ROW_BYTES). finalized=false у СЕЙЧАС открытого сегмента
-   (его шапка ещё не пропатчена saved_rows) — браузеру забирать его не нужно. */
+   файла (payload / WF_ROW_BYTES) — шапки несут saved_rows=0 (#FW-14,
+   derive-from-size). finalized=false у СЕЙЧАС открытого сегмента (по индексу,
+   не по шапке) — браузеру забирать его не нужно. */
 static esp_err_t h_segments(httpd_req_t *req)
 {
     const char *dir = spectrogram_seg_dir();
