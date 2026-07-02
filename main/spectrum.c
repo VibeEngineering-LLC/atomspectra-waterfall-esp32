@@ -8,6 +8,7 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "spectrum";
 #define AUTOSAVE_FILE STORAGE_PATH "/current.bin"
@@ -39,11 +40,48 @@ static SemaphoreHandle_t s_spec_lock;
 #define SPEC_LOCK()   do { if (s_spec_lock) xSemaphoreTake(s_spec_lock, portMAX_DELAY); } while (0)
 #define SPEC_UNLOCK() do { if (s_spec_lock) xSemaphoreGive(s_spec_lock); } while (0)
 
+// #FW-8: staging-сборка секундного свипа гистограммы. Прибор на 600000 бод шлёт
+// ВЕСЬ спектр раз в секунду цепочкой chunk-ов: offset==0 — старт свипа, каждый
+// следующий строго продолжает предыдущий, покрытие до 8192 каналов — свип полный
+// (официальная спека AtomSpectra, пример приёма histogram). Во время flash erase
+// (finalize+create сегмента водопада) кэш замораживает CDC-таск, и часть chunk-ов
+// теряется: раньше они писались прямо в s_spectrum.bins, и живой спектр становился
+// смесью старых и новых диапазонов каналов → дельта-строка водопада с рваными
+// counts/dur («полосы на границах сегментов»). Теперь chunk-и собираются в staging
+// (PSRAM) и публикуются в s_spectrum АТОМАРНО только полным свипом; рваный свип
+// отбрасывается — живой спектр держит прошлый когерентный снимок. STAT-поля
+// (total_time_sec и пр.) публикуются ВМЕСТЕ со свипом: время и counts замерзают/
+// движутся синхронно, поэтому dur строк водопада остаётся честным.
+// Staging трогает ТОЛЬКО CDC-таск (histogram и STAT приходят из одного feed_shproto)
+// — лок на staging не нужен, SPEC_LOCK берётся только на публикацию.
+static uint32_t *s_hist_staging;                  // [SPECTRUM_CHANNELS], PSRAM
+static uint32_t  s_stage_next = UINT32_MAX;       // след. ожидаемый канал; UINT32_MAX = свип не активен
+static bool      s_stage_ok = false;              // непрерывность с offset==0 не нарушена
+static uint32_t  s_hist_commits = 0;              // опубликованных полных свипов
+static uint32_t  s_hist_drops = 0;                // отброшенных рваных свипов
+typedef struct {
+    uint32_t total_time_sec;
+    uint16_t cpu_load;
+    uint32_t cps;
+    uint32_t lost_impulses;
+    uint32_t pulse_width;
+    bool     fresh;                               // пришёл ли STAT после последнего commit
+} stat_stage_t;
+static stat_stage_t s_stat_stage;
+
 void spectrum_init(void)
 {
     s_spec_lock = xSemaphoreCreateMutex();
     memset(&s_spectrum, 0, sizeof(s_spectrum));
     memset(&s_device_info, 0, sizeof(s_device_info));
+    // #FW-8: 32 КБ staging в PSRAM (пишется из CDC-таска ~130 chunk-ов/с — трафик
+    // копеечный). Нет PSRAM → internal heap; нет и его → legacy-путь прямой записи.
+    s_hist_staging = heap_caps_malloc(SPECTRUM_CHANNELS * sizeof(uint32_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_hist_staging)
+        s_hist_staging = malloc(SPECTRUM_CHANNELS * sizeof(uint32_t));
+    if (!s_hist_staging)
+        ESP_LOGE(TAG, "hist staging alloc failed — fallback to direct bin writes");
     esp_vfs_littlefs_conf_t conf = {
         .base_path = STORAGE_PATH,
         .partition_label = "storage",
@@ -62,39 +100,128 @@ void spectrum_init(void)
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
 {
     if (len < 6) return;
-    SPEC_LOCK();
     uint16_t offset = data[0] | (data[1] << 8);
-    size_t bin_bytes = len - 2;
-    size_t bin_count = bin_bytes / 4;
-    // Инкрементально правим total_counts на дельту изменённых бинов вместо
-    // полного пересчёта суммы по 8192 каналам под локом на каждый chunk
-    // (приходит десятками в секунду) — арифметика точная, дрейфа нет.
-    int64_t delta = 0;
+    size_t bin_count = (len - 2) / 4;
+
+    if (!s_hist_staging) {
+        // Legacy-путь (staging не выделился): прямая запись с инкрементальным total.
+        SPEC_LOCK();
+        int64_t delta = 0;
+        for (size_t i = 0; i < bin_count && (offset + i) < SPECTRUM_CHANNELS; i++) {
+            size_t idx = 2 + i * 4;
+            uint32_t v = data[idx] | (data[idx+1] << 8) | (data[idx+2] << 16) | (data[idx+3] << 24);
+            delta += (int64_t)v - (int64_t)s_spectrum.bins[offset + i];
+            s_spectrum.bins[offset + i] = v;
+        }
+        s_spectrum.total_counts = (uint32_t)((int64_t)s_spectrum.total_counts + delta);
+        s_spectrum.valid = true;
+        SPEC_UNLOCK();
+        return;
+    }
+
+    // #FW-8: сборка свипа в staging. offset==0 — старт нового свипа (официальная
+    // спека); разрыв непрерывности = потерянный chunk (flash-freeze) → свип битый.
+    if (offset == 0) {
+        s_stage_next = 0;
+        s_stage_ok = true;
+    } else if ((uint32_t)offset != s_stage_next) {
+        s_stage_ok = false;
+    }
     for (size_t i = 0; i < bin_count && (offset + i) < SPECTRUM_CHANNELS; i++) {
         size_t idx = 2 + i * 4;
-        uint32_t v = data[idx] | (data[idx+1] << 8) | (data[idx+2] << 16) | (data[idx+3] << 24);
-        delta += (int64_t)v - (int64_t)s_spectrum.bins[offset + i];
-        s_spectrum.bins[offset + i] = v;
+        s_hist_staging[offset + i] =
+            data[idx] | (data[idx+1] << 8) | (data[idx+2] << 16) | (data[idx+3] << 24);
     }
-    s_spectrum.total_counts = (uint32_t)((int64_t)s_spectrum.total_counts + delta);
-    s_spectrum.valid = true;
-    SPEC_UNLOCK();
+    s_stage_next = (uint32_t)offset + (uint32_t)bin_count;
+
+    if (s_stage_next >= SPECTRUM_CHANNELS) {
+        if (s_stage_ok) {
+            // Полный свип: сумма вне лока (staging приватен CDC-таску), публикация
+            // атомарно — bins + STAT одним куском, время когерентно counts.
+            uint64_t total = 0;
+            for (size_t i = 0; i < SPECTRUM_CHANNELS; i++) total += s_hist_staging[i];
+            SPEC_LOCK();
+            memcpy(s_spectrum.bins, s_hist_staging, SPECTRUM_CHANNELS * sizeof(uint32_t));
+            s_spectrum.total_counts = (uint32_t)total;
+            // #FW-12: время коммита не может опираться только на STAT — на
+            // FIFO-burst протухший staged STAT неотличим от свежего (свип(t)
+            // битый → его STAT остался staged; STAT(t+1) потерян → коммит
+            // свипа(t+1) взял бы время t: bins на 1 c впереди → жирная строка
+            // водопада). Опорная арифметика: каждый ПОЛНЫЙ свип = ровно 1 c
+            // живого времени прибора, каждый ОТБРОШЕННЫЙ (drop) — ещё 1 c,
+            // прожитый прибором между коммитами. Отсюда нижняя граница:
+            //   expected = prev + 1 + drops_с_прошлого_коммита.
+            // STAT принимаем не ниже expected (MAX): выше — легитимный резинк
+            // (свип потерян ЦЕЛИКОМ, drop не увидел). Откат ≥5 c — рестарт
+            // прибора, принимаем абсолют.
+            {
+                static uint32_t s_drops_at_commit = 0;
+                uint32_t drops_delta = s_hist_drops - s_drops_at_commit;
+                s_drops_at_commit = s_hist_drops;
+                uint32_t expected = s_spectrum.total_time_sec + 1 + drops_delta;
+                if (s_stat_stage.fresh) {
+                    uint32_t t_new = s_stat_stage.total_time_sec;
+                    if (s_spectrum.valid && t_new + 5 >= s_spectrum.total_time_sec &&
+                        t_new < expected)
+                        t_new = expected;      // протухший/отставший STAT
+                    s_spectrum.total_time_sec = t_new;
+                    s_spectrum.cpu_load       = s_stat_stage.cpu_load;
+                    s_spectrum.cps            = s_stat_stage.cps;
+                    s_spectrum.lost_impulses  = s_stat_stage.lost_impulses;
+                    s_spectrum.pulse_width    = s_stat_stage.pulse_width;
+                    s_stat_stage.fresh = false;
+                } else if (s_spectrum.valid) {
+                    s_spectrum.total_time_sec = expected;   // STAT потерян
+                } else {
+                    s_spectrum.total_time_sec++;            // первый коммит без STAT
+                }
+            }
+            s_spectrum.valid = true;
+            SPEC_UNLOCK();
+            s_hist_commits++;
+        } else {
+            s_hist_drops++;
+            ESP_LOGW(TAG, "histogram sweep dropped (gap in chunks), drops=%" PRIu32, s_hist_drops);
+        }
+        s_stage_next = UINT32_MAX;
+        s_stage_ok = false;
+    }
 }
 
 void spectrum_process_stat_packet(const uint8_t *data, size_t len)
 {
     if (len < 10) return;
+    // #FW-8: STAT — в staging, публикация вместе со свипом гистограммы (когерентность
+    // время↔counts для dur строк водопада). Без staging — старый прямой путь.
+    if (s_hist_staging) {
+        s_stat_stage.total_time_sec = data[0] | (data[1]<<8) | (data[2]<<16) | (data[3]<<24);
+        s_stat_stage.cpu_load = data[4] | (data[5] << 8);
+        s_stat_stage.cps = data[6] | (data[7]<<8) | (data[8]<<16) | (data[9]<<24);
+        if (len >= 14)
+            s_stat_stage.lost_impulses = data[10] | (data[11]<<8) | (data[12]<<16) | (data[13]<<24);
+        // #DT-4: суммарная ширина импульсов (отсчёты АЦП), STAT offset 14. Диагностика;
+        // мёртвое время считается методом BecqMoni (RISE+FALL+1)/F, в расчёт не идёт.
+        if (len >= 18)
+            s_stat_stage.pulse_width = data[14] | (data[15]<<8) | (data[16]<<16) | (data[17]<<24);
+        s_stat_stage.fresh = true;
+        return;
+    }
     SPEC_LOCK();
     s_spectrum.total_time_sec = data[0] | (data[1]<<8) | (data[2]<<16) | (data[3]<<24);
     s_spectrum.cpu_load = data[4] | (data[5] << 8);
     s_spectrum.cps = data[6] | (data[7]<<8) | (data[8]<<16) | (data[9]<<24);
     if (len >= 14)
         s_spectrum.lost_impulses = data[10] | (data[11]<<8) | (data[12]<<16) | (data[13]<<24);
-    // #DT-4: суммарная ширина импульсов (отсчёты АЦП), STAT offset 14. Парсим для диагностики;
-    // мёртвое время считается методом BecqMoni (RISE+FALL+1)/F, это поле в расчёт не идёт.
     if (len >= 18)
         s_spectrum.pulse_width = data[14] | (data[15]<<8) | (data[16]<<16) | (data[17]<<24);
     SPEC_UNLOCK();
+}
+
+// #FW-8: диагностика сборки свипов для /api/spectrum JSON и верификации фикса.
+void spectrum_get_hist_stats(uint32_t *commits, uint32_t *drops)
+{
+    if (commits) *commits = s_hist_commits;
+    if (drops)   *drops   = s_hist_drops;
 }
 // Копирует text (без хвостовых \r\n\пробел) в raw-буфер фиксированного размера,
 // бампает seq. Общий хелпер для -inf и -tc_pot? (вызывать ТОЛЬКО под SPEC_LOCK).
@@ -245,6 +372,12 @@ int spectrum_get_tcpot_raw(char *out, size_t outsz, uint32_t *out_seq)
 
 void spectrum_reset(void)
 {
+    // #FW-8: свип, начатый до reset, не должен закоммитить дорезетные данные.
+    // Вызов идёт из httpd-таска — гонка с CDC на s_stage_* worst-case даёт один
+    // лишний commit старого свипа, который следующий свип перепишет; не критично.
+    s_stage_next = UINT32_MAX;
+    s_stage_ok = false;
+    s_stat_stage.fresh = false;
     SPEC_LOCK();
     memset(s_spectrum.bins, 0, sizeof(s_spectrum.bins));
     s_spectrum.total_counts = 0;

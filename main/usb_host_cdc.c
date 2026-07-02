@@ -326,7 +326,12 @@ void usb_host_cdc_init(void)
     }
     ESP_LOGI(TAG, "USB Host library installed");
 
-    xTaskCreatePinnedToCore(usb_host_lib_task, "usb_lib", 4096, NULL, 2, NULL, 0);
+    // #FW-8: usb_lib и CDC driver ВЫШЕ httpd (prio 5, tskNO_AFFINITY). Иначе при
+    // скачивании сегмента httpd-таск секундами крутит flash-read+send на core 0 и
+    // голодом душит USB-приём: FTDI FIFO переполняется, chunk-и свипа теряются
+    // все ~35-40 c окна выгрузки → 7 строк dur=0 подряд (наблюдение 2026-07-02).
+    // WiFi/LWIP (prio 18+) всё равно выше — их не задеваем.
+    xTaskCreatePinnedToCore(usb_host_lib_task, "usb_lib", 4096, NULL, 7, NULL, 0);
 
     const cdc_acm_host_driver_config_t driver_config = {
         // 8192: парсинг info-response (spectrum_process_info_response) идёт в
@@ -334,7 +339,7 @@ void usb_host_cdc_init(void)
         // ~3.5 КБ локальных буферов на стек (P1-1). Буфер вынесен в static,
         // плюс расширенный стек убирает остаточный риск переполнения.
         .driver_task_stack_size = 8192,
-        .driver_task_priority = 3,
+        .driver_task_priority = 8,   // #FW-8: выше httpd(5) и usb_lib(7)
         .xCoreID = 0,
     };
     err = cdc_acm_host_install(&driver_config);

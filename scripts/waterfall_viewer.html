@@ -58,6 +58,7 @@
     <label>Ширина бина <input id="colW" type="range" min="1" max="6" value="1"></label>
     <span class="sep"></span>
     <label><input id="log" type="checkbox" checked> log</label>
+    <label title="Компенсация температурного дрейфа усиления: выравнивание строк по опорному центроиду"><input id="stab" type="checkbox" checked> стаб. усиления</label>
     <label>Контраст <input id="gain" type="range" min="0.2" max="6" step="0.1" value="1.4"></label>
     <span class="sep"></span>
     <span id="legend"></span> <span style="color:#888">мало → много</span>
@@ -153,19 +154,31 @@ function parseAswf(buf){
   const payloadOff=8+hdrLen;
   const payloadBytes=buf.byteLength-payloadOff;
   const rowBytes=channels*2;
-  let nRows=Math.floor(payloadBytes/rowBytes);
+  // v2: запись строки = counts + хвост (длительность); размер записи — row_stride из шапки.
+  // legacy v1 без поля row_stride → плотные строки rowBytes. Границы sanity как в firmware.
+  const strideHdr=hdr.row_stride|0;
+  const stride=(strideHdr>=rowBytes&&strideHdr<=rowBytes+64)?strideHdr:rowBytes;
+  let nRows=Math.floor(payloadBytes/stride);
   const declared=hdr.saved_rows|0;
   if(declared>0&&declared<nRows) nRows=declared;  // шапка авторитетнее, если в файле есть «хвост»
-  if(nRows<1) throw new Error("в файле нет ни одной строки (payload "+payloadBytes+" байт, строка "+rowBytes+")");
+  if(nRows<1) throw new Error("в файле нет ни одной строки (payload "+payloadBytes+" байт, строка "+stride+")");
   const rows=new Array(nRows);
   for(let i=0;i<nRows;i++){
     // конвертация Uint16 → Uint32, чтобы остальной код работал без изменений
-    const src=new Uint16Array(buf, payloadOff+i*rowBytes, channels);
+    const rowOff=payloadOff+i*stride;
     const dst=new Uint32Array(channels);
-    for(let k=0;k<channels;k++) dst[k]=src[k];
+    if(rowOff%2===0){
+      const src=new Uint16Array(buf, rowOff, channels);
+      for(let k=0;k<channels;k++) dst[k]=src[k];
+    } else {
+      for(let k=0;k<channels;k++) dst[k]=dv.getUint16(rowOff+2*k,true);
+    }
     const t=startedAt>0?(startedAt+i*interval):0;
     const startStr=t>0?new Date(t*1000).toISOString():"строка #"+i;
-    rows[i]={ comp:"", start:startStr, real:"PT"+interval+"S", counts:dst };
+    // v2: фактическая длительность строки (uint16, сек) сразу после counts.
+    // Первые строки сегмента бывают 0..4 c (ролловер файла на плате) — см. #VIEW-9.
+    const dur=stride>=rowBytes+2?dv.getUint16(rowOff+rowBytes,true):undefined;
+    rows[i]={ comp:"", start:startStr, real:"PT"+interval+"S", counts:dst, dur };
   }
   return { channels, rows, calib, _aswf:hdr };
 }
@@ -178,25 +191,163 @@ function energy(ch){
   return e;
 }
 
+// === стабилизация усиления (#VIEW-8) ===
+// Прогрев детектора в первые ~25 мин плавно сдвигает линии по каналам (замерено +2..4 кан.
+// на низких каналах <~600; на @753/@2002 дрейф в шуме → модель НЕ мультипликативная).
+// Оценка per-row сдвига b: два сильнейших низких пика → по блокам из 16 строк чистая позиция
+// каждого (центроид с вычитанием линейного фона по боковым окнам) → b_блока = взвешенное
+// среднее Δpos (веса = чистые счёты пика), без сглаживания (горб уже ~4 блока шириной) →
+// per-row линейная интерполяция → ресемплинг: corrected[k] = raw[k+b].
+// Чистый сдвиг (g=1) намеренно: шумный поблочный gain экстраполируется в ±десятки каналов
+// на высоких каналах и ломал бы прямые линии там, где дрейфа нет.
+function computeStab(){
+  const rows=ST.rows, R=rows.length, ch=ST.channels;
+  const HALF=25;
+  const mean=new Float64Array(ch);
+  for(let i=0;i<R;i++){ const c=rows[i].counts; for(let k=0;k<ch;k++) mean[k]+=c[k]; }
+  // сглаженный спектр для поиска пиков (±3)
+  const msm=new Float64Array(ch);
+  for(let k=0;k<ch;k++){
+    const a=Math.max(0,k-3), b=Math.min(ch,k+4);
+    let s=0; for(let t=a;t<b;t++) s+=mean[t];
+    msm[k]=s/(b-a);
+  }
+  // топ-2 локальных пика, мин. разнос 3×HALF
+  const lo=60, hi=Math.min(4000,ch-60);
+  const idx=[]; for(let k=lo;k<hi;k++) idx.push(k);
+  idx.sort((a,b)=>msm[b]-msm[a]);
+  const peaks=[];
+  for(const k of idx){
+    if(peaks.every(p=>Math.abs(k-p)>3*HALF)) peaks.push(k);
+    if(peaks.length===2) break;
+  }
+  if(!peaks.length){ ST._stab=null; ST._stabN=R; return; }
+  peaks.sort((a,b)=>a-b);
+  function netPos(sp,p){ // [позиция, чистые счёты] с вычитанием линейного фона
+    let bl=0,br=0;
+    const wl0=Math.max(0,p-2*HALF+5), wl1=p-HALF, wr0=p+HALF+1, wr1=Math.min(ch,p+2*HALF-4);
+    for(let k=wl0;k<wl1;k++) bl+=sp[k];
+    for(let k=wr0;k<wr1;k++) br+=sp[k];
+    bl/=Math.max(1,wl1-wl0); br/=Math.max(1,wr1-wr0);
+    let s=0,w=0;
+    for(let k=p-HALF;k<=p+HALF;k++){
+      const f=(k-(p-HALF))/(2*HALF);
+      const v=sp[k]-(bl*(1-f)+br*f);
+      if(v>0){ s+=v*k; w+=v; }
+    }
+    return [w>0?s/w:p, w];
+  }
+  const refs=peaks.map(p=>netPos(mean,p));
+  const B=16, nb=Math.ceil(R/B), centers=new Array(nb), bs=new Array(nb);
+  for(let b=0;b<nb;b++){
+    const b0=b*B, b1=Math.min(R,b0+B);
+    const sp=new Float64Array(ch);
+    for(let i=b0;i<b1;i++){
+      const c=rows[i].counts;
+      for(const p of peaks){
+        const kLo=Math.max(0,p-2*HALF-5), kHi=Math.min(ch,p+2*HALF+5);
+        for(let k=kLo;k<kHi;k++) sp[k]+=c[k];
+      }
+    }
+    centers[b]=(b0+b1-1)/2;
+    let sw=0, sd=0;
+    for(let j=0;j<peaks.length;j++){
+      const [pos]=netPos(sp,peaks[j]);
+      const w=refs[j][1];
+      sd+=(pos-refs[j][0])*w; sw+=w;
+    }
+    bs[b]=sw>0?sd/sw:0;
+  }
+  const out=new Array(R);
+  for(let i=0;i<R;i++){
+    let b;
+    if(i<=centers[0]) b=bs[0];
+    else if(i>=centers[nb-1]) b=bs[nb-1];
+    else {
+      let t=1; while(centers[t]<i) t++;
+      const f=(i-centers[t-1])/(centers[t]-centers[t-1]);
+      b=bs[t-1]*(1-f)+bs[t]*f;
+    }
+    if(Math.abs(b)<0.05){ out[i]=rows[i].counts; continue; }
+    const src=rows[i].counts, dst=new Float32Array(ch);
+    for(let k=0;k<ch;k++){
+      const x=k+b, k0=Math.floor(x), f=x-k0;
+      dst[k]=(k0>=0&&k0+1<ch)?src[k0]*(1-f)+src[k0+1]*f:((k0>=0&&k0<ch)?src[k0]:0);
+    }
+    out[i]=dst;
+  }
+  ST._stab=out; ST._stabN=R;
+}
+
 function buildGrid(){
   if(!ST) return;
   let chMin = Math.max(0, +$("chMin").value|0);
   let chMax = Math.min(ST.channels-1, +$("chMax").value|0);
   if(chMax<=chMin){ chMax = ST.channels-1; chMin=0; }
   const R = ST.rows.length;
+  const useStab = $("stab").checked && R>2;
+  if(useStab && (!ST._stab || ST._stabN!==R)) computeStab();
+  const rowsSrc = useStab ? ST._stab : null;
   let C = Math.min(+$("cols").value|0, chMax-chMin+1);
   if(C<1) C=1;
   const span = (chMax-chMin+1)/C;
+  // #VIEW-11 (заменяет dur-нормировку #VIEW-9): ремонт аномальных строк, display-only —
+  // в скачивание (.aswf v2) идут сырые counts+dur. Ролловер сегмента на плате роняет
+  // USB-пакет, часть chunk-ов гистограммы устаревает → counts строки скачут (±10..25%),
+  // причём поле dur этому уже НЕ соответствует (бывает dur=6 при недоборе counts и
+  // dur=5 при переборе) — глобальный масштаб nom/dur не чинит и сам красит строки.
+  // Детект: отклонение суммы строки от локальной медианы (окно ±4); строки с
+  // dur!=interval_sec — с пониженным порогом. Ремонт: линейная интерполяция чистыми
+  // соседями. Статистика: sigma суммы строки ~1.8% → порог 7% ≈ 4 sigma.
+  const nomDur = (ST._aswf && +ST._aswf.interval_sec) || 0;
   const agg = new Float32Array(R*C);
-  let maxv = 1;
   for(let y=0;y<R;y++){
-    const counts = ST.rows[y].counts;
+    const counts = rowsSrc ? rowsSrc[y] : ST.rows[y].counts;
     for(let x=0;x<C;x++){
       const a = chMin + Math.floor(x*span), b = chMin + Math.floor((x+1)*span);
       let s=0; for(let ch=a; ch<b; ch++) s += counts[ch];
-      agg[y*C+x]=s; if(s>maxv) maxv=s;
+      agg[y*C+x]=s;
     }
   }
+  const flagged = new Uint8Array(R);
+  if(R>=8){
+    const tot = new Float64Array(R);
+    for(let y=0;y<R;y++){ let s=0; for(let x=0;x<C;x++) s+=agg[y*C+x]; tot[y]=s; }
+    const W=4;
+    for(let y=0;y<R;y++){
+      const lo=Math.max(0,y-W), hi=Math.min(R-1,y+W);
+      const win=[]; for(let k=lo;k<=hi;k++) if(k!==y) win.push(tot[k]);
+      win.sort((a,b)=>a-b);
+      const med = win[win.length>>1] || 1;
+      const dev = Math.abs(tot[y]/med - 1);
+      const d = ST.rows[y].dur;
+      const durOff = nomDur>0 && d!==undefined && d!==null && d!==nomDur;
+      if(d===0 || dev>0.07 || (durOff && dev>0.035)) flagged[y]=1;
+    }
+    // Реальное событие (начало нового плато) — не аномалия: строка согласна
+    // с двумя следующими или двумя предыдущими → снять флаг (кроме dur=0).
+    const near=(a,b)=>Math.abs(a/b-1)<0.03;
+    for(let y=0;y<R;y++){
+      if(!flagged[y] || ST.rows[y].dur===0) continue;
+      const nextOk = y+2<R && near(tot[y],tot[y+1]) && near(tot[y],tot[y+2]);
+      const prevOk = y-2>=0 && near(tot[y],tot[y-1]) && near(tot[y],tot[y-2]);
+      if(nextOk||prevOk) flagged[y]=0;
+    }
+  } else {
+    for(let y=0;y<R;y++) if(ST.rows[y].dur===0) flagged[y]=1;
+  }
+  for(let y=0;y<R;y++){
+    if(!flagged[y]) continue;
+    let p=y-1; while(p>=0&&flagged[p]) p--;
+    let n=y+1; while(n<R&&flagged[n]) n++;
+    if(p>=0&&n<R){
+      const w=(y-p)/(n-p);
+      for(let x=0;x<C;x++) agg[y*C+x]=agg[p*C+x]*(1-w)+agg[n*C+x]*w;
+    } else if(p>=0){ agg.copyWithin(y*C, p*C, p*C+C); }
+    else if(n<R){ agg.copyWithin(y*C, n*C, n*C+C); }
+  }
+  let maxv = 1;
+  for(let i=0;i<R*C;i++) if(agg[i]>maxv) maxv=agg[i];
   GRID = { agg, R, C, maxv, chMin, chMax, span };
 }
 
@@ -277,7 +428,7 @@ const drop=$("drop");
 drop.addEventListener("drop",e=>{ const f=e.dataTransfer.files[0]; if(f) readFile(f); });
 
 // ---- controls ----
-["chMin","chMax","cols"].forEach(id=>$(id).addEventListener("change",refresh));
+["chMin","chMax","cols","stab"].forEach(id=>$(id).addEventListener("change",refresh));
 ["rowH","colW"].forEach(id=>$(id).addEventListener("input",render));
 $("log").addEventListener("change",render);
 $("gain").addEventListener("input",render);
@@ -340,13 +491,13 @@ function metaLine(){
 // построить ST из накопленного COMBINED и перерисовать
 function applyCombined(){
   if(!COMBINED||!COMBINED.rows.length) return;
-  const {channels,interval_sec:interval,started_at:started,serial,calib,rows}=COMBINED;
+  const {channels,interval_sec:interval,started_at:started,serial,calib,rows,durs}=COMBINED;
   ST={ channels, calib, _aswf:{channels,started_at:started,interval_sec:interval,
                                saved_rows:rows.length,serial,calibration:calib},
        rows: rows.map((counts,i)=>{
          const t=started>0?(started+i*interval):0;
          return { comp:"", start:t>0?new Date(t*1000).toISOString():"строка #"+i,
-                  real:"PT"+interval+"S", counts };
+                  real:"PT"+interval+"S", counts, dur:durs?durs[i]:undefined };
        }) };
   $("chMax").value=channels-1;
   refresh();
@@ -368,12 +519,12 @@ async function ingestNewFinalized(base){
       const h=p._aswf||{};
       COMBINED={ channels:p.channels, interval_sec:+(h.interval_sec)||0,
                  started_at:+(h.started_at)||0, serial:h.serial||null,
-                 calib:p.calib||null, rows:[] };
+                 calib:p.calib||null, rows:[], durs:[] };
     } else if(p.channels!==COMBINED.channels){
       throw new Error(`${s.name}: channels ${p.channels}≠${COMBINED.channels}`);
     }
     if(!COMBINED.calib && p.calib) COMBINED.calib=p.calib;
-    for(const r of p.rows) COMBINED.rows.push(r.counts);
+    for(const r of p.rows){ COMBINED.rows.push(r.counts); COMBINED.durs.push(r.dur); }
     seen.add(s.name);
     if($("wipe").checked) pendingDelete.push(s.name);
     added++;
@@ -449,23 +600,31 @@ async function recCmd(path){
 
 function buildAswfBlob(){
   if(!COMBINED) return null;
-  const {channels,interval_sec,started_at,serial,calib,rows}=COMBINED;
-  const hdrObj={channels,interval_sec,started_at,saved_rows:rows.length};
+  const {channels,interval_sec,started_at,serial,calib,rows,durs}=COMBINED;
+  // #VIEW-9: качаем в v2 — после counts каждой строки uint16 фактической
+  // длительности (сек), иначе информация о недоэкспонированных строках
+  // ролловера теряется и полосы неустранимы при повторном открытии файла.
+  const rowBytes=channels*2, stride=rowBytes+2;
+  const hdrObj={version:2,channels,interval_sec,started_at,saved_rows:rows.length,
+    row_stride:stride,row_time:{dtype:"uint16",unit:"sec",offset:rowBytes}};
   if(serial) hdrObj.serial=serial;
   if(calib)  hdrObj.calibration=calib;
-  const hdrStr=JSON.stringify(hdrObj);
+  let hdrStr=JSON.stringify(hdrObj);
+  if(new TextEncoder().encode(hdrStr).length%2) hdrStr+=" "; // чётный оффсет payload — Uint16Array требует выравнивания
   const hdrBytes=new TextEncoder().encode(hdrStr);
-  const rowBytes=channels*2;
-  const total=8+hdrBytes.length+rows.length*rowBytes;
+  const total=8+hdrBytes.length+rows.length*stride;
   const out=new Uint8Array(total), dv=new DataView(out.buffer);
   out[0]=0x41;out[1]=0x53;out[2]=0x57;out[3]=0x46;      // ASWF
   dv.setUint32(4,hdrBytes.length,true);
   out.set(hdrBytes,8);
   let off=8+hdrBytes.length;
-  for(const counts of rows){
+  for(let i=0;i<rows.length;i++){
+    const counts=rows[i];
     const u16=new Uint16Array(out.buffer,off,channels);
     for(let k=0;k<channels;k++){ const v=counts[k]; u16[k]=v>65535?65535:v; }
-    off+=rowBytes;
+    const d=durs&&durs[i]!==undefined&&durs[i]!==null?durs[i]:interval_sec;
+    dv.setUint16(off+rowBytes,d,true);
+    off+=stride;
   }
   return new Blob([out],{type:"application/octet-stream"});
 }
