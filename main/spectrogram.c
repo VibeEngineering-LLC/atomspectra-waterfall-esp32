@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_littlefs.h"
+#include "nvs.h"   // #FW-15: настройки интервала/persist переживают ребут и clr_wf
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -104,6 +105,37 @@ static void write_state(bool active)
     if (!f) { ESP_LOGW(TAG, "cannot write state file"); return; }
     fwrite(&st, 1, sizeof(st), f);
     fclose(f);
+}
+
+// #FW-15: interval/persist — пользовательские НАСТРОЙКИ, а не state записи.
+// WF_STATE стирается clr_wf=1 (FW-3) на буте, и автостарт (FW-2) поднимал бы
+// compile-time дефолт (5 с). NVS переживает clear/ребут — настройки живут здесь.
+#define WF_SETTINGS_NS "wf"
+
+static void settings_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(WF_SETTINGS_NS, NVS_READONLY, &h) != ESP_OK) return;  // нет записи — дефолты
+    uint32_t iv = 0; uint8_t ps = 0;
+    if (nvs_get_u32(h, "interval", &iv) == ESP_OK &&
+        iv >= WF_INTERVAL_MIN && iv <= WF_INTERVAL_MAX)
+        s_status.interval_sec = iv;
+    if (nvs_get_u8(h, "persist", &ps) == ESP_OK)
+        s_status.persist = (ps != 0);
+    nvs_close(h);
+}
+
+static void settings_save(uint32_t interval_sec, bool persist)
+{
+    nvs_handle_t h;
+    if (nvs_open(WF_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "cannot save wf settings");
+        return;
+    }
+    nvs_set_u32(h, "interval", interval_sec);
+    nvs_set_u8(h, "persist", persist ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
 }
 
 static uint32_t flash_free_bytes(void)
@@ -378,6 +410,7 @@ void spectrogram_init(void)
     memset(&s_status, 0, sizeof(s_status));
     s_status.interval_sec = WF_INTERVAL_DEFAULT;
     s_status.persist      = true;
+    settings_load();   // #FW-15: поверх дефолтов — сохранённые настройки из NVS
     s_seg_cur             = 0xFFFFFFFFu;
 
     s_capacity = WF_RING_ROWS_DEFAULT;
@@ -695,12 +728,18 @@ void spectrogram_set_interval(uint32_t sec)
 {
     if (sec < WF_INTERVAL_MIN) sec = WF_INTERVAL_MIN;
     if (sec > WF_INTERVAL_MAX) sec = WF_INTERVAL_MAX;
-    LOCK(); s_status.interval_sec = sec; UNLOCK();
+    LOCK(); s_status.interval_sec = sec; bool rec = s_status.recording; bool ps = s_status.persist; UNLOCK();
+    settings_save(sec, ps);   // #FW-15: настройка переживает ребут и clr_wf (NVS)
+    // #FW-15: смена интервала посреди записи обязана попасть и в WF_STATE —
+    // иначе restore после ребута поднимет интервал, записанный на старте записи.
+    if (rec) write_state(true);
 }
 
 void spectrogram_set_persist(bool on)
 {
-    LOCK(); s_status.persist = on; UNLOCK();
+    LOCK(); s_status.persist = on; bool rec = s_status.recording; uint32_t iv = s_status.interval_sec; UNLOCK();
+    settings_save(iv, on);        // #FW-15: настройка переживает ребут и clr_wf (NVS)
+    if (rec) write_state(true);   // #FW-15: как и интервал — в persist-состояние
 }
 
 void spectrogram_set_row_cb(wf_row_cb_t cb)
