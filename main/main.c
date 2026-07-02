@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"   // #FW-13 фикс №2: ожидание коммита свипа перед autosave
 
 static const char *TAG = "main";
 
@@ -61,6 +62,12 @@ void app_main(void)
 
     ESP_LOGI(TAG, "All subsystems initialized");
 
+    // #FW-13 фикс №2: autosave (32.8 КБ LittleFS = freeze кэша обоих ядер) фазово
+    // привязывается к коммиту свипа — запись уходит в тихое USB-окно (~0.5 с) сразу
+    // после конца burst, а не в случайную фазу, где рвала приём FTDI.
+    SemaphoreHandle_t autosave_sig = xSemaphoreCreateBinary();
+    if (autosave_sig) spectrum_add_commit_listener(autosave_sig);
+
     int info_tick = 0, autosave_tick = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
@@ -71,12 +78,19 @@ void app_main(void)
             tcp_bridge_client_connected() ? "OK" : "--",
             sp->total_counts, (unsigned)sp->cpu_load);
 
-        if (usb_host_cdc_is_connected() && ++info_tick >= 3) {
+        // #FW-13: период -inf 30 с → 30 мин (оператор 2026-07-03). Единственное
+        // динамичное поле ответа — температура; каждый -inf вклинивает 404-байтный
+        // текстовый ответ в поток свипов, чаще незачем.
+        if (usb_host_cdc_is_connected() && ++info_tick >= 180) {
             info_tick = 0;
             usb_host_send_text_command("-inf");
         }
         if (++autosave_tick >= 6) {
             autosave_tick = 0;
+            if (autosave_sig) {
+                xSemaphoreTake(autosave_sig, 0);                    // сброс протухшего сигнала
+                xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500));  // ждём свежий коммит
+            }
             spectrum_autosave();
         }
     }
