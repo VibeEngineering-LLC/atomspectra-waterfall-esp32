@@ -280,6 +280,10 @@
         else if (oc.indexOf("export.n42") >= 0) el.onclick = function (e) { e.preventDefault(); exportN42(); return false; };
         else if (oc.indexOf("export.spe") >= 0) el.onclick = function (e) { e.preventDefault(); exportSPE(); return false; };
       });
+      /* waterfall page assigns bExportN42.onclick via script (no [onclick] attr);
+       * re-assign after page scripts ran so demo doesn't navigate to a 404. */
+      var wfN42 = document.getElementById("bExportN42");
+      if (wfN42) wfN42.onclick = function (e) { e.preventDefault(); exportN42(); return false; };
     } catch (e) { }
   });
 })();
