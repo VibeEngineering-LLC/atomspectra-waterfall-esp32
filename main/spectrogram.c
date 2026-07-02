@@ -24,15 +24,13 @@ static const char *TAG = "wf";
 #define WF_SEG_PREP_ROW   (WF_SEG_MAX_ROWS / 2)  // #FW-8: фаза заблаговременного освобождения места кольцом
 #define WF_STATE_MAGIC    0x53465731u   /* 'WFS1' — persist-состояние записи (#REC-6) */
 
-// #REC-11-A1: патчируемая шапка .aswf. Поля saved_rows/saved_at идут ПЕРВЫМИ,
-// фиксированной шириной WF_F_W, чтобы их можно было перезаписать по фикс. offset
-// (WF_F_ROWS_OFF / WF_F_AT_OFF) двумя короткими fwrite, не переписывая все 4 КБ.
+// #REC-11-A1/#FW-14: поля saved_rows/saved_at в шапке .aswf идут ПЕРВЫМИ,
+// фикс. шириной WF_F_W (формат сохранён для совместимости читателей), но с
+// #FW-14 всегда пишутся нулями и НЕ патчатся: 0 = «строк — из размера файла».
 // JSON допускает пробелы перед значением → число выравнивается справа ("%*u").
 #define WF_F_PRE        "{\"saved_rows\":"
 #define WF_F_MID        ",\"saved_at\":"
 #define WF_F_W          10
-#define WF_F_ROWS_OFF   (8 + (int)(sizeof(WF_F_PRE) - 1))                      /* = 22 */
-#define WF_F_AT_OFF     (WF_F_ROWS_OFF + WF_F_W + (int)(sizeof(WF_F_MID) - 1)) /* = 44 */
 
 static uint16_t        *s_ring;
 static uint32_t         s_capacity;
@@ -64,6 +62,9 @@ static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки
 // в кольцо и будит wf_fs_task (consumer), который пишет сегменты в своём темпе —
 // латентность стирания флеша (1МБ unlink на границе ~31с) больше НЕ тормозит такт.
 static SemaphoreHandle_t s_fs_sig;     // будит consumer на новую строку
+// #FW-13 фикс №2: коммит свипа спектра (конец USB-burst) будит producer — снапшот
+// и flash-запись строки уходят в тихое окно, а не в случайную фазу 1-с тика.
+static SemaphoreHandle_t s_commit_sig;
 static uint32_t          s_fs_flushed; // глоб. индекс следующей строки к записи на флеш
 static uint8_t          *s_fs_buf;     // PSRAM-буфер строки для consumer (16384 Б)
 static uint16_t          s_fs_dur;     // длительность копируемой строки (только в consumer)
@@ -179,64 +180,25 @@ static bool seg_write_full_header(FILE *f)
     return true;
 }
 
-// Прочитать текущее saved_rows из шапки по фикс. offset. false — не прочиталось.
-static bool seg_read_rows(FILE *f, uint32_t *rows)
-{
-    char magic[4], num[WF_F_W + 1];
-    if (fseek(f, 0, SEEK_SET) != 0) return false;
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "ASWF", 4) != 0) return false;
-    if (fseek(f, WF_F_ROWS_OFF, SEEK_SET) != 0) return false;
-    if (fread(num, 1, WF_F_W, f) != (size_t)WF_F_W) return false;
-    num[WF_F_W] = '\0';
-    *rows = (uint32_t)strtoul(num, NULL, 10);
-    return true;
-}
+// #FW-14: функции патча шапки (seg_read_rows/seg_patch_rows/seg_patch_counts)
+// удалены — saved_rows/saved_at всегда 0 («выводить из размера файла»), патч
+// offset 14/34 был LittleFS COW-заморозкой всего хвоста файла (#FW-8).
 
-// Перезаписать только saved_rows по фикс. offset (проверив магию "ASWF").
-static bool seg_patch_rows(FILE *f, uint32_t rows)
-{
-    char magic[4];
-    if (fseek(f, 0, SEEK_SET) != 0) return false;
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "ASWF", 4) != 0) return false;
-    char num[WF_F_W + 1];
-    snprintf(num, sizeof(num), "%*" PRIu32, WF_F_W, rows);
-    if (fseek(f, WF_F_ROWS_OFF, SEEK_SET) != 0) return false;
-    return fwrite(num, 1, WF_F_W, f) == (size_t)WF_F_W;
-}
-
-// Перезаписать saved_rows и saved_at по фикс. offset.
-static bool seg_patch_counts(FILE *f, uint32_t rows, long saved_at)
-{
-    if (!seg_patch_rows(f, rows)) return false;
-    char num[WF_F_W + 1];
-    snprintf(num, sizeof(num), "%*ld", WF_F_W, saved_at);
-    if (fseek(f, WF_F_AT_OFF, SEEK_SET) != 0) return false;
-    return fwrite(num, 1, WF_F_W, f) == (size_t)WF_F_W;
-}
-
-// Закрыть текущий открытый сегмент. rows>0 → пропатчить счётчики (валидный .aswf),
-// seg_count++. rows==0 → удалить пустой огрызок. (под s_fs_lock)
+// Закрыть текущий открытый сегмент. rows>0 → валидный .aswf, seg_count++.
+// rows==0 → удалить пустой огрызок. (под s_fs_lock)
 static void seg_finalize(void)
 {
     if (!s_seg_fp) return;
     if (s_seg_rows > 0) {
-        // #FW-8: НЕ патчить шапку полного сегмента. LittleFS хранит файл
-        // обратно-связанным CTZ-списком: запись в offset 14/34 файла на 1 МБ =
-        // copy-on-write ВСЕГО хвоста (~256 блоков erase+prog ≈ 25-45 c с
-        // выключенным flash-кэшем) — стояли и USB-приём (dur=0 строки), и httpd
-        // (таймауты /api/*). Подтверждено трассой fw8_rollover_trace.py 2026-07-02:
-        // стойло 41-46 c ровно на финализации, без единого скачивания.
-        // Поэтому шапка при открытии сегмента сразу несёт финальные значения
-        // (saved_rows=WF_SEG_MAX_ROWS, saved_at=прогноз конца); патч нужен только
-        // огрызку (ручной стоп / возрастной триггер) — редкий путь, freeze OK.
-        if (s_seg_rows != WF_SEG_MAX_ROWS &&
-            !seg_patch_counts(s_seg_fp, s_seg_rows, (long)time(NULL))) {
-            // saved_rows/saved_at в шапке остались нулевыми — внешний вьювер/приёмник
-            // увидит "пустой" сегмент. Сигналим, но сегмент всё равно закрываем
-            // (сырые строки на месте; reconcile на ребуте перепатчит через "r+b").
-            ESP_LOGW(TAG, "seg_%05" PRIu32 ".aswf patch FAILED (saved_rows stays 0)",
-                     s_seg_cur);
-        }
+        // #FW-8/#FW-14: шапку НЕ патчить НИКОГДА. LittleFS хранит файл
+        // обратно-связанным CTZ-списком: запись в offset 14/34 = copy-on-write
+        // всего хвоста (1 МБ ≈ 25-45 c заморозки flash-кэша, трасса
+        // fw8_rollover_trace.py 2026-07-02; даже 10-строчный огрызок ≈ 4-7 c).
+        // Конвенция: saved_rows=0 в шапке = «строк — из размера файла».
+        // Все потребители и так выводят rows из payload/stride: вьюер
+        // (waterfall_viewer.html:162), /api/waterfall/segments, boot-reconcile.
+        // Финализация = только fsync+fclose — дёшево, возрастной ролловер
+        // раз в 10 мин (#FW-14) не замораживает USB-приём.
         fflush(s_seg_fp);
         fsync(fileno(s_seg_fp));
         fclose(s_seg_fp);
@@ -260,24 +222,20 @@ static bool seg_open_new(void)
 {
     char p[64];
     seg_path(p, sizeof(p), s_seg_next);
-    // "w+b" (НЕ "wb"): seg_patch_rows() читает магию "ASWF" через fread перед
-    // патчем saved_rows/saved_at на finalize. На write-only потоке fread=0 →
-    // патч молча проваливался, финализированный .aswf оставался saved_rows=0 (#FW-1).
-    FILE *f = fopen(p, "w+b");
+    // #FW-14: "wb" — шапка после открытия не читается и не патчится
+    // (конвенция saved_rows=0, см. seg_finalize).
+    FILE *f = fopen(p, "wb");
     if (!f) {
         mkdir(WF_SEG_DIR, 0777);
-        f = fopen(p, "w+b");
+        f = fopen(p, "wb");
         if (!f) { ESP_LOGE(TAG, "cannot open %s", p); return false; }
     }
     long now = (long)time(NULL);
-    // #FW-8: сразу финальные значения — полный сегмент на finalize НЕ патчится
-    // (патч offset 14/34 = LittleFS COW всего 1 МБ ≈ 25-45 c заморозки).
-    // saved_at = прогноз конца (started_at + 64*interval); дрейф от потерянных
-    // свипов — единицы секунд, честное время строк несут поля dur (v2).
-    // Огрызок (стоп/возраст) патчится на finalize реальными значениями; после
-    // краша reconcile на ребуте перепатчит по фактическому размеру.
-    uint32_t iv = s_status.interval_sec ? s_status.interval_sec : 1;
-    seg_header_build(WF_SEG_MAX_ROWS, now + (long)WF_SEG_MAX_ROWS * (long)iv, now);
+    // #FW-14: saved_rows=0 / saved_at=0 = «выводить из размера файла» — шапка
+    // никогда не патчится (патч offset 14/34 = LittleFS COW всего хвоста с
+    // заморозкой flash-кэша, #FW-8). Время строк несут поля dur (v2) +
+    // started_at; saved_at потребители шапки не используют.
+    seg_header_build(0, 0, now);
     if (!seg_write_full_header(f)) {
         ESP_LOGE(TAG, "header write failed %s", p);
         fclose(f); unlink(p); return false;
@@ -366,8 +324,8 @@ static uint32_t seg_detect_stride(FILE *f)
 }
 
 // boot-реконсиляция: пройти каталог, для каждого сегмента rows = из размера файла.
-// rows==0 → удалить огрызок; иначе пропатчить saved_rows (на случай падения до
-// finalize). Восстановить s_seg_next = max_idx+1 и seg_count. (под s_fs_lock)
+// rows==0 → удалить огрызок. Шапки НЕ патчатся (#FW-14: saved_rows=0 = derive-from-
+// size, патч = COW-заморозка #FW-8). Восстановить s_seg_next/seg_count. (под s_fs_lock)
 static void seg_reconcile(void)
 {
     mkdir(WF_SEG_DIR, 0777);                      // гарантировать каталог
@@ -383,20 +341,12 @@ static void seg_reconcile(void)
             snprintf(p, sizeof(p), WF_SEG_DIR "/%.32s", e->d_name);  // имя ≤24 (seg_name_index), %.32s = доказуемая граница для -Wformat-truncation
             struct stat sb;
             if (stat(p, &sb) != 0) continue;
-            FILE *f = fopen(p, "r+b");
+            FILE *f = fopen(p, "rb");
             if (!f) continue;
             uint32_t stride = seg_detect_stride(f);   // #FW-5: v2=16386 (с длит.), v1=16384
             long payload = (long)sb.st_size - WF_SEG_HEADER;
             uint32_t rows = payload > 0 ? (uint32_t)(payload / stride) : 0;
             if (rows == 0) { fclose(f); unlink(p); continue; }
-            // #FW-8: патчить ТОЛЬКО при расхождении шапки с фактом (краш до
-            // finalize огрызка). Безусловный патч = LittleFS COW всего файла
-            // (~25-45 c заморозки flash-кэша) на КАЖДЫЙ сегмент при КАЖДОМ боте.
-            uint32_t hdr_rows = 0;
-            if (!seg_read_rows(f, &hdr_rows) || hdr_rows != rows) {
-                seg_patch_rows(f, rows);
-                fflush(f); fsync(fileno(f));
-            }
             fclose(f);
             completed++;
             if (!any || idx > maxidx) { maxidx = idx; any = true; }
@@ -459,6 +409,9 @@ void spectrogram_init(void)
     // #FW-6: семафор-будильник consumer'а создаём ДО запуска producer'а.
     s_fs_sig = xSemaphoreCreateBinary();
     if (!s_fs_sig) { ESP_LOGE(TAG, "fs sig create failed"); s_status.ready = false; return; }
+    // #FW-13 фикс №2: подписка producer'а на коммиты свипов (NULL — останется 1-с тик).
+    s_commit_sig = xSemaphoreCreateBinary();
+    if (s_commit_sig) spectrum_add_commit_listener(s_commit_sig);
     // wf_fs_task (consumer, prio 2 < producer): весь flash-I/O (opendir/readdir +
     // snprintf шапки на стеке → 8192). Producer prio 3 всегда вытесняет — такт точнее.
     xTaskCreatePinnedToCore(wf_fs_task, "wf_fs", 8192, NULL, 2, NULL, 1);
@@ -473,16 +426,12 @@ void spectrogram_init(void)
 static void seg_write_row(const uint8_t *row, uint16_t dur)
 {
     FSLOCK();
-    // #FW-8: возрастной лимит не короче полного сегмента (64*interval + запас),
-    // иначе при interval >= 10 c КАЖДЫЙ ролловер был бы возрастным огрызком
-    // (rows < 64) → патч шапки → LittleFS COW-заморозка 25-45 c на каждом сегменте.
-    uint32_t age_iv  = s_status.interval_sec ? s_status.interval_sec : 1;
-    long     age_lim = (long)WF_SEG_MAX_ROWS * (long)age_iv + 60;
-    if (age_lim < WF_SEG_MAX_AGE_SEC) age_lim = WF_SEG_MAX_AGE_SEC;
-    if (s_seg_fp && (s_seg_rows >= WF_SEG_MAX_ROWS ||
-                     (long)(time(NULL) - s_seg_opened_at) >= age_lim)) {
-        seg_finalize();
-    }
+    // #FW-14: здесь только ролловер по строкам; возрастной (10 мин,
+    // WF_SEG_MAX_AGE_SEC) живёт в цикле wf_fs_task — при interval > возраста
+    // проверка в write-пути ждала бы следующей строки часами, файл висел открытым.
+    // Огрызок теперь дёшев (без патча шапки, saved_rows=0 = derive-from-size),
+    // растягивать возраст до 64*interval (#FW-8) больше незачем.
+    if (s_seg_fp && s_seg_rows >= WF_SEG_MAX_ROWS) seg_finalize();
     make_room((uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);   // страховка (обычно место уже есть — #FW-8)
     if (!s_seg_fp) seg_open_new();
     if (s_seg_fp) {
@@ -522,7 +471,11 @@ static void wf_task(void *arg)
         // «склейка» на границах сегментов. Опрос раз в 1 c атомарного скаляра
         // без лока; полный снимок — только при фактическом закрытии строки.
         // Прибор молчит (время не идёт) → строк нет, водопад честно стоит.
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // #FW-13 фикс №2: будимся коммитом свипа (= конец USB-burst), чтобы снапшот
+        // и запись строки легли в тихое окно. Таймаут 1500 мс — fallback-тик при
+        // молчащем/отключённом приборе (прежнее поведение).
+        if (s_commit_sig) xSemaphoreTake(s_commit_sig, pdMS_TO_TICKS(1500));
+        else vTaskDelay(pdMS_TO_TICKS(1000));
 
         if (!s_status.recording) continue;
         uint32_t iv = s_status.interval_sec;
@@ -571,7 +524,10 @@ static void wf_task(void *arg)
 static void wf_fs_task(void *arg)
 {
     for (;;) {
-        xSemaphoreTake(s_fs_sig, portMAX_DELAY);
+        // #FW-14: таймаут вместо portMAX_DELAY — периодическая проверка возраста
+        // открытого сегмента даже без новых строк (при interval > MAX_AGE строк
+        // между ролловерами нет вовсе).
+        xSemaphoreTake(s_fs_sig, pdMS_TO_TICKS(5000));
         for (;;) {
             LOCK();
             uint32_t g = s_fs_flushed, total = s_status.total_rows;
@@ -588,6 +544,13 @@ static void wf_fs_task(void *arg)
             if (pst) seg_write_row(s_fs_buf, s_fs_dur);
             LOCK(); s_fs_flushed++; UNLOCK();
         }
+        // #FW-14: финализация по возрасту — 64 строки ИЛИ 10 мин (WATERFALL.md),
+        // чтобы при больших интервалах файл не висел открытым часами и приёмник
+        // мог его забрать. Без патча шапки это только fsync+fclose (дёшево).
+        FSLOCK();
+        if (s_seg_fp && (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC)
+            seg_finalize();
+        FSUNLOCK();
     }
 }
 
