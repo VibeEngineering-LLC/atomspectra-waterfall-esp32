@@ -46,7 +46,10 @@ WiFi-шлюз для гамма-спектрометра **KB Radar «Atom Spect
 
 ## Что видно в Web UI
 
-![Web UI платы — вкладка «Водопад»: спектрограмма (время ↓, энергия →) и срез спектра](images/web-ui-waterfall.png)
+![Web UI платы — вкладка «Спектр»: живой 8192-канальный спектр, управление прибором, экспорт](images/web-ui-spectrum.png)
+
+> 🔴 **Живое демо этого Web UI** (плата не нужна):
+> **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**
 
 Web UI открывается в браузере по адресу `http://<IP-платы>/`:
 
@@ -76,6 +79,16 @@ Web UI открывается в браузере по адресу `http://<IP-
 - **Экспорт N42** — скачать ANSI N42.42 (`RadInstrumentData`)
 - **Экспорт SPE** — скачать ЛСРМ `.spe` (формат SpectraVibe)
 - Удаление сохранённых спектров
+
+**Вкладка «Система»** — heap/flash, WiFi (SSID, IP, RSSI), аптайм, причина последней
+перезагрузки, состояние TCP-моста:
+
+![Web UI платы — вкладка «Система»](images/web-ui-system.png)
+
+**Вкладка «Сервис»** — произвольные команды прибору, журнал обмена (devlog),
+резервная копия и восстановление настроек:
+
+![Web UI платы — вкладка «Сервис»](images/web-ui-service.png)
 
 ## Экспорт
 
@@ -216,7 +229,7 @@ idf.py -p COM14 flash
 
 ## Водопад (спектрограмма)
 
-![Офлайн-просмотрщик waterfall_viewer.html — heatmap водопада из .n42](images/waterfall-viewer.png)
+![Web UI платы — вкладка «Водопад»: спектрограмма (время ↓, энергия →) и срез спектра](images/web-ui-waterfall.png)
 
 Помимо живого спектра шлюз умеет копить **водопад** — последовательность спектров
 через равные интервалы (каждая строка = дельта накопления за период, 8192 канала,
@@ -236,6 +249,8 @@ idf.py -p COM14 flash
 В `scripts/` — инструменты для ПК: экспорт в N42 (`waterfall_n42.py`), офлайн
 2D-просмотрщик водопада (`waterfall_viewer.html`), захват в `.aswf`
 (`waterfall_client.py`).
+
+![Офлайн-просмотрщик waterfall_viewer.html — heatmap водопада из .n42](images/waterfall-viewer.png)
 
 📖 Форматы (ASWW / ASWF / N42), полный Web API водопада, калибровка и работа со
 скриптами — [`WATERFALL.md`](WATERFALL.md).

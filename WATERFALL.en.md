@@ -33,6 +33,9 @@ scale (log/lin).
 
 ![Web UI — "Waterfall" tab (spectrogram + spectrum slice)](images/web-ui-waterfall.png)
 
+> 🔴 **Live demo of this tab on real data** (no board required):
+> **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/waterfall.html>**
+
 Buttons **Start / Stop / Clear / Export .n42**, an **Interval** field, a
 **keep in Flash** checkbox, X-axis selector (channels/keV), brightness (log/lin),
 palette, contrast slider and channel zoom. The counter shows total rows · in ring

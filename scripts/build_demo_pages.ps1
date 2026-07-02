@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $web  = Join-Path $root "web"
 $demo = Join-Path $root "demo"
-$pages = "index.html","waterfall.html","saved.html","system.html"
+$pages = "index.html","waterfall.html","saved.html","system.html","service.html"
 $enc = New-Object System.Text.UTF8Encoding($false)
 foreach ($p in $pages) {
   $src = Join-Path $web $p
@@ -24,6 +24,7 @@ foreach ($p in $pages) {
   $html = $html.Replace('href="/waterfall"', 'href="waterfall.html"')
   $html = $html.Replace('href="/saved"',     'href="saved.html"')
   $html = $html.Replace('href="/system"',    'href="system.html"')
+  $html = $html.Replace('href="/service"',   'href="service.html"')
   # 3) saved.html overlay jump back to spectrum page
   $html = $html.Replace('location.href="/?overlay="', 'location.href="index.html?overlay="')
   [System.IO.File]::WriteAllText($dst, $html, $enc)

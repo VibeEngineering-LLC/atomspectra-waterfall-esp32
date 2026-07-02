@@ -46,7 +46,10 @@ No cloud. No accounts. Everything runs on your local network.
 
 ## What you see in the Web UI
 
-![Board Web UI — "Waterfall" tab: spectrogram (time ↓, energy →) with a spectrum slice](images/web-ui-waterfall.png)
+![Board Web UI — "Spectrum" tab: live 8192-channel spectrum, instrument control, export](images/web-ui-spectrum.png)
+
+> 🔴 **Live demo of this Web UI** (no board required):
+> **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**
 
 The Web UI opens in a browser at `http://<board-IP>/`:
 
@@ -76,6 +79,16 @@ The Web UI opens in a browser at `http://<board-IP>/`:
 - **Export N42** — download ANSI N42.42 (`RadInstrumentData`)
 - **Export SPE** — download LSRM `.spe` (SpectraVibe format)
 - Delete saved spectra
+
+**"System" tab** — heap/flash, WiFi (SSID, IP, RSSI), uptime, last reset reason,
+TCP bridge state:
+
+![Board Web UI — "System" tab](images/web-ui-system.png)
+
+**"Service" tab** — arbitrary instrument commands, exchange log (devlog),
+settings backup and restore:
+
+![Board Web UI — "Service" tab](images/web-ui-service.png)
 
 ## Export
 
@@ -216,7 +229,7 @@ A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect t
 
 ## Waterfall (spectrogram)
 
-![Offline viewer waterfall_viewer.html — waterfall heatmap from a .n42 file](images/waterfall-viewer.png)
+![Board Web UI — "Waterfall" tab: spectrogram (time ↓, energy →) with a spectrum slice](images/web-ui-waterfall.png)
 
 Besides the live spectrum, the gateway can accumulate a **waterfall** — a sequence of
 spectra at equal intervals (5…60 s; each row = the accumulation delta over one period, 8192
@@ -236,6 +249,8 @@ browser).
 
 `scripts/` holds the PC-side tools: N42 export (`waterfall_n42.py`), an offline 2D
 waterfall viewer (`waterfall_viewer.html`), and `.aswf` capture (`waterfall_client.py`).
+
+![Offline viewer waterfall_viewer.html — waterfall heatmap from a .n42 file](images/waterfall-viewer.png)
 
 📖 Formats (ASWW / ASWF / N42), the full waterfall Web API, calibration, and how to use
 the scripts — [`WATERFALL.en.md`](WATERFALL.en.md).

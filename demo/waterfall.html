@@ -91,6 +91,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <span class="on" data-i18n="nav.waterfall">Водопад</span>
 <a href="saved.html" data-i18n="nav.saved">Сохранённые</a>
 <a href="system.html" data-i18n="nav.system">Система</a>
+<a href="service.html" data-i18n="nav.service">Сервис</a>
 </nav>
 
 <div class="wrap">
@@ -163,6 +164,32 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </section>
 
 <section class="panel pad">
+<details class="help" id="oflCard">
+<summary data-i18n="ofl.summary">&#128228; Автономная выгрузка сегментов (HTTP на ваш ПК/NAS)</summary>
+<div style="padding:8px 2px 2px">
+ <div class="row" style="padding-left:0;padding-right:0">
+  <label class="lbl" style="font-size:12.5px;color:var(--txt)"><input type="checkbox" id="oflEn" style="vertical-align:middle"> <span data-i18n="ofl.enabled">Включить автоотправку завершённых сегментов</span></label>
+ </div>
+ <div class="row" style="padding-left:0;padding-right:0">
+  <label class="lbl"><span data-i18n="ofl.transport">Транспорт</span> <select class="sel" id="oflTr" disabled><option data-i18n="ofl.transport_http">HTTP (локальная сеть)</option></select></label>
+  <span class="lbl" style="color:#5b655a" data-i18n="ofl.transport_note">HTTPS/SMB — позже (#REC-11-B)</span>
+ </div>
+ <div class="row" style="padding-left:0;padding-right:0">
+  <label class="lbl" style="flex:1 1 100%"><span data-i18n="ofl.url">Адрес приёмника</span> <input class="inp" id="oflUrl" style="width:min(360px,90%)" data-i18n-placeholder="ofl.url_ph" placeholder="http://<адрес-ПК>:8080/wf"></label>
+ </div>
+ <div class="row" style="padding-left:0;padding-right:0">
+  <label class="lbl"><span data-i18n="ofl.user">Логин</span> <input class="inp" id="oflUser" autocomplete="off" style="width:130px"></label>
+  <label class="lbl"><span data-i18n="ofl.pass">Пароль</span> <input class="inp" id="oflPass" type="password" autocomplete="new-password" data-i18n-placeholder="ofl.pass_ph" placeholder="пусто = не менять" style="width:150px"></label>
+  <button class="btn sm green" id="oflSave" data-i18n="ofl.save">Сохранить</button>
+  <span id="oflMsg" style="font-size:11.5px;color:#6b756a"></span>
+ </div>
+ <div class="row" style="padding-left:0;padding-right:0;color:#8a9483;font-size:11.5px"><span id="oflStat">—</span></div>
+ <p style="margin:6px 0 0;color:#6b756a;font-size:11.5px;line-height:1.5" data-i18n-html="ofl.note">Плата сама шлёт каждый завершённый сегмент <code>.aswf</code> POST-запросом на указанный адрес. Только HTTP в локальной сети. <b>Народмон запрещён</b> — адрес с «narodmon» не примется.</p>
+</div>
+</details>
+</section>
+
+<section class="panel pad">
 <details class="help">
 <summary data-i18n="help.summary">&#10067; Как идёт автономная запись и забор данных</summary>
 <div data-i18n-html="help.body">
@@ -191,7 +218,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 var DICT={
  ru:{
   "title":"AtomSpectra · Водопад","device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
   "btn.start":"▶ Старт","btn.stop":"■ Стоп","btn.clear":"🗑 Очистить","btn.export_n42":"⬇ Экспорт .n42",
   "btn.disk":"💾 Стрим на диск…","btn.disk_stop":"■ Стрим на диск (стоп)",
   "btn.disk_title":"Сохранять входящий стрим в .aswf-файл на диске ПК",
@@ -228,11 +255,25 @@ var DICT={
   "unload.recording":"Идёт запись на диск. Закрыть страницу?",
   "flash.off":"выкл","flash.full":"⚠ Flash заполнен (стрим продолжается)",
   "state.rec":"● ЗАПИСЬ","state.stop":"○ стоп",
-  "state.total":"строк всего:","state.ring":"в кольце:"
+  "state.total":"строк всего:","state.ring":"в кольце:",
+  "ofl.summary":"📤 Автономная выгрузка сегментов (HTTP на ваш ПК/NAS)",
+  "ofl.enabled":"Включить автоотправку завершённых сегментов",
+  "ofl.transport":"Транспорт","ofl.transport_http":"HTTP (локальная сеть)",
+  "ofl.transport_note":"HTTPS/SMB — позже (#REC-11-B)",
+  "ofl.url":"Адрес приёмника","ofl.url_ph":"http://<адрес-ПК>:8080/wf",
+  "ofl.user":"Логин","ofl.pass":"Пароль","ofl.pass_ph":"пусто = не менять",
+  "ofl.save":"Сохранить",
+  "ofl.note":"Плата сама шлёт каждый завершённый сегмент <code>.aswf</code> POST-запросом на указанный адрес. Только HTTP в локальной сети. <b>Народмон запрещён</b> — адрес с «narodmon» не примется.",
+  "ofl.st_sent":"Отправлено:","ofl.st_failed":"Ошибок:","ofl.st_last":"Код:",
+  "ofl.st_busy":"идёт отправка…","ofl.st_idle":"ожидание","ofl.st_lastok":"успех:",
+  "ofl.pass_set":"пароль сохранён","ofl.saved":"сохранено","ofl.never":"—",
+  "ofl.err_blocked":"адрес запрещён (Народмон-бан)",
+  "ofl.err_invalid":"URL должен начинаться с http://",
+  "ofl.err_nvs":"ошибка записи в NVS","ofl.err":"ошибка отправки настроек"
  },
  en:{
   "title":"AtomSpectra · Waterfall","device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
   "btn.start":"▶ Start","btn.stop":"■ Stop","btn.clear":"🗑 Clear","btn.export_n42":"⬇ Export .n42",
   "btn.disk":"💾 Stream to disk…","btn.disk_stop":"■ Stream to disk (stop)",
   "btn.disk_title":"Save the incoming stream to an .aswf file on the PC disk",
@@ -269,7 +310,21 @@ var DICT={
   "unload.recording":"Disk recording in progress. Close the page?",
   "flash.off":"off","flash.full":"⚠ Flash full (stream continues)",
   "state.rec":"● REC","state.stop":"○ stop",
-  "state.total":"total rows:","state.ring":"in ring:"
+  "state.total":"total rows:","state.ring":"in ring:",
+  "ofl.summary":"📤 Autonomous segment offload (HTTP to your PC/NAS)",
+  "ofl.enabled":"Auto-send finished segments",
+  "ofl.transport":"Transport","ofl.transport_http":"HTTP (local network)",
+  "ofl.transport_note":"HTTPS/SMB — later (#REC-11-B)",
+  "ofl.url":"Receiver URL","ofl.url_ph":"http://<pc-host>:8080/wf",
+  "ofl.user":"User","ofl.pass":"Password","ofl.pass_ph":"empty = keep current",
+  "ofl.save":"Save",
+  "ofl.note":"The board itself POSTs every finished <code>.aswf</code> segment to this address. HTTP on the local network only. <b>Narodmon is blocked</b> — an address containing «narodmon» is rejected.",
+  "ofl.st_sent":"Sent:","ofl.st_failed":"Failed:","ofl.st_last":"Code:",
+  "ofl.st_busy":"sending…","ofl.st_idle":"idle","ofl.st_lastok":"last ok:",
+  "ofl.pass_set":"password stored","ofl.saved":"saved","ofl.never":"—",
+  "ofl.err_blocked":"address blocked (Narodmon ban)",
+  "ofl.err_invalid":"URL must start with http://",
+  "ofl.err_nvs":"NVS write error","ofl.err":"failed to save settings"
  }
 };
 var LANG=(function(){try{return localStorage.getItem("aswf-lang")||"ru";}catch(e){return"ru";}})();
@@ -284,6 +339,9 @@ function applyI18n(){
  });
  document.querySelectorAll("[data-i18n-title]").forEach(function(el){
   var k=el.getAttribute("data-i18n-title"); el.title=t(k);
+ });
+ document.querySelectorAll("[data-i18n-placeholder]").forEach(function(el){
+  var k=el.getAttribute("data-i18n-placeholder"); el.placeholder=t(k);
  });
  document.documentElement.lang=LANG;
  var btn=document.getElementById("langBtn"); if(btn)btn.textContent=(LANG==="ru")?"EN":"RU";
@@ -410,6 +468,14 @@ var cur=document.getElementById("cur"), curx=cur.getContext("2d");
 var slc=document.getElementById("slc"), slcx=slc.getContext("2d");
 var SLW=900, SLH=180;
 (function(){var dpr=Math.max(2,window.devicePixelRatio||1);/* #UI-18: supersample ≥2× → срез/курсор в zoom-оверлее чёткие */function hidpi(c,ctx,w,h){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);}hidpi(cur,curx,WFW,WFH);hidpi(slc,slcx,SLW,SLH);})();
+// #UI-4: битмап канваса ВСЕГДА 520 строк (WFHd≡WFH). Попытка ужимать битмап под
+// число строк (fitWFHeight) ломала layout: #wf height:auto схлопывался в полоску,
+// а #cur height:100% прибит к высоте ряда (её держит вертикальный скроллбар) →
+// оверлей с осями растягивался ×10 = гигантский текст. Поэтому bitmap фиксирован,
+// а «чёрное поле сверху при движении слайдера» решается clamp-ом прокрутки (ниже,
+// syncScroll/слайдер/alt+wheel: bottom никогда не уходит выше lastIdx).
+var WFHd=WFH;
+function fitWFHeight(){ /* no-op: bitmap фиксирован 900×520, см. комментарий выше (#UI-4) */ }
 var slcMode="log", slcHoverLi=-1, slcCursorCh=-1, cursorY=-1;
 // #UI-16: true ⇔ курсор ВНУТРИ canvas, но строка под ним вне rows[] (чёрная зона
 // выше первой/ниже последней строки). Тогда срез ДОЛЖЕН показать «нет данных»,
@@ -454,13 +520,14 @@ var normMax=64;
 function rowMax(r){var m=0;for(var i=chLo;i<chHi&&i<r.length;i++){if(r[i]>m)m=r[i];}return m;}
 
 function draw(){
- var img=wfx.createImageData(WFW,WFH);
+ fitWFHeight();   // #UI-4: подогнать высоту канваса под число строк
+ var img=wfx.createImageData(WFW,WFHd);
  var data=img.data;
  var span=chHi-chLo; if(span<1)span=1;
  var lastIdx=baseIndex+rows.length-1;
  var bottom=(viewBottom<0)?lastIdx:viewBottom;
  var seenMax=1;
- for(var y=0;y<WFH;y++){
+ for(var y=0;y<WFHd;y++){
   var gIdx=bottom-y;
   var li=gIdx-baseIndex;
   if(li<0||li>=rows.length)continue;
@@ -468,7 +535,7 @@ function draw(){
  }
  normMax=normMax*0.7+seenMax*0.3; if(normMax<1)normMax=1;
  var gfac=gain/40.0;
- for(var y=0;y<WFH;y++){
+ for(var y=0;y<WFHd;y++){
   var gIdx=bottom-y;
   var li=gIdx-baseIndex;
   var off=y*WFW*4;
@@ -512,7 +579,7 @@ function drawNuclidesWF(){
    if(c<chLo||c>=chHi)continue;
    var x=Math.round((c-chLo)/span*WFW)+0.5;
    curx.strokeStyle=n.color; curx.lineWidth=1; curx.globalAlpha=0.8; curx.setLineDash([4,3]);
-   curx.beginPath(); curx.moveTo(x,0); curx.lineTo(x,WFH-16); curx.stroke();
+   curx.beginPath(); curx.moveTo(x,0); curx.lineTo(x,WFHd-16); curx.stroke();
    curx.setLineDash([]); curx.globalAlpha=0.95;
    var ly=2+((i%3)*10);
    curx.fillStyle="rgba(0,0,0,.55)";
@@ -531,7 +598,7 @@ function syncScroll(){
  var sb=document.getElementById("wf-scroll");
  if(!sb)return;
  var lastIdx=baseIndex+rows.length-1;
- var mx=Math.max(0,rows.length-Math.min(WFH,rows.length)); // #UI-4: учёт baseIndex (кольцо) — max v = rows.length-WFH, не allow over-scroll в чёрное снизу
+ var mx=Math.max(0,rows.length-Math.min(WFH,rows.length));   // #UI-4: окно прокрутки = WFHd (min(WFH,строк)), не WFH → при <520 строк mx=0, слайдер выключен
  if(parseInt(sb.max)!==mx)sb.max=mx;
  sb.disabled=(mx<=0);
  if(document.activeElement===sb)return;
@@ -548,7 +615,7 @@ function drawCursor(){
  var y=cursorY|0;
  curx.strokeStyle="rgba(255,255,255,.55)"; curx.lineWidth=1;
  curx.beginPath();
- curx.moveTo(x+0.5,0); curx.lineTo(x+0.5,WFH);
+ curx.moveTo(x+0.5,0); curx.lineTo(x+0.5,WFHd);
  curx.moveTo(0,y+0.5); curx.lineTo(WFW,y+0.5);
  curx.stroke();
  var lastIdx=baseIndex+rows.length-1;
@@ -698,8 +765,8 @@ function drawSlice(){
 }
 
 function drawAxis(){
- curx.clearRect(0,0,WFW,WFH);
- curx.fillStyle="rgba(0,0,0,.55)";curx.fillRect(0,WFH-16,WFW,16);
+ curx.clearRect(0,0,WFW,WFHd);
+ curx.fillStyle="rgba(0,0,0,.55)";curx.fillRect(0,WFHd-16,WFW,16);
  curx.strokeStyle="#283024";curx.fillStyle="#aeb6a8";curx.font="10px ui-monospace,monospace";curx.textAlign="center";
  var span=chHi-chLo;
  var N=8;
@@ -707,9 +774,9 @@ function drawAxis(){
   var x=i/N*WFW;
   var ch=chLo+span*i/N;
   var lbl=axisMode==="kev"&&calib?ch2kev(ch).toFixed(0)+"k":Math.round(ch);
-  curx.beginPath();curx.moveTo(x,WFH-16);curx.lineTo(x,WFH-12);curx.stroke();
+  curx.beginPath();curx.moveTo(x,WFHd-16);curx.lineTo(x,WFHd-12);curx.stroke();
   var tx=x; if(i===0)tx+=12; if(i===N)tx-=12;
-  curx.fillText(lbl,tx,WFH-4);
+  curx.fillText(lbl,tx,WFHd-4);
  }
 }
 
@@ -724,9 +791,9 @@ function updHud(bottom,lastIdx){
 
 wf.parentNode.addEventListener("mousemove",function(e){
  var rc=wf.getBoundingClientRect();
- var sx=WFW/rc.width, sy=WFH/rc.height;
+ var sx=WFW/rc.width, sy=WFHd/rc.height;
  var x=(e.clientX-rc.left)*sx, y=(e.clientY-rc.top)*sy;
- if(x<0||x>=WFW||y<0||y>=WFH){
+ if(x<0||x>=WFW||y<0||y>=WFHd){
   if(slcHoverLi>=0||slcCursorCh>=0||cursorY>=0||slcCursorInDark){slcHoverLi=-1;slcCursorCh=-1;cursorY=-1;slcCursorInDark=false;draw();}
   return;
  }
@@ -1058,6 +1125,46 @@ var csrfToken="";
 function post(url,body){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});}
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||"";}catch(e){}}
 
+// === #REC-11-A2: автономная выгрузка сегментов (push HTTP POST на адрес оператора) ===
+// Народмон-бан (CLAUDE.md): URL c «narodmon» отвергается ещё в браузере — зеркало
+// серверного WF_OFFLOAD_ERR_BLOCKED. Пароль с платы НЕ приходит (только has_pass);
+// пустое поле пароля при сохранении → прежний пароль на плате сохраняется.
+function oflSetMsg(s,kind){var m=document.getElementById("oflMsg");if(!m)return;m.textContent=s||"";m.style.color=(kind==="ok")?"var(--accent)":(kind==="err")?"#ff8a82":"#6b756a";}
+function oflRenderStat(j){
+ var el=document.getElementById("oflStat"); if(!el)return;
+ var busy=j.busy?t("ofl.st_busy"):t("ofl.st_idle");
+ var last=j.last_ok_at?(new Date(j.last_ok_at*1000)).toLocaleString():t("ofl.never");
+ var pass=j.has_pass?("   ·   "+t("ofl.pass_set")):"";
+ el.textContent=t("ofl.st_sent")+" "+(j.sent_ok||0)+"   "+t("ofl.st_failed")+" "+(j.failed||0)+
+   "   "+t("ofl.st_last")+" "+(j.last_status||0)+"   "+busy+"   "+t("ofl.st_lastok")+" "+last+pass;
+}
+function loadOffload(){
+ fetch("/api/waterfall/offload").then(function(r){return r.json();}).then(function(j){
+  var en=document.getElementById("oflEn"); if(en)en.checked=!!j.enabled;
+  var u=document.getElementById("oflUrl"); if(u)u.value=j.url||"";
+  var us=document.getElementById("oflUser"); if(us)us.value=j.user||"";
+  oflRenderStat(j);
+ }).catch(function(){});
+}
+function oflPollStat(){   // лёгкое обновление статистики, не трогая поля ввода оператора
+ var card=document.getElementById("oflCard"); if(!card||!card.open)return;
+ var ae=document.activeElement; if(ae&&(ae.id==="oflUrl"||ae.id==="oflUser"||ae.id==="oflPass"))return;
+ fetch("/api/waterfall/offload").then(function(r){return r.json();}).then(oflRenderStat).catch(function(){});
+}
+function saveOffload(){
+ var en=document.getElementById("oflEn").checked;
+ var url=(document.getElementById("oflUrl").value||"").trim();
+ if(/narodmon/i.test(url)){oflSetMsg(t("ofl.err_blocked"),"err");return;}      // зеркало WF_OFFLOAD_ERR_BLOCKED
+ if(en&&!/^http:\/\//i.test(url)){oflSetMsg(t("ofl.err_invalid"),"err");return;}
+ var body={enabled:en,url:url,user:(document.getElementById("oflUser").value||"")};
+ var pw=document.getElementById("oflPass").value; if(pw)body.pass=pw;          // пусто → прежний пароль сохраняется
+ oflSetMsg("…","");
+ post("/api/waterfall/offload",body).then(function(r){return r.json();}).then(function(j){
+  if(j&&j.ok){oflSetMsg(t("ofl.saved"),"ok");document.getElementById("oflPass").value="";loadOffload();}
+  else{var e=(j&&j.err)||"error";var k={"narodmon-blocked":"ofl.err_blocked","invalid-url":"ofl.err_invalid","nvs":"ofl.err_nvs"}[e]||"ofl.err";oflSetMsg(t(k),"err");}
+ }).catch(function(){oflSetMsg(t("ofl.err"),"err");});
+}
+
 document.getElementById("bStart").onclick=async function(){await post("/api/waterfall/start");refreshStatus();};
 document.getElementById("bStop").onclick=async function(){await post("/api/waterfall/stop");refreshStatus();};
 document.getElementById("bClear").onclick=async function(){
@@ -1117,8 +1224,7 @@ wf.addEventListener("wheel",function(e){
   var bottom=(viewBottom<0)?lastIdx:viewBottom;
   var step=e.deltaY<0?-3:3;
   bottom+=step;
-  // #UI-4: lo = низший допустимый bottom (окно нижним краем = baseIndex); при rows.length<WFH lo==lastIdx
-  var lo=baseIndex+Math.min(WFH,rows.length)-1;if(bottom<lo)bottom=lo;viewBottom=(bottom>=lastIdx)?-1:bottom;
+  var lo=baseIndex+Math.min(WFH,rows.length)-1;if(bottom<lo)bottom=lo;viewBottom=(bottom>=lastIdx)?-1:bottom;   // #UI-4: пол окна = WFHd → нет пустых строк сверху
   draw();
  }
 },{passive:false});
@@ -1133,7 +1239,7 @@ wf.addEventListener("wheel",function(e){
   var lastIdx=baseIndex+rows.length-1;
   var v=parseInt(sb.value)||0;
   if(v<=0){viewBottom=-1;}
-  else{var win=Math.min(WFH,rows.length);var lo=baseIndex+win-1;var bottom=lastIdx-v;if(bottom<lo)bottom=lo;viewBottom=(bottom>=lastIdx)?-1:bottom;} // #UI-4: win=min(WFH,rows.length) — при малом числе строк lo не уходит выше lastIdx (нет чёрного сверху)
+  else{var win=Math.min(WFH,rows.length);var lo=baseIndex+win-1;var bottom=lastIdx-v;if(bottom<lo)bottom=lo;viewBottom=(bottom>=lastIdx)?-1:bottom;}   // #UI-4: пол окна = WFHd → нет пустых строк сверху
   draw();
  });
  var savedPal="Inferno";
@@ -1148,9 +1254,12 @@ wf.addEventListener("wheel",function(e){
  await refreshSystem();
  await backfill();
  connectWS();
+ var os=document.getElementById("oflSave"); if(os)os.onclick=saveOffload;   // #REC-11-A2
+ loadOffload();
  setInterval(refreshStatus,5000);
  setInterval(refreshSystem,5000);
  setInterval(tickRecTime,1000);
+ setInterval(oflPollStat,5000);   // #REC-11-A2: статистика выгрузки, только при раскрытой карточке
 })();
 </script>
 <style>
@@ -1405,7 +1514,7 @@ window.openZoomOverlay=function(sourcesFn,opts){
    onCursor:function(fx,fy){
     var lastIdx=baseIndex+rows.length-1;
     var bottom=(viewBottom<0)?lastIdx:viewBottom;
-    var li=(bottom-Math.floor(fy*WFH))-baseIndex;
+    var li=(bottom-Math.floor(fy*WFHd))-baseIndex;
     var span=chHi-chLo; if(span<1)span=1;
     slcCursorCh=chLo+Math.floor(fx*span);
     if(li>=0&&li<rows.length){slcHoverLi=li;slcCursorInDark=false;}
@@ -1417,7 +1526,7 @@ window.openZoomOverlay=function(sourcesFn,opts){
     if(fx<0||fx>1||fy<0||fy>1||!rows.length)return null;
     var lastIdx=baseIndex+rows.length-1;
     var bottom=(viewBottom<0)?lastIdx:viewBottom;
-    var gIdx=bottom-Math.floor(fy*WFH);
+    var gIdx=bottom-Math.floor(fy*WFHd);
     var li=gIdx-baseIndex;
     if(li<0||li>=rows.length)return null;
     var span=chHi-chLo; if(span<1)span=1;

@@ -10,6 +10,7 @@ __pycache__/
 
 # local dev/ops artifacts — содержат реальные IP/пути, НЕ публиковать
 .delegation_guard_off
+.claude/
 scripts/cal_capture.ps1
 scripts/stability_monitor.ps1
 
