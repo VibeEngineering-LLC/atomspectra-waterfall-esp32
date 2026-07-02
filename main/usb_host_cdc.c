@@ -96,7 +96,10 @@ static void handle_rx_packet(void)
     case CMD_TEXT:
         if (s_rx_packet.len > 0) {
             s_rx_packet.data[s_rx_packet.len] = '\0';
-            ESP_LOGI(TAG, "Text(%u): %.80s%s", (unsigned)s_rx_packet.len,
+            // #FW-13: LOGD — CDC-таск, консоль UART0 115200 блокирующая: одна строка
+            // ~100 симв ≈ 8.7 мс > 4.3 мс FIFO-бюджета FT232R @600000 бод. Текст и так
+            // уходит в веб-лог через devlog_push ниже.
+            ESP_LOGD(TAG, "Text(%u): %.80s%s", (unsigned)s_rx_packet.len,
                      (const char*)s_rx_packet.data, s_rx_packet.len>80?"...":"");
             devlog_push(s_rx_packet.data, (int)s_rx_packet.len);  // #UI-1: в веб-лог команд
             int sp = sizeof(s_text_accum)-s_text_accum_len-1;

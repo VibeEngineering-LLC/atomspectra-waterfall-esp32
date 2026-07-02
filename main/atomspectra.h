@@ -96,6 +96,10 @@ void spectrum_process_stat_packet(const uint8_t *data, size_t len);
 // #FW-8: счётчики staging-сборки свипов гистограммы (полных commit / отброшенных
 // рваных). drops растёт на каждом свипе, побитом flash-freeze finalize+create.
 void spectrum_get_hist_stats(uint32_t *commits, uint32_t *drops);
+// #FW-13 фикс №2: регистрация binary-семафора (FreeRTOS SemaphoreHandle_t как void*,
+// чтобы не тянуть FreeRTOS в общий заголовок), отдаваемого на каждом коммите свипа —
+// маркер начала тихого USB-окна для фазовой привязки flash-записей.
+void spectrum_add_commit_listener(void *freertos_binary_sem);
 void spectrum_process_info_response(const char *text);
 // #DEV-6: ответ на -tc_pot? ("Tcpot [...]") — таблица баз. темп. компенсации,
 // НЕ входит в -inf (см. #DOC-3/BUG-AS-08). Хранится сырым текстом для бэкапа.
