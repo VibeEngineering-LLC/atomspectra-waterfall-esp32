@@ -93,6 +93,9 @@ void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz);  // #UI-
 void spectrum_init(void);
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len);
 void spectrum_process_stat_packet(const uint8_t *data, size_t len);
+// #FW-8: счётчики staging-сборки свипов гистограммы (полных commit / отброшенных
+// рваных). drops растёт на каждом свипе, побитом flash-freeze finalize+create.
+void spectrum_get_hist_stats(uint32_t *commits, uint32_t *drops);
 void spectrum_process_info_response(const char *text);
 // #DEV-6: ответ на -tc_pot? ("Tcpot [...]") — таблица баз. темп. компенсации,
 // НЕ входит в -inf (см. #DOC-3/BUG-AS-08). Хранится сырым текстом для бэкапа.

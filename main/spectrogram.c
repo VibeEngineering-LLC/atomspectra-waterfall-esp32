@@ -21,6 +21,7 @@ static const char *TAG = "wf";
 #define WF_META           STORAGE_PATH "/wf_meta.json"// legacy (#REC-6) — только очистка
 #define WF_STATE          STORAGE_PATH "/wf_state.bin"
 #define WF_FLASH_RESERVE  (1024 * 1024)
+#define WF_SEG_PREP_ROW   (WF_SEG_MAX_ROWS / 2)  // #FW-8: фаза заблаговременного освобождения места кольцом
 #define WF_STATE_MAGIC    0x53465731u   /* 'WFS1' — persist-состояние записи (#REC-6) */
 
 // #REC-11-A1: патчируемая шапка .aswf. Поля saved_rows/saved_at идут ПЕРВЫМИ,
@@ -178,6 +179,19 @@ static bool seg_write_full_header(FILE *f)
     return true;
 }
 
+// Прочитать текущее saved_rows из шапки по фикс. offset. false — не прочиталось.
+static bool seg_read_rows(FILE *f, uint32_t *rows)
+{
+    char magic[4], num[WF_F_W + 1];
+    if (fseek(f, 0, SEEK_SET) != 0) return false;
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "ASWF", 4) != 0) return false;
+    if (fseek(f, WF_F_ROWS_OFF, SEEK_SET) != 0) return false;
+    if (fread(num, 1, WF_F_W, f) != (size_t)WF_F_W) return false;
+    num[WF_F_W] = '\0';
+    *rows = (uint32_t)strtoul(num, NULL, 10);
+    return true;
+}
+
 // Перезаписать только saved_rows по фикс. offset (проверив магию "ASWF").
 static bool seg_patch_rows(FILE *f, uint32_t rows)
 {
@@ -206,7 +220,17 @@ static void seg_finalize(void)
 {
     if (!s_seg_fp) return;
     if (s_seg_rows > 0) {
-        if (!seg_patch_counts(s_seg_fp, s_seg_rows, (long)time(NULL))) {
+        // #FW-8: НЕ патчить шапку полного сегмента. LittleFS хранит файл
+        // обратно-связанным CTZ-списком: запись в offset 14/34 файла на 1 МБ =
+        // copy-on-write ВСЕГО хвоста (~256 блоков erase+prog ≈ 25-45 c с
+        // выключенным flash-кэшем) — стояли и USB-приём (dur=0 строки), и httpd
+        // (таймауты /api/*). Подтверждено трассой fw8_rollover_trace.py 2026-07-02:
+        // стойло 41-46 c ровно на финализации, без единого скачивания.
+        // Поэтому шапка при открытии сегмента сразу несёт финальные значения
+        // (saved_rows=WF_SEG_MAX_ROWS, saved_at=прогноз конца); патч нужен только
+        // огрызку (ручной стоп / возрастной триггер) — редкий путь, freeze OK.
+        if (s_seg_rows != WF_SEG_MAX_ROWS &&
+            !seg_patch_counts(s_seg_fp, s_seg_rows, (long)time(NULL))) {
             // saved_rows/saved_at в шапке остались нулевыми — внешний вьювер/приёмник
             // увидит "пустой" сегмент. Сигналим, но сегмент всё равно закрываем
             // (сырые строки на месте; reconcile на ребуте перепатчит через "r+b").
@@ -246,7 +270,14 @@ static bool seg_open_new(void)
         if (!f) { ESP_LOGE(TAG, "cannot open %s", p); return false; }
     }
     long now = (long)time(NULL);
-    seg_header_build(0, now, now);             // saved_at=now (патчится на finalize)
+    // #FW-8: сразу финальные значения — полный сегмент на finalize НЕ патчится
+    // (патч offset 14/34 = LittleFS COW всего 1 МБ ≈ 25-45 c заморозки).
+    // saved_at = прогноз конца (started_at + 64*interval); дрейф от потерянных
+    // свипов — единицы секунд, честное время строк несут поля dur (v2).
+    // Огрызок (стоп/возраст) патчится на finalize реальными значениями; после
+    // краша reconcile на ребуте перепатчит по фактическому размеру.
+    uint32_t iv = s_status.interval_sec ? s_status.interval_sec : 1;
+    seg_header_build(WF_SEG_MAX_ROWS, now + (long)WF_SEG_MAX_ROWS * (long)iv, now);
     if (!seg_write_full_header(f)) {
         ESP_LOGE(TAG, "header write failed %s", p);
         fclose(f); unlink(p); return false;
@@ -280,11 +311,11 @@ static uint32_t seg_oldest_completed(void)
     return best;
 }
 
-// Кольцо keep-last: пока на Flash нет места под строку — удалять старейший
+// Кольцо keep-last: пока на Flash меньше need байт — удалять старейший
 // ЗАВЕРШЁННЫЙ сегмент. Текущий открытый не трогаем. (под s_fs_lock)
-static void make_room_for_row(void)
+static void make_room(uint32_t need)
 {
-    while (flash_free_bytes() < (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE) {
+    while (flash_free_bytes() < need) {
         uint32_t oldest = seg_oldest_completed();
         if (oldest == 0xFFFFFFFFu) break;        // только открытый/пусто — выйти
         char p[64];
@@ -358,8 +389,14 @@ static void seg_reconcile(void)
             long payload = (long)sb.st_size - WF_SEG_HEADER;
             uint32_t rows = payload > 0 ? (uint32_t)(payload / stride) : 0;
             if (rows == 0) { fclose(f); unlink(p); continue; }
-            seg_patch_rows(f, rows);
-            fflush(f); fsync(fileno(f));
+            // #FW-8: патчить ТОЛЬКО при расхождении шапки с фактом (краш до
+            // finalize огрызка). Безусловный патч = LittleFS COW всего файла
+            // (~25-45 c заморозки flash-кэша) на КАЖДЫЙ сегмент при КАЖДОМ боте.
+            uint32_t hdr_rows = 0;
+            if (!seg_read_rows(f, &hdr_rows) || hdr_rows != rows) {
+                seg_patch_rows(f, rows);
+                fflush(f); fsync(fileno(f));
+            }
             fclose(f);
             completed++;
             if (!any || idx > maxidx) { maxidx = idx; any = true; }
@@ -436,11 +473,17 @@ void spectrogram_init(void)
 static void seg_write_row(const uint8_t *row, uint16_t dur)
 {
     FSLOCK();
+    // #FW-8: возрастной лимит не короче полного сегмента (64*interval + запас),
+    // иначе при interval >= 10 c КАЖДЫЙ ролловер был бы возрастным огрызком
+    // (rows < 64) → патч шапки → LittleFS COW-заморозка 25-45 c на каждом сегменте.
+    uint32_t age_iv  = s_status.interval_sec ? s_status.interval_sec : 1;
+    long     age_lim = (long)WF_SEG_MAX_ROWS * (long)age_iv + 60;
+    if (age_lim < WF_SEG_MAX_AGE_SEC) age_lim = WF_SEG_MAX_AGE_SEC;
     if (s_seg_fp && (s_seg_rows >= WF_SEG_MAX_ROWS ||
-                     (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC)) {
+                     (long)(time(NULL) - s_seg_opened_at) >= age_lim)) {
         seg_finalize();
     }
-    make_room_for_row();
+    make_room((uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);   // страховка (обычно место уже есть — #FW-8)
     if (!s_seg_fp) seg_open_new();
     if (s_seg_fp) {
         uint8_t durle[WF_DUR_BYTES] = { (uint8_t)(dur & 0xFF), (uint8_t)(dur >> 8) };
@@ -453,6 +496,17 @@ static void seg_write_row(const uint8_t *row, uint16_t dur)
             fsync(fileno(s_seg_fp));
             s_seg_rows++;
             LOCK(); s_status.flash_rows++; UNLOCK();
+            // #FW-8: место под хвост текущего сегмента + весь следующий освобождаем
+            // ЗАРАНЕЕ, в середине сегмента. Иначе unlink 1МБ кольцом (десятки секунд
+            // стираний Flash с заморозкой кэша) фазово совпадал с ролловером
+            // finalize+create → USB-приём терял секундный пакет прибора → строки
+            // границы сегмента получали dur 4/6 вместо 5 (тёмные полосы каждые
+            // 64 строки, #VIEW-9). Разнос по фазе дробит burst; недобор среза в
+            // середине, если и случится, честно ложится в поле dur (v2).
+            if (s_seg_rows == WF_SEG_PREP_ROW) {
+                uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
+                make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
+            }
         }
     }
     FSUNLOCK();
@@ -461,11 +515,21 @@ static void seg_write_row(const uint8_t *row, uint16_t dur)
 static void wf_task(void *arg)
 {
     for (;;) {
-        uint32_t iv = s_status.interval_sec;
-        if (iv < WF_INTERVAL_MIN) iv = WF_INTERVAL_MIN;
-        vTaskDelay(pdMS_TO_TICKS(iv * 1000));
+        // #FW-10: строка закрывается по живому времени ПРИБОРА (total_time_sec),
+        // а не по локальному тику. vTaskDelay(iv) дрейфовал против секундной
+        // сетки прибора: задержка коммита свипа (flash-запись/чтение) давала
+        // пары dur 3+7 / 4+6 → мелкая полосатость яркости (счёты ∝ dur) и
+        // «склейка» на границах сегментов. Опрос раз в 1 c атомарного скаляра
+        // без лока; полный снимок — только при фактическом закрытии строки.
+        // Прибор молчит (время не идёт) → строк нет, водопад честно стоит.
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
         if (!s_status.recording) continue;
+        uint32_t iv = s_status.interval_sec;
+        if (iv < WF_INTERVAL_MIN) iv = WF_INTERVAL_MIN;
+        uint32_t now_time = spectrum_get_current()->total_time_sec;
+        if (now_time >= s_prev_time && now_time - s_prev_time < iv) continue;
+
         spectrum_get_snapshot(s_wf_snap);
 
         bool reset = (s_wf_snap->total_counts < s_prev_total);

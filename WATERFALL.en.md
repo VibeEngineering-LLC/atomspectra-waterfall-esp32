@@ -194,12 +194,13 @@ Binary with a JSON header — everything needed to interpret it standalone. Comm
 "ASWF" (4 bytes)
 header_len   u32 LE          (JSON header length in bytes)
 header       = JSON (utf-8), header_len bytes
-payload      = rows × channels × uint16 LE
+payload      = rows × row-record   (v1: 16384 B; v2: row_stride B, see below)
 ```
 
 `.aswf` is now written by **two** producers:
 
 1. **PC script `scripts/waterfall_client.py`** from the WS stream (`/ws/waterfall`) —
+   format **v1**: a row record is exactly `channels × uint16 LE` (16384 B),
    variable `header_len`, key `rows`:
 
    ```json
@@ -211,22 +212,48 @@ payload      = rows × channels × uint16 LE
    }
    ```
 
-2. **The firmware itself** — segments `/storage/wf/seg_NNNNN.aswf` (#REC-11-A1). Same
-   frame, but `header_len` is **fixed = 4096** (`WF_HDR_RESERVE`; the JSON is
-   space-padded, payload is always at offset **4104**), and the counters are named
-   `saved_rows`/`saved_at` and come **first, fixed-width** — the firmware patches them
-   in place (offset 22 and 44) on finalisation, without rewriting all 4 KB:
+2. **The firmware itself** — segments `/storage/wf/seg_NNNNN.aswf` (#REC-11-A1), format
+   **v2**: after the 16384 B of spectrum each row carries **2 B of real duration**
+   (`uint16 LE`, seconds of instrument live time) — a row record is **16386 B**.
+   The header is self-describing: `row_stride` = record size, `row_time.offset` =
+   duration offset within the record. `header_len` is **fixed = 4096**
+   (`WF_HDR_RESERVE`; the JSON is space-padded, payload is always at offset **4104**),
+   and the counters `saved_rows`/`saved_at` come **first, fixed-width** — the firmware
+   patches them in place (offset 22 and 44) on finalisation, without rewriting all 4 KB:
 
    ```json
    {"saved_rows":      64,"saved_at": 1782741625,"format":"atomspectra-waterfall",
-    "version":1,"channels":8192,"dtype":"uint16","byte_order":"little",
+    "version":2,"channels":8192,"dtype":"uint16","byte_order":"little",
+    "row_stride":16386,"row_time":{"dtype":"uint16","unit":"sec","offset":16384},
     "interval_sec":5,"started_at":1782741288,"serial":"...","calibration":[c0,c1,c2,c3,c4]}
    ```
 
-A reader that takes `header_len` from `[4:8]` and parses that many JSON bytes (trailing
-spaces are ignored) handles both variants correctly. `serial`/`calibration` are present
-only if the instrument reported them; on a segment, `saved_rows=0` means it is not
-finalised yet.
+A reader that takes `header_len` from `[4:8]`, parses that many JSON bytes (trailing
+spaces are ignored) and steps through the payload with `row_stride` (defaulting to
+`channels×2` when the field is absent) handles both variants correctly.
+`serial`/`calibration` are present only if the instrument reported them; on a segment,
+`saved_rows=0` means it is not finalised yet.
+
+#### Per-row duration (`dur`) semantics and the timing model
+
+Waterfall rows are closed by **instrument live time** (`total_time_sec` from STAT
+packets), not by the ESP32 clock — so the file stays honest even under USB loss:
+
+- **Nominal `dur = interval_sec`** — a regular row.
+- **`dur = interval_sec + 1`** (rarely more) — a USB sweep was lost at the row
+  boundary: its second honestly moves to the adjacent row, counts are never smeared.
+  The `counts/dur` rate stays flat — which is exactly how files are validated
+  (`scripts/fw8_boundary_check.py`).
+- **`dur = 0` is never written.** Instrument goes silent (USB drops) → instrument
+  time stands still → rows simply do not close, the waterfall pauses.
+- Spectrum commit time is robust to STAT packet loss: every full sweep = exactly
+  1 s of live time, every dropped sweep = 1 more second between commits; STAT is
+  accepted no lower than this arithmetic (a rollback ≥5 s = instrument restart).
+- Segment rollover has **no dead window**: the next segment's header is
+  preallocated (`WF_HDR_RESERVE`), rows are written immediately, only the
+  finalisation is patched.
+
+Rendering: a row's height (time) = its `dur`; for v1 — `interval_sec` from the header.
 
 ### WebSocket header (`/ws/waterfall`)
 

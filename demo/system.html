@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<script src="demo-shim.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="page.title">AtomSpectra · Система</title>
@@ -51,10 +50,11 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="chips"><span class="chip ok" id="dev-chip"><span class="dot" id="dev-dot"></span><span id="dev-stat" data-i18n="device">Прибор</span></span><span class="chip" id="ip-chip">—</span><span class="chip lang" id="langBtn">EN</span></div>
 </header>
 <nav>
-<a href="index.html" data-i18n="nav.spectrum">Спектр</a>
-<a href="waterfall.html" data-i18n="nav.waterfall">Водопад</a>
-<a href="saved.html" data-i18n="nav.saved">Сохранённые</a>
+<a href="/" data-i18n="nav.spectrum">Спектр</a>
+<a href="/waterfall" data-i18n="nav.waterfall">Водопад</a>
+<a href="/saved" data-i18n="nav.saved">Сохранённые</a>
 <span class="on" data-i18n="nav.system">Система</span>
+<a href="/service" data-i18n="nav.service">Сервис</a>
 </nav>
 
 <div class="wrap">
@@ -136,14 +136,21 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </section>
 
 <section class="panel">
-<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.title">Поведение при старте платы</span></div>
+<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.titleSpec">Старт платы · Спектр</span></div>
 <label class="boot-row"><input type="checkbox" id="bc-as-spec"><span data-i18n="boot.asSpec">Автозапуск набора спектра</span></label>
-<label class="boot-row"><input type="checkbox" id="bc-as-wf"><span data-i18n="boot.asWf">Автозапуск записи водопада</span></label>
 <label class="boot-row"><input type="checkbox" id="bc-clr-spec"><span data-i18n="boot.clrSpec">Очищать спектр при старте</span></label>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
+<button class="btn green" id="bc-save-spec" onclick="saveBootConfig('bc-status-spec')" data-i18n="boot.save">Сохранить</button>
+<div class="mut" id="bc-status-spec" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</section>
+
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.titleWf">Старт платы · Водопад</span></div>
+<label class="boot-row"><input type="checkbox" id="bc-as-wf"><span data-i18n="boot.asWf">Автозапуск записи водопада</span></label>
 <label class="boot-row"><input type="checkbox" id="bc-clr-wf"><span data-i18n="boot.clrWf">Очищать водопад при старте</span></label>
 <div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
-<button class="btn green" id="bc-save" onclick="saveBootConfig()" data-i18n="boot.save">Сохранить</button>
-<div class="mut" id="bc-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+<button class="btn green" id="bc-save-wf" onclick="saveBootConfig('bc-status-wf')" data-i18n="boot.save">Сохранить</button>
+<div class="mut" id="bc-status-wf" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
 </section>
 
 </div>
@@ -155,7 +162,7 @@ var DICT={
  ru:{
   "page.title":"AtomSpectra · Система",
   "device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
   "heap.title":"Свободная память (heap)","heap.minSince":"мин. с момента старта:",
   "cpu.title":"CPU спектрометра","cpu.src":"из <code>/api/spectrum.json</code>: поле <code>cpu</code>",
   "flash.title":"Flash (LittleFS)","flash.used":"занято:",
@@ -174,7 +181,8 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra на ПК подключаются к <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> вместо COM-порта.",
   "tcp.clientConnected":"клиент подключён","tcp.free":"свободен",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Обновить",
-  "boot.title":"Поведение при старте платы",
+  "boot.titleSpec":"Старт платы · Спектр",
+  "boot.titleWf":"Старт платы · Водопад",
   "boot.asSpec":"Автозапуск набора спектра",
   "boot.asWf":"Автозапуск записи водопада",
   "boot.clrSpec":"Очищать спектр при старте",
@@ -189,7 +197,7 @@ var DICT={
  en:{
   "page.title":"AtomSpectra · System",
   "device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
   "heap.title":"Free memory (heap)","heap.minSince":"min since boot:",
   "cpu.title":"Spectrometer CPU","cpu.src":"from <code>/api/spectrum.json</code>: field <code>cpu</code>",
   "flash.title":"Flash (LittleFS)","flash.used":"used:",
@@ -208,7 +216,8 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra on PC connect to <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> instead of COM port.",
   "tcp.clientConnected":"client connected","tcp.free":"free",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Refresh",
-  "boot.title":"Board start behavior",
+  "boot.titleSpec":"Board start · Spectrum",
+  "boot.titleWf":"Board start · Waterfall",
   "boot.asSpec":"Autostart spectrum acquisition",
   "boot.asWf":"Autostart waterfall recording",
   "boot.clrSpec":"Clear spectrum on start",
@@ -371,8 +380,8 @@ async function loadBootConfig(){
   document.getElementById("bc-clr-wf").checked=!!r.clear_waterfall;
  }catch(e){}
 }
-async function saveBootConfig(){
- var s=document.getElementById("bc-status");
+async function saveBootConfig(statusId){
+ var s=document.getElementById(statusId||"bc-status-spec");
  var body={
   autostart_spectrum:document.getElementById("bc-as-spec").checked,
   autostart_waterfall:document.getElementById("bc-as-wf").checked,
