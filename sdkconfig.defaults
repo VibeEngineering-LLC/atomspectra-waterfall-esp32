@@ -72,7 +72,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 #CONFIG_SECURE_FLASH_ENC_ENABLED=y
 #CONFIG_NVS_ENCRYPTION=y
 
-# #WF-1 шаг 3: auto-suspend flash erase/program — cache-freeze при fsync строки
-# водопада больше не останавливает выборку кода с флеша (кандидат против
-# остаточных 0.29 drops/min). ТРЕБУЕТ hardware-ретеста >=1ч после STAB-тестов.
-CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+# #WF-1 шаг 3: auto-suspend ОТКЛЮЧЁН — flash чип платы не в whitelist ESP-IDF,
+# init_flash assert при старте. Требует другого подхода (fsync batching).
+# CONFIG_SPI_FLASH_AUTO_SUSPEND=y
