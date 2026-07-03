@@ -218,6 +218,10 @@ What is absent (by design): TLS, login/password, access control. If you need ext
 access, set it up over a trusted channel (VPN / reverse proxy with authentication),
 not via port forwarding.
 
+**External connections:** the board makes SNTP requests to `pool.ntp.org` to synchronise
+the system clock (used in spectrum timestamps and file names). No other outgoing internet
+connections are made — spectra and data stay on the local network.
+
 ## TCP bridge (port 8234)
 
 A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect to
