@@ -65,8 +65,12 @@ def inspect(files):
         print(f"  file_bytes={len(buf)}  payload_rows={len(rows)}  payload_remainder={rem}"
               + ("  ⚠ НЕКРАТНЫЙ ХВОСТ!" if rem else ""))
         sr = hdr.get("saved_rows")
-        if sr is not None and sr != len(rows):
-            print(f"  ⚠ saved_rows={sr} ≠ строк в payload={len(rows)}")
+        # #FW-14: saved_rows=0 = штатная конвенция «строк — из размера файла»
+        if sr:
+            if sr != len(rows):
+                print(f"  ⚠ saved_rows={sr} ≠ строк в payload={len(rows)}")
+        else:
+            print(f"  saved_rows=0 (derive-from-size, #FW-14) → rows={len(rows)}")
         if sums:
             print(f"  суммы строк: min={min(sums)} max={max(sums)} "
                   f"первая={sums[0]} вторая={sums[1] if len(sums)>1 else '-'} "

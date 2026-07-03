@@ -111,9 +111,10 @@ be pulled and read independently of the others.
 |---|---|
 | Segment size | up to **64 rows** (`WF_SEG_MAX_ROWS`) ≈ 1 MB payload |
 | Finalisation | on reaching 64 rows **OR** after 10 min (`WF_SEG_MAX_AGE_SEC`) — so a large interval doesn't leave a file open for hours |
-| Survives reboot | on boot `spectrogram_restore()` reconciles `/storage/wf`: patches counters of unfinished files, deletes empty stubs, restores the index; **if recording was active — continues into a NEW segment** (no mid-segment append, every file stays valid) |
+| Survives reboot | on boot `spectrogram_restore()` reconciles `/storage/wf`: deletes empty stubs, restores the index; **if recording was active — continues into a NEW segment** (no mid-segment append, every file stays valid) |
 | Flash full | **keep-last ring**: the oldest not-yet-sent segment is overwritten; `flash_full=true`, `seg_dropped` grows |
-| Open segment | its header isn't patched yet (`saved_rows=0`) → marked `finalized:false` in `/segments`; no need to pull it before finalise |
+| Row counter | the header always carries `saved_rows=0` — **rows are derived from the file size** (`payload / row_stride`); the header is never patched (patching an offset in LittleFS = copy-on-write of the whole file tail with a multi-second flash-cache freeze) |
+| Open segment | marked `finalized:false` in `/segments` (by the open file's index); no need to pull it before finalise |
 
 Total storage capacity ≈ **763 rows**. At a 10-min interval that's ≈ **5.3 days** of
 continuous recording, at a 1-hour interval ≈ **31 days** (before the keep-last ring
@@ -170,7 +171,7 @@ engages).
 ```
 
 - `rows` is derived from the file size: `(bytes − 4104) / 16384`;
-- `finalized:false` — the segment is currently open (header not patched) — don't pull it;
+- `finalized:false` — the segment is currently open — don't pull it;
 - no directory yet / nothing recorded → `[]`.
 
 ## File formats
@@ -221,11 +222,15 @@ payload      = rows × row-record   (v1: 16384 B; v2: row_stride B, see below)
    The header is self-describing: `row_stride` = record size, `row_time.offset` =
    duration offset within the record. `header_len` is **fixed = 4096**
    (`WF_HDR_RESERVE`; the JSON is space-padded, payload is always at offset **4104**),
-   and the counters `saved_rows`/`saved_at` come **first, fixed-width** — the firmware
-   patches them in place (offset 22 and 44) on finalisation, without rewriting all 4 KB:
+   and the counters `saved_rows`/`saved_at` come **first, fixed-width** and are
+   always written by the firmware as **zeros**: `saved_rows=0` means "derive the
+   row count from the file size" (`(bytes − 4104) / row_stride`). The header is
+   never modified after the segment is opened — patching an offset in LittleFS
+   would mean copy-on-write of the whole file tail with a multi-second
+   flash-cache freeze:
 
    ```json
-   {"saved_rows":      64,"saved_at": 1782741625,"format":"atomspectra-waterfall",
+   {"saved_rows":       0,"saved_at":          0,"format":"atomspectra-waterfall",
     "version":2,"channels":8192,"dtype":"uint16","byte_order":"little",
     "row_stride":16386,"row_time":{"dtype":"uint16","unit":"sec","offset":16384},
     "interval_sec":5,"started_at":1782741288,"serial":"...","calibration":[c0,c1,c2,c3,c4]}
@@ -234,8 +239,9 @@ payload      = rows × row-record   (v1: 16384 B; v2: row_stride B, see below)
 A reader that takes `header_len` from `[4:8]`, parses that many JSON bytes (trailing
 spaces are ignored) and steps through the payload with `row_stride` (defaulting to
 `channels×2` when the field is absent) handles both variants correctly.
-`serial`/`calibration` are present only if the instrument reported them; on a segment,
-`saved_rows=0` means it is not finalised yet.
+`serial`/`calibration` are present only if the instrument reported them. Files
+saved by the viewer/browser carry the actual `saved_rows` — a reader must accept
+both variants (0 = derive-from-size, >0 = authoritative value).
 
 #### Per-row duration (`dur`) semantics and the timing model
 
@@ -253,8 +259,8 @@ packets), not by the ESP32 clock — so the file stays honest even under USB los
   1 s of live time, every dropped sweep = 1 more second between commits; STAT is
   accepted no lower than this arithmetic (a rollback ≥5 s = instrument restart).
 - Segment rollover has **no dead window**: the next segment's header is
-  preallocated (`WF_HDR_RESERVE`), rows are written immediately, only the
-  finalisation is patched.
+  preallocated (`WF_HDR_RESERVE`), rows are written immediately, finalisation
+  is just fsync+fclose (the header is never patched, #FW-14).
 
 Rendering: a row's height (time) = its `dur`; for v1 — `interval_sec` from the header.
 
