@@ -40,9 +40,6 @@
 
 ## 3. Скрипт и методология
 
-### Файл скрипта
-`D:\GoogleDrive\Рабочая папка ИИ\ESP32\scripts\stability_monitor_usb.py`
-
 ### Протокол
 Детектор AtomSpectra передаёт данные в бинарном **shproto-протоколе**:
 - Фрейм: `0xFF 0xFE <data_escaped> 0xA5`
@@ -150,12 +147,12 @@ python stability_monitor_usb.py --port COM15 --window 60
 
 ## 6. Артефакты (файлы)
 
-| Файл | Путь |
+| Файл | |
 |---|---|
-| CSV (574 строки) | `D:\GoogleDrive\Рабочая папка ИИ\ESP32\scripts\stability_20260703_115514\stability.csv` |
-| N42.42 (574 спектра) | `D:\GoogleDrive\Рабочая папка ИИ\ESP32\scripts\stability_20260703_115514\stability.n42` |
-| Текстовый отчёт | `D:\GoogleDrive\Рабочая папка ИИ\ESP32\scripts\stability_20260703_115514\stability_report.txt` |
-| Скрипт | `D:\GoogleDrive\Рабочая папка ИИ\ESP32\scripts\stability_monitor_usb.py` |
+| CSV (574 строки) | `stab1_stability.csv` (в этой папке) |
+| N42.42 (574 спектра) | `stability.n42` (локально) |
+| Текстовый отчёт | `stab1_report.txt` (в этой папке) |
+| Скрипт | `stability_monitor_usb.py` |
 
 ---
 
