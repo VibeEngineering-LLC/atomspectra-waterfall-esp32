@@ -69,6 +69,21 @@ typedef struct {
 } stat_stage_t;
 static stat_stage_t s_stat_stage;
 
+// #FW-13 фикс №2: слушатели коммита свипа. Полный свип = конец USB-burst и начало
+// тихого окна (~0.5 с до следующего свипа) — единственная фаза, где flash-запись
+// (freeze кэша обоих ядер) не рвёт приём FTDI (FIFO 256 Б = 4.3 мс @600000 бод).
+// Потребители (wf_task — строка водопада, main loop — autosave) привязывают свои
+// записи к этому окну через binary-семафоры.
+#define COMMIT_LISTENERS_MAX 2
+static SemaphoreHandle_t s_commit_listeners[COMMIT_LISTENERS_MAX];
+
+void spectrum_add_commit_listener(void *sem)
+{
+    for (int i = 0; i < COMMIT_LISTENERS_MAX; i++)
+        if (!s_commit_listeners[i]) { s_commit_listeners[i] = (SemaphoreHandle_t)sem; return; }
+    ESP_LOGW(TAG, "commit listeners full");
+}
+
 void spectrum_init(void)
 {
     s_spec_lock = xSemaphoreCreateMutex();
@@ -179,6 +194,9 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
             s_spectrum.valid = true;
             SPEC_UNLOCK();
             s_hist_commits++;
+            // #FW-13 фикс №2: сигнал «burst кончился, тихое окно открыто».
+            for (int i = 0; i < COMMIT_LISTENERS_MAX; i++)
+                if (s_commit_listeners[i]) xSemaphoreGive(s_commit_listeners[i]);
         } else {
             s_hist_drops++;
             ESP_LOGW(TAG, "histogram sweep dropped (gap in chunks), drops=%" PRIu32, s_hist_drops);
@@ -262,9 +280,13 @@ void spectrum_process_info_response(const char *text)
         strncpy(s_spectrum.serial_number, lbuf[39], sizeof(s_spectrum.serial_number) - 1);
         ESP_LOGI(TAG, "Serial: %s", s_spectrum.serial_number);
     }
-    ESP_LOGI(TAG, "Info response: %d lines", lcount);
+    // #FW-13: LOGD, не LOGI — функция выполняется в CDC-таске, а консоль UART0
+    // 115200 блокирующая: ~15 строк на каждый -inf (раз в 30 с) = 60-80 мс простоя
+    // приёма. FTDI FT232R держит 256 Б FIFO = 4.3 мс при 600000 бод → overflow,
+    // gap в chunk-ах, свип дропался (30-секундная сетка hist_drop).
+    ESP_LOGD(TAG, "Info response: %d lines", lcount);
     for (int i = 0; i < lcount && i < 12; i++)
-        ESP_LOGI(TAG, "  L[%d]: \"%s\"", i, lbuf[i]);
+        ESP_LOGD(TAG, "  L[%d]: \"%s\"", i, lbuf[i]);
     if (lcount >= 11) {
         char hcat[256] = {0};
         for (int i = 0; i < 10; i++)
@@ -299,7 +321,9 @@ void spectrum_process_info_response(const char *text)
             spectrum_save_calibration();
             ESP_LOGI(TAG, "Calibration OK: order=%d", s_spectrum.calib_order);
         } else {
-            ESP_LOGW(TAG, "Calibration CRC mismatch: computed=%08x expected=%08x", (unsigned)cc, (unsigned)ce);
+            // #FW-13: LOGD — для -inf mismatch штатен (CRC-формат только у -cal),
+            // WARN здесь печатался каждые 30 с в CDC-таске (см. комментарий выше).
+            ESP_LOGD(TAG, "Calibration CRC mismatch: computed=%08x expected=%08x", (unsigned)cc, (unsigned)ce);
         }
     }
     const char *p = text;
