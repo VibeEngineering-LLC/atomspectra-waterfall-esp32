@@ -642,6 +642,25 @@ void spectrogram_restore(void)
 int spectrogram_start(void)
 {
     if (!s_status.ready) return -1;
+
+    // #WF-1: остановить producer и дождаться дренажа consumer ДО сброса
+    // счётчиков. Иначе consumer в окне между UNLOCK и FSLOCK внутри
+    // seg_write_row допишет строку СТАРОЙ сессии в НОВЫЙ сегмент, а его
+    // s_fs_flushed++ «съест» строку 0 новой. Ждать надо ДО FSLOCK: consumer
+    // сам берёт FSLOCK в seg_write_row, ожидание под FSLOCK не сойдётся.
+    // 100 мс — на завершение in-flight итерации producer (recording
+    // проверяется без лока в начале итерации). Bounded, образец — stop().
+    LOCK();
+    s_status.recording = false;
+    UNLOCK();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    if (s_fs_sig) xSemaphoreGive(s_fs_sig);
+    for (int i = 0; i < 60; i++) {
+        LOCK(); bool drained = (s_fs_flushed >= s_status.total_rows); UNLOCK();
+        if (drained) break;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
     spectrum_get_snapshot(s_snap);
 
     FSLOCK();
