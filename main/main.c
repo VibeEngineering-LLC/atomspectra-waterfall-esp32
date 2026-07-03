@@ -93,5 +93,8 @@ void app_main(void)
             }
             spectrum_autosave();
         }
+        // #WF-1: отложенная запись калибровки (s_calib_dirty). Внутри сама берёт
+        // SPEC_LOCK только на снапшот; flash-запись — вне лока и вне CDC/httpd.
+        spectrum_save_calibration();
     }
 }

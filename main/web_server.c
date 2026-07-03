@@ -1326,6 +1326,10 @@ void web_server_init(void)
     csrf_generate();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    // #WF-1: httpd на core 1 к остальной прикладной сети (#TCP-2). Дефолт
+    // tskNO_AFFINITY позволял httpd (prio 5) исполняться на core 0 рядом с
+    // USB-приёмом — уводим целиком.
+    config.core_id = 1;
     config.max_uri_handlers = 45;        // 30 базовых (27 + /api/settings/backup,/restore,/service #DEV-6) + 13 waterfall (11 A1 вкл. websocket + 2× /api/waterfall/offload A2) = 43, +2 запас
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
