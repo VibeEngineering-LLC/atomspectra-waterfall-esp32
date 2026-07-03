@@ -40,6 +40,11 @@ static SemaphoreHandle_t s_spec_lock;
 #define SPEC_LOCK()   do { if (s_spec_lock) xSemaphoreTake(s_spec_lock, portMAX_DELAY); } while (0)
 #define SPEC_UNLOCK() do { if (s_spec_lock) xSemaphoreGive(s_spec_lock); } while (0)
 
+// #WF-1: калибровка изменилась, требуется persist. Взводится под SPEC_LOCK
+// (парсер -inf/-cal, set_calibration), гасится в spectrum_save_calibration
+// (main loop) — flash-запись больше не выполняется под SPEC_LOCK в CDC/httpd.
+static volatile bool s_calib_dirty;
+
 // #FW-8: staging-сборка секундного свипа гистограммы. Прибор на 600000 бод шлёт
 // ВЕСЬ спектр раз в секунду цепочкой chunk-ов: offset==0 — старт свипа, каждый
 // следующий строго продолжает предыдущий, покрытие до 8192 каналов — свип полный
@@ -318,7 +323,7 @@ void spectrum_process_info_response(const char *text)
             while (order > 0 && s_spectrum.calibration[order] == 0.0) order--;
             s_spectrum.calib_order = order;
             s_spectrum.calib_valid = true;
-            spectrum_save_calibration();
+            s_calib_dirty = true;   // #WF-1: запись сделает main loop вне SPEC_LOCK
             ESP_LOGI(TAG, "Calibration OK: order=%d", s_spectrum.calib_order);
         } else {
             // #FW-13: LOGD — для -inf mismatch штатен (CRC-формат только у -cal),
@@ -483,16 +488,24 @@ int spectrum_load_from_flash(int index, spectrum_data_t *out)
     return (rd == sizeof(*out)) ? 0 : -1;
 }
 
-// ВНИМАНИЕ: вызывается из info_response/set_calibration, которые уже держат SPEC_LOCK.
-// Сам лок НЕ берёт (иначе deadlock на нерекурсивном мьютексе).
+// #WF-1: флеш-запись калибровки вынесена из-под SPEC_LOCK и из CDC/httpd-тасков.
+// Парсер -inf/-cal (CDC-таск) и spectrum_set_calibration (httpd) лишь взводят
+// s_calib_dirty под SPEC_LOCK; фактическую запись на LittleFS (freeze кэша
+// обоих ядер) делает main loop (10-с тик) ВНЕ лока — SPEC_LOCK не держится
+// на время flash-операции и приём USB не останавливается.
+// Вызывать БЕЗ SPEC_LOCK (берёт его сам для снапшота).
 void spectrum_save_calibration(void)
 {
-    if (!s_spectrum.calib_valid) return;
+    if (!s_calib_dirty) return;
     calib_store_t st = {0};
+    SPEC_LOCK();
+    if (!s_spectrum.calib_valid) { s_calib_dirty = false; SPEC_UNLOCK(); return; }
     strncpy(st.serial, s_spectrum.serial_number, sizeof(st.serial) - 1);
     memcpy(st.calibration, s_spectrum.calibration, sizeof(st.calibration));
     st.calib_order = s_spectrum.calib_order;
     st.valid = 1;
+    s_calib_dirty = false;
+    SPEC_UNLOCK();
     FILE *f = fopen(CALIB_FILE, "wb");
     if (!f) return;
     size_t wr = fwrite(&st, sizeof(st), 1, f);
@@ -514,7 +527,7 @@ void spectrum_set_calibration(const double *coeffs, int order)
     s_spectrum.calib_valid = true;
     ESP_LOGI(TAG, "Manual calibration set: order=%d c0=%.6g c1=%.6g", order,
              s_spectrum.calibration[0], s_spectrum.calibration[1]);
-    spectrum_save_calibration();
+    s_calib_dirty = true;   // #WF-1: запись сделает main loop вне SPEC_LOCK
     SPEC_UNLOCK();
 }
 

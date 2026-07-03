@@ -214,11 +214,11 @@ void tcp_bridge_init(void)
     }
 
     usb_host_cdc_set_raw_rx_cb(usb_to_tcp_cb);
-    // #TCP-2: пинимся на core 1. USB-host и CDC-ACM driver задачи запинены на
-    // core 0 (usb_host_cdc.c: usb_lib/usb_conn prio 2, cdc driver prio 3, xCoreID=0).
-    // tcp_tx имеет prio 6 — без привязки планировщик мог поставить его на core 0 и
-    // вытеснить CDC-приёмник (6 > 3) → старвейшн приёма USB → потеря пакетов. Держим
-    // всю прикладную сеть на core 1, USB-приём на core 0 не пересекается.
+    // #TCP-2: пинимся на core 1. USB-задачи запинены на core 0 (usb_host_cdc.c:
+    // usb_lib prio 7, usb_conn prio 2, cdc driver prio 8 — после #FW-8 CDC выше
+    // tcp_tx(6), прямое вытеснение приёмника невозможно). Привязку сети к core 1
+    // держим: USB-приём на core 0 не делит ядро с сетевыми burst'ами вовсе
+    // (кэш/критические секции LWIP), независимо от раскладки приоритетов.
     xTaskCreatePinnedToCore(tcp_server_task, "tcp_srv", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(tcp_tx_task,     "tcp_tx",  4096, NULL, 6, NULL, 1);
     xTaskCreatePinnedToCore(tcp_rx_task,     "tcp_rx",  4096, NULL, 5, NULL, 1);
