@@ -3,7 +3,8 @@
 
 **Дата:** 2026-07-03  
 **Задача:** #STAB-1 (task #26)  
-**Статус:** ЗАВЕРШЁН. Детектор СТАБИЛЕН.
+**Статус:** ЗАВЕРШЁН. Детектор СТАБИЛЕН.  
+**Веб-отчёт (с графиками):** [stab1_report.html](https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/docs/stab1_report.html)
 
 ---
 
