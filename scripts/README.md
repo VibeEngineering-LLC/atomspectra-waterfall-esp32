@@ -95,5 +95,27 @@ Launch by double-clicking `wf_recorder.bat`, or directly:
 python wf_recorder_app.py --host http://<board-ip> --stitch out.aswf --interval 60
 ```
 
+### wf_recorder.exe — standalone Windows build (no Python required)
+
+For users without Python: download the prebuilt Windows exe from the
+[**wf-recorder-v0.1.0** Release](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0)
+(~12 MB, self-contained, tkinter + `requests` + `wf_pull_client` bundled).
+Double-click to launch, no install. Default output path is `received/spectrogram.aswf`
+next to the exe (unlike the .py version, which defaults to `../received/`).
+
+Скачать готовый Windows exe (без установки Python): в
+[Release `wf-recorder-v0.1.0`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0).
+Двойной клик — GUI откроется. По умолчанию файл записи — `received/spectrogram.aswf`
+рядом с exe.
+
+To rebuild from source:
+
+```bash
+cd scripts
+python -m PyInstaller --onefile --windowed --name wf_recorder \
+  --hidden-import wf_pull_client --paths . wf_recorder_app.py
+# result: scripts/dist/wf_recorder.exe
+```
+
 > `.n42` and `.aswf` captures are git-ignored — they are generated artifacts, not source.
 > The only exception is the bundled `example-waterfall.n42` sample, kept for the viewer.
