@@ -195,20 +195,23 @@ class Stitcher:
         """GET /api/status -> t1/t2/t3 в <stitch>.temps.csv (по строке на проход)."""
         try:
             st = json.loads(http_get(host + "/api/status"))
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError) as e:
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as e:
             print(f"  ⚠ температура не получена: {e}")
             return None
         if "t1" not in st:
             print("  ⚠ /api/status без t1 (прибор не отдал -inf) — пропуск температуры")
             return None
+        t1, t2, t3 = st["t1"], st["t2"], st["t3"]
+        if t1 == 0 and t2 == 0 and t3 == 0:
+            return None  # прибор ещё не отдал температуру (~раз в 30 мин); 0 не пишем
         now = time.time()
         iso = datetime.datetime.fromtimestamp(now).isoformat(timespec="seconds")
         new = not os.path.exists(self.temps_path)
         with open(self.temps_path, "a", encoding="utf-8") as f:
             if new:
                 f.write("unix_ts;iso;t1;t2;t3\n")
-            f.write(f"{now:.0f};{iso};{st['t1']};{st['t2']};{st['t3']}\n")
-        return st["t1"], st["t2"], st["t3"]
+            f.write(f"{now:.0f};{iso};{t1};{t2};{t3}\n")
+        return t1, t2, t3
 
 
 # ---------------------------------------------------------------- проходы
