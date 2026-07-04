@@ -18,5 +18,8 @@ scripts/stability_monitor.ps1
 *.aswf
 *.n42
 
+# pull-recorder артефакты (#REC-12): .aswf + .state.json + .temps.csv локально
+received/
+
 # but keep the bundled sample for the offline viewer
 !scripts/example-waterfall.n42
