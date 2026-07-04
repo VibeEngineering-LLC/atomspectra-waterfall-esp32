@@ -265,12 +265,21 @@ class RecorderUI:
             self.state_lbl.config(text="остановлено", foreground="gray")
 
 
+def _default_output_path():
+    """Дефолтный путь для .aswf. При запуске из .py — рядом в ../received/;
+    при frozen exe (PyInstaller) — в подкаталоге received/ рядом с exe."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.abspath(os.path.join(base, "received", "spectrogram.aswf"))
+    return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", "received", "spectrogram.aswf"))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Рекордер спектрограмм AtomSpectra (#REC-12)")
-    default_out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "received", "spectrogram.aswf")
+    default_out = _default_output_path()
     ap.add_argument("--host", default=DEF_HOST)
-    ap.add_argument("--stitch", default=os.path.abspath(default_out))
+    ap.add_argument("--stitch", default=default_out)
     ap.add_argument("--interval", type=int, default=DEF_INTERVAL)
     ap.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--exit-after", type=int, default=0, help=argparse.SUPPRESS)
