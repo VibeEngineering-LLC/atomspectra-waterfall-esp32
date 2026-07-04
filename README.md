@@ -142,8 +142,8 @@ Web UI открывается в браузере по адресу `http://<IP-
 
 ```bash
 # 1. Клонировать
-git clone https://github.com/VibeEngineering-LLC/atomspectra-esp32.git
-cd atomspectra-esp32
+git clone https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32.git
+cd atomspectra-waterfall-esp32
 
 # 2. Собрать (вариант A: локальный ESP-IDF)
 idf.py set-target esp32s3
@@ -237,12 +237,16 @@ idf.py -p COM14 flash
 
 Помимо живого спектра шлюз умеет копить **водопад** — последовательность спектров
 через равные интервалы (каждая строка = дельта накопления за период, 8192 канала,
-`uint16`). Водопад можно смотреть в браузере (`http://<IP-платы>/waterfall`),
-**стримить на ПК** по WebSocket в реальном времени и **выгрузить кнопкой
-«⬇ Экспорт .n42»** прямо из Web UI в индустриальный **ANSI N42.42**
-(InterSpec / PeakEasy / Cambio). Интервал между строками — 5…60 с. Цвет
-спектрограммы — любая из **14 палитр** (Inferno по умолчанию; выбор сохраняется
-в браузере).
+`uint16`). Запись идёт **на стороне платы**: включил «Старт» — и плата пишет
+сегменты `.aswf` во flash сама, переживая закрытие вкладки, перезагрузку и сбой
+питания (#REC-11-A1). Готовые сегменты можно смотреть прямо в браузере
+(`http://<IP-платы>/waterfall`), **стримить на ПК в реальном времени** по
+WebSocket, **забирать по HTTP** и сшивать в единый файл (`wf_pull_client.py` /
+`wf_recorder_app.py`, #REC-12 — для многочасовых/многодневных записей без
+постоянного соединения) или **выгрузить кнопкой «⬇ Экспорт .n42»** прямо из
+Web UI в индустриальный **ANSI N42.42** (InterSpec / PeakEasy / Cambio).
+Интервал между строками — **5 с…60 мин**. Цвет спектрограммы — любая из
+**14 палитр** (Inferno по умолчанию; выбор сохраняется в браузере).
 
 > 🔴 **Живое демо на реальных данных:**
 > **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**
@@ -286,20 +290,23 @@ Atom Spectra общается по бинарному протоколу **shpro
 ## Структура проекта
 
 ```
-atomspectra-esp32/
+atomspectra-waterfall-esp32/
 ├── components/shproto/       протокол shproto (CRC-16 Modbus, escaping)
 │   ├── shproto.c
 │   └── include/shproto.h
 ├── main/
 │   ├── atomspectra.h          заголовок проекта, типы данных
 │   ├── main.c                 точка входа, SNTP
+│   ├── boot_config.c          поведение при старте платы (NVS-флаги, #FW-2/#FW-3)
 │   ├── usb_host_cdc.c         USB Host CDC-ACM + FTDI vendor init
 │   ├── wifi_manager.c         STA + AP captive portal
 │   ├── web_server.c           HTTP API + BecqMoni XML + InterSpec CSV
+│   ├── web_util.c             общие HTTP-хелперы Web-сервера
 │   ├── tcp_bridge.c           прозрачный serial-over-WiFi мост
 │   ├── spectrum.c             обработка спектра + LittleFS хранилище
 │   ├── spectrogram.c          водопад: кольцо PSRAM + запись во flash
-│   └── web_waterfall.c        водопад: HTTP/WS API (ASWW/ASWF)
+│   ├── web_waterfall.c        водопад: HTTP/WS API (ASWW/ASWF)
+│   └── wf_offload.c           водопад: автовыгрузка сегментов по HTTP POST (#REC-11-A2)
 ├── web/
 │   ├── index.html             основной Web UI (спектр, кнопки, экспорт)
 │   ├── setup.html             captive portal (настройка WiFi)

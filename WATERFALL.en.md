@@ -149,7 +149,10 @@ engages).
 | `/api/waterfall/window` | GET | Ring snapshot (**ASWW** binary, up to 256 rows) |
 | `/api/waterfall/segments` | GET | **List of flash segments** (JSON array, see below). No CSRF needed |
 | `/api/waterfall/segment?name=seg_NNNNN.aswf` | GET | **Raw segment file** (`application/octet-stream`, read-only). Strict name validation (anti-traversal): `seg_`+digits+`.aswf`. `400 bad name` / `404 not found` |
+| `/api/waterfall/segment/delete?name=seg_NNNNN.aswf` | POST | Delete a segment from flash **after** confirmed receipt on the PC (`wf_pull_client.py`, #REC-12). `{"ok":true}` / `{"ok":false,"err":"not-deletable"}` — segment still being written or pinned |
 | `/api/waterfall/export.n42` | GET | **Export to ANSI N42.42** from the PSRAM ring (one `<RadMeasurement>` per row, `CountedZeroes`, calibration in `<EnergyCalibration>`). The "⬇ Export .n42" button in the Web UI. Does not require flash persistence |
+| `/api/waterfall/offload` | GET | Push-offload config + stats (#REC-11-A2): `{"enabled","url","user","has_pass","sent_ok","failed","last_status","last_ok_at","busy"}`. The password is never returned |
+| `/api/waterfall/offload` | POST | Set push-offload config: `{"enabled":bool,"url":"http://…","user":"…","pass":"…"}` (omit `pass` to keep the current one). A `url` with host `narodmon` is rejected (`err:"narodmon-blocked"`) |
 | `/ws/waterfall` | WS | Text header on connect, then one binary frame (16384 B) per new row |
 
 > All POST endpoints require the **`X-CSRF-Token`** header (from `GET /api/csrf-token`),

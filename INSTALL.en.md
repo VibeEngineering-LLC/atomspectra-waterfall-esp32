@@ -60,8 +60,8 @@ Step-by-step guide: from a bare board to a working spectrum in your browser.
 
 ```bash
 # Clone the repository
-git clone https://github.com/VibeEngineering-LLC/atomspectra-esp32.git
-cd atomspectra-esp32
+git clone https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32.git
+cd atomspectra-waterfall-esp32
 
 # Set the target chip
 idf.py set-target esp32s3
@@ -76,8 +76,8 @@ via the ESP-IDF Component Manager (`main/idf_component.yml`).
 ### Option B: Docker (no ESP-IDF install)
 
 ```bash
-git clone https://github.com/VibeEngineering-LLC/atomspectra-esp32.git
-cd atomspectra-esp32
+git clone https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32.git
+cd atomspectra-waterfall-esp32
 
 # Build inside a Docker container
 docker run --rm -v "$(pwd):/project" -w /project espressif/idf:v5.4 \
