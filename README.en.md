@@ -252,9 +252,17 @@ browser).
 > axis appears below.
 
 `scripts/` holds the PC-side tools: N42 export (`waterfall_n42.py`), an offline 2D
-waterfall viewer (`waterfall_viewer.html`), and `.aswf` capture (`waterfall_client.py`).
+waterfall viewer (`waterfall_viewer.html`), `.aswf` capture (`waterfall_client.py`), and a
+desktop recorder with on-the-fly segment stitching (`wf_recorder_app.py` /
+`wf_pull_client.py`, #REC-12) for multi-hour/multi-day recording without holding a live
+WS connection.
 
 ![Offline viewer waterfall_viewer.html — waterfall heatmap from a .n42 file](images/waterfall-viewer.png)
+
+> **Advanced viewer.** For a full native application (3D waterfall render, 2D map, a
+> slice/section/sample panel) see the separate repository
+> **[waterfall-viewer](https://github.com/VibeEngineering-LLC/waterfall-viewer)** — more
+> capable than the single-file HTML viewer in `scripts/`.
 
 📖 Formats (ASWW / ASWF / N42), the full waterfall Web API, calibration, and how to use
 the scripts — [`WATERFALL.en.md`](WATERFALL.en.md).
@@ -297,10 +305,12 @@ atomspectra-esp32/
 │   ├── index.html             main Web UI (spectrum, buttons, export)
 │   ├── waterfall.html         waterfall Web UI (heatmap)
 │   └── setup.html             captive portal (WiFi setup)
-├── scripts/                   PC tools: N42 export, viewer, capture
+├── scripts/                   PC tools: N42 export, viewer, capture, recorder
 │   ├── waterfall_n42.py       waterfall → ANSI N42.42
-│   ├── waterfall_viewer.html  offline 2D .n42 viewer
-│   └── waterfall_client.py    capture WS stream to .aswf
+│   ├── waterfall_viewer.html  offline 2D .n42/.aswf viewer
+│   ├── waterfall_client.py    capture WS stream to .aswf
+│   ├── wf_pull_client.py      segment pull + on-the-fly stitching into .aswf (#REC-12)
+│   └── wf_recorder_app.py     desktop GUI on top of wf_pull_client.py (+ wf_recorder.bat)
 ├── partitions.csv             partition table (3 MB app + 12.9 MB LittleFS)
 ├── sdkconfig.defaults         ESP32-S3 USB OTG config
 ├── CMakeLists.txt
