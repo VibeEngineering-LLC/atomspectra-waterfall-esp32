@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -147,6 +147,8 @@ class RecorderUI:
         row3.pack(fill="x", pady=8)
         self.btn = ttk.Button(row3, text="▶ Старт", command=self.toggle)
         self.btn.pack(side="left")
+        ttk.Button(row3, text="Новый файл…",
+                   command=self.new_file).pack(side="left", padx=8)
         ttk.Button(row3, text="Открыть папку",
                    command=self.open_folder).pack(side="left", padx=8)
         self.state_lbl = ttk.Label(row3, text="ожидание", foreground="gray")
@@ -176,6 +178,36 @@ class RecorderUI:
             initialdir=os.path.dirname(self.file_var.get()) or ".")
         if p:
             self.file_var.set(p)
+
+    def new_file(self):
+        """Начать запись в новый/очищенный файл (останавливает текущую запись,
+        стирает файл+state.json+temps.csv по выбранному пути, если есть)."""
+        if self.core and self.core.running:
+            self.core.stop()
+            self.btn.config(text="▶ Старт")
+        p = filedialog.asksaveasfilename(
+            title="Новый файл спектрограммы",
+            defaultextension=".aswf", filetypes=[("AtomSpectra waterfall", "*.aswf")],
+            initialfile=os.path.basename(self.file_var.get()),
+            initialdir=os.path.dirname(self.file_var.get()) or ".")
+        if not p:
+            return
+        for suffix in ("", ".state.json", ".temps.csv"):
+            fp = p + suffix
+            if os.path.exists(fp):
+                try:
+                    os.remove(fp)
+                except OSError as e:
+                    messagebox.showerror("Новый файл", f"Не удалось удалить {fp}:\n{e}")
+                    return
+        self.file_var.set(p)
+        self.core = None
+        self.stats.config(text="")
+        self.log.config(state="normal")
+        self.log.insert("end", time.strftime("%H:%M:%S")
+                        + f"  новый файл: {p} (старые данные/state очищены, жми Старт)\n")
+        self.log.see("end")
+        self.log.config(state="disabled")
 
     def open_folder(self):
         d = os.path.dirname(os.path.abspath(self.file_var.get()))
