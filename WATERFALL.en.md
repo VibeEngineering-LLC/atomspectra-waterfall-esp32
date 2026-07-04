@@ -278,6 +278,21 @@ packets), not by the ESP32 clock — so the file stays honest even under USB los
 
 Rendering: a row's height (time) = its `dur`; for v1 — `interval_sec` from the header.
 
+**`started_at` (segment anchor) — a DIFFERENT time source than `dur`.** Each
+row's `dur` comes from the INSTRUMENT's own live clock (`total_time_sec`) and
+never depends on internet access — the relative spacing between rows is always
+honest. `started_at` in the segment header, on the other hand, is the board's
+`time(NULL)` (ESP32 wall clock), synced via SNTP (`pool.ntp.org`, `init_sntp()`,
+one outgoing request at boot, no retry/success check). **If the board never had
+internet access, `time(NULL)` is unsynced and `started_at` sits near the Unix
+epoch** (a real case with `started_at=1` has been observed). Autonomous
+recording still works fine — only the ABSOLUTE time anchor is lost (the date in
+the header / N42 export), the row durations (`dur`) stay real. The anchor is
+re-captured on EVERY new segment — if internet appears mid-recording, segments
+before and after get different (inconsistent) `started_at` values, and the jump
+between them is NOT detected as a "board pause" (see `wf_pull_client.py`, gap
+detection is explicitly disabled when `started_at ≤ 1e9`).
+
 ### WebSocket header (`/ws/waterfall`)
 
 The first frame after connect is a **text** JSON:
