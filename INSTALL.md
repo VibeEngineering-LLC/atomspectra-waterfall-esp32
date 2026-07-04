@@ -60,8 +60,8 @@
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/VibeEngineering-LLC/atomspectra-esp32.git
-cd atomspectra-esp32
+git clone https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32.git
+cd atomspectra-waterfall-esp32
 
 # Задать целевой чип
 idf.py set-target esp32s3
@@ -76,8 +76,8 @@ idf.py build
 ### Вариант B: Docker (без установки ESP-IDF)
 
 ```bash
-git clone https://github.com/VibeEngineering-LLC/atomspectra-esp32.git
-cd atomspectra-esp32
+git clone https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32.git
+cd atomspectra-waterfall-esp32
 
 # Собрать в Docker-контейнере
 docker run --rm -v "$(pwd):/project" -w /project espressif/idf:v5.4 \

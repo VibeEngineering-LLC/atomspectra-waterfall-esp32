@@ -147,7 +147,10 @@ keep-last).
 | `/api/waterfall/window` | GET | Снимок кольца (бинарь **ASWW**, до 256 строк) |
 | `/api/waterfall/segments` | GET | **Список сегментов на Flash** (JSON-массив, см. ниже). Не требует CSRF |
 | `/api/waterfall/segment?name=seg_NNNNN.aswf` | GET | **Сырой файл сегмента** (`application/octet-stream`, read-only). Строгая валидация имени (anti-traversal): `seg_`+цифры+`.aswf`. `400 bad name` / `404 not found` |
+| `/api/waterfall/segment/delete?name=seg_NNNNN.aswf` | POST | Удалить сегмент с flash **после** подтверждённого приёма на ПК (`wf_pull_client.py`, #REC-12). `{"ok":true}` / `{"ok":false,"err":"not-deletable"}` — сегмент ещё пишется или запинен |
 | `/api/waterfall/export.n42` | GET | **Экспорт в ANSI N42.42** из кольца PSRAM (одна `<RadMeasurement>` на строку, `CountedZeroes`, калибровка в `<EnergyCalibration>`). Кнопка «⬇ Экспорт .n42» в Web UI. Не требует записи во flash |
+| `/api/waterfall/offload` | GET | Конфиг + статистика автовыгрузки сегментов push-методом (#REC-11-A2): `{"enabled","url","user","has_pass","sent_ok","failed","last_status","last_ok_at","busy"}`. Пароль наружу никогда не отдаётся |
+| `/api/waterfall/offload` | POST | Задать конфиг автовыгрузки: `{"enabled":bool,"url":"http://…","user":"…","pass":"…"}` (без `pass` — прежний пароль сохраняется). `url` с хостом `narodmon` отвергается (`err:"narodmon-blocked"`, БАН Народмон) |
 | `/ws/waterfall` | WS | Текстовый заголовок при подключении, далее по одному бинарному кадру (16384 Б) на каждую новую строку |
 
 > Все POST требуют заголовок **`X-CSRF-Token`** (получить из `GET /api/csrf-token`),

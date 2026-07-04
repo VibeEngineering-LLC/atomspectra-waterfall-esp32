@@ -77,7 +77,7 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ### #WF-1: The device crash-looped while waterfall recording was active
 
-**Status:** fixed in [`33fb4a4`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/33fb4a4) (+ [`2b36737`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/2b36737)), branch `rec-11-autonomous-recording`.
+**Status:** fixed in [`33fb4a4`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/33fb4a4) (+ [`2b36737`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/2b36737)), in `main`.
 
 Under load from active waterfall recording (writing `.aswf` segments + simultaneous USB
 intake from the detector + WiFi polling), the device crash-looped — rebooting roughly
@@ -258,7 +258,8 @@ The Atom Spectra instrument transmits 8192 channels. This is a hardware limitati
 
 ### Autonomous recording: keep-last ring on flash-full has not had a long soak
 
-**Context:** branch `rec-11-autonomous-recording`.
+**Context:** the feature + the #WF-1 fix (`33fb4a4`) are already in `main`; the
+`rec-11-autonomous-recording` branch as a whole is not merged yet (extra unrelated commits on top).
 
 Autonomous segment recording (`seg_NNNNN.aswf`) and segment rotation when
 `WF_SEG_MAX_ROWS` (64 rows) is reached are **confirmed** on the device: `seg_00000.aswf`
@@ -268,7 +269,8 @@ The **keep-last ring** mode (on flash-full the oldest not-yet-offloaded segment 
 overwritten; counters `seg_count` / `seg_dropped`) is implemented but **has not been
 verified by a long soak** up to actual partition exhaustion (≈763 rows, ≈5 days at a
 10-min interval). Until that test passes, the "flash full → overwrite oldest" boundary is
-considered untested; that is why the feature lives in a branch, not in `main`.
+considered untested — that specific scenario (real partition exhaustion) hasn't been run yet,
+though the recording code itself is already in `main`.
 
 **Update 2026-07-04 (#STAB-2):** a 9.40 h board-path soak test confirmed the reliability
 of the segment writes themselves — **0 reboots, 0 `seg_dropped`**, 52 clean

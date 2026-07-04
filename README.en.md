@@ -142,8 +142,8 @@ Spectrum in the LSRM text format (used by [SpectraVibe](https://github.com/Am6er
 
 ```bash
 # 1. Clone
-git clone https://github.com/VibeEngineering-LLC/atomspectra-esp32.git
-cd atomspectra-esp32
+git clone https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32.git
+cd atomspectra-waterfall-esp32
 
 # 2. Build (option A: local ESP-IDF)
 idf.py set-target esp32s3
@@ -236,13 +236,17 @@ A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect t
 ![Board Web UI — "Waterfall" tab: spectrogram (time ↓, energy →) with a spectrum slice](images/web-ui-waterfall.png)
 
 Besides the live spectrum, the gateway can accumulate a **waterfall** — a sequence of
-spectra at equal intervals (5…60 s; each row = the accumulation delta over one period, 8192
-channels, `uint16`). The waterfall can be viewed in the browser
-(`http://<board-IP>/waterfall`), **streamed to a PC** over WebSocket in real time, and
-**exported with the "⬇ Export .n42" button** right from the Web UI to the
-industry-standard **ANSI N42.42** (InterSpec / PeakEasy / Cambio). The spectrogram
-colour is any of **14 palettes** (Inferno by default; the choice is saved in the
-browser).
+spectra at equal intervals (each row = the accumulation delta over one period, 8192
+channels, `uint16`). Recording happens **on the board itself**: hit "Start" and the
+board keeps writing `.aswf` segments to flash on its own, surviving a closed tab, a
+reboot, or a power loss (#REC-11-A1). Finished segments can be viewed right in the
+browser (`http://<board-IP>/waterfall`), **streamed to a PC** over WebSocket in real
+time, **pulled over HTTP** and stitched into one file (`wf_pull_client.py` /
+`wf_recorder_app.py`, #REC-12 — for multi-hour/multi-day recordings without a
+standing connection), or **exported with the "⬇ Export .n42" button** right from the
+Web UI to the industry-standard **ANSI N42.42** (InterSpec / PeakEasy / Cambio). The
+interval between rows is **5 s…60 min**. The spectrogram colour is any of
+**14 palettes** (Inferno by default; the choice is saved in the browser).
 
 > 🔴 **Live demo on real data:**
 > **<https://vibeengineering-llc.github.io/atomspectra-waterfall-esp32/demo/>**
@@ -287,20 +291,23 @@ command (10 lines of hex-encoded doubles + CRC32). Polynomial: `E(ch) = c₀ + c
 ## Project layout
 
 ```
-atomspectra-esp32/
+atomspectra-waterfall-esp32/
 ├── components/shproto/       shproto protocol (CRC-16 Modbus, escaping)
 │   ├── shproto.c
 │   └── include/shproto.h
 ├── main/
 │   ├── atomspectra.h          project header, data types
 │   ├── main.c                 entry point, SNTP
+│   ├── boot_config.c          board start-up behavior (NVS flags, #FW-2/#FW-3)
 │   ├── usb_host_cdc.c         USB Host CDC-ACM + FTDI vendor init
 │   ├── wifi_manager.c         STA + AP captive portal
 │   ├── web_server.c           HTTP API + BecqMoni XML + InterSpec CSV
+│   ├── web_util.c             shared Web server HTTP helpers
 │   ├── tcp_bridge.c           transparent serial-over-WiFi bridge
 │   ├── spectrum.c             spectrum processing + LittleFS storage
 │   ├── spectrogram.c          waterfall: PSRAM ring + flash recording
-│   └── web_waterfall.c        waterfall: HTTP/WS API (ASWW/ASWF)
+│   ├── web_waterfall.c        waterfall: HTTP/WS API (ASWW/ASWF)
+│   └── wf_offload.c           waterfall: auto-offload segments via HTTP POST (#REC-11-A2)
 ├── web/
 │   ├── index.html             main Web UI (spectrum, buttons, export)
 │   ├── waterfall.html         waterfall Web UI (heatmap)
