@@ -75,6 +75,26 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### #WF-1: The device crash-looped while waterfall recording was active
+
+**Status:** fixed in [`33fb4a4`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/33fb4a4) (+ [`2b36737`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/2b36737)), branch `rec-11-autonomous-recording`.
+
+Under load from active waterfall recording (writing `.aswf` segments + simultaneous USB
+intake from the detector + WiFi polling), the device crash-looped — rebooting roughly
+every ~15 minutes.
+
+**Cause:** `CONFIG_SPI_FLASH_AUTO_SUSPEND` was enabled on a flash chip not on the
+ESP-IDF whitelist for that option — under concurrent load the SPI flash entered
+auto-suspend at an inopportune moment during a write, causing a crash.
+
+**Fix:** `CONFIG_SPI_FLASH_AUTO_SUSPEND` was disabled.
+
+**Verification (#STAB-2, 2026-07-04):** a 9.40 h continuous board-path waterfall
+recording retest (not an emulation) — **0 reboots, 0 dropped flash segments**
+(`seg_dropped`) over the whole run, 52 clean `SEG_ROLLOVER` events. Before the fix — a
+reboot every ~15 min under the same load. Full report with telemetry and charts:
+[`docs/stab2_report.md`](docs/stab2_report.md) ([web version with charts](docs/stab2_report.html)).
+
 ### BUG-AS-07: Build fails on a clean clone — undefined `spectrogram_is_recording`
 
 **Status:** fixed in [`1b21d61`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/1b21d61)
@@ -249,6 +269,37 @@ overwritten; counters `seg_count` / `seg_dropped`) is implemented but **has not 
 verified by a long soak** up to actual partition exhaustion (≈763 rows, ≈5 days at a
 10-min interval). Until that test passes, the "flash full → overwrite oldest" boundary is
 considered untested; that is why the feature lives in a branch, not in `main`.
+
+**Update 2026-07-04 (#STAB-2):** a 9.40 h board-path soak test confirmed the reliability
+of the segment writes themselves — **0 reboots, 0 `seg_dropped`**, 52 clean
+`SEG_ROLLOVER` events (see the #WF-1 fix above). This is not the same test as a soak to
+actual exhaustion of the 763-row partition (the segment keep-last ring still has not been
+run to real overflow) — but a **separate** export limitation was found along the way: the
+`ring_capacity` field in `/api/waterfall/status` is fixed at **256 rows** (~4.25 h at a
+~60 s cadence) — smaller than the ~763-row partition-capacity estimate above. n42 exports
+of recordings longer than ~4.25 h come out truncated (see #FW-19 below). Full writeup:
+[`docs/stab2_report.md`](docs/stab2_report.md) §6.
+
+### #FW-19: n42 export truncated by the flash-ring capacity (256 rows ≈ 4.25 h)
+
+**Status:** open (task #32).
+
+When exporting to n42 a recording that ran longer than ~4.25 h, the file contains only
+the **last 256 rows** — regardless of how many rows were actually recorded
+(`total_rows`). Cause: `ring_capacity=256` (`/api/waterfall/status`) — the ring
+physically holds only the last 256 rows; older ones get overwritten by new ones before
+the export is pulled.
+
+This is **not a #WF-1 regression** — the `seg_dropped` counter (write losses) stays at 0,
+i.e. the write path itself loses no data; the limitation is in the exported ring's
+storage size, not write reliability. The `RING_OVERFLOW` event does not detect the
+overwrite itself (its condition is the write-lag `total_rows − flash_rows ≥
+ring_capacity`, not the wraparound fact).
+
+**Workaround:** for recordings longer than ~4.25 h, periodically pull segments via
+`/api/waterfall/segment` (see [`WATERFALL.en.md`](WATERFALL.en.md#autonomous-segment-recording-rec-11-a1))
+instead of waiting until the end of the recording for a single export. Details and the
+telemetry from the test that found this: [`docs/stab2_report.md`](docs/stab2_report.md) §6.
 
 ---
 
