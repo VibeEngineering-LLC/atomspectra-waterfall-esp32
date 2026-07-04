@@ -289,7 +289,7 @@ Then one **binary** frame per new row (16384 bytes = 8192 × uint16 LE). Up to
 
 ## Streaming to a PC and N42 export
 
-`scripts/` ships three tools (require `pip install requests websocket-client`):
+`scripts/` ships a set of tools (require `pip install requests websocket-client`):
 
 ### `waterfall_n42.py` — export to ANSI N42.42-2012
 
@@ -331,11 +331,34 @@ Writes an unbounded `.aswf` from the WS stream (not limited by the board's 256-r
 ring). Stop with Ctrl+C — the header with the final row count is written on exit.
 The `.aswf` can then be converted to N42 via `waterfall_n42.py convert`.
 
-## What opens N42
+### `wf_pull_client.py` / `wf_recorder_app.py` — pull recording with on-the-fly stitching (#REC-12)
+
+An alternative to `waterfall_client.py` aimed at **multi-hour/multi-day** recording without
+holding a live WS connection: the script periodically polls `/api/waterfall/segments`,
+pulls each **finalized** segment exactly once, appends its rows to a single growing
+`.aswf`, and deletes the segment on the board only **after** the local file is fsynced —
+so a dropped connection or crash mid-transfer never loses or duplicates rows. Progress
+(which segments are already ingested, running row/duration totals) is tracked in a
+sidecar `<file>.state.json` next to the `.aswf`, so stopping and re-running against the
+same file **resumes** the recording instead of restarting it.
+
+`wf_recorder_app.py` (launch by double-clicking `wf_recorder.bat`) is a desktop GUI
+(tkinter) on top of the same logic: **▶ Start/⏸ Stop** buttons, **New file…** (stops the
+current recording, lets you pick a new path, and wipes that path's `.aswf` +
+`.state.json` + `.temps.csv` if they already exist — so you start from a genuinely clean
+slate instead of resuming an old recording) and **Open folder**; it shows live counters
+for rows in the file, duration, instrument temperature, and board segment counts.
+
+```bash
+python wf_pull_client.py <board-ip> --stitch capture.aswf --interval 60
+```
+
+## What opens N42 / `.aswf`
 
 | Tool | By | Note |
 |---|---|---|
 | [InterSpec](https://sandialabs.github.io/InterSpec/) | Sandia | Best choice; shows the measurement time-history |
-| `waterfall_viewer.html` | this repo | 2D waterfall (heatmap), offline |
+| `waterfall_viewer.html` | this repo | 2D waterfall (heatmap), offline, `.n42` and `.aswf` |
+| **[waterfall-viewer](https://github.com/VibeEngineering-LLC/waterfall-viewer)** | separate repo | **Advanced native viewer**: 3D waterfall render, 2D map, a slice/section/sample panel |
 | PeakEasy | LANL | Spectrum viewer |
 | Cambio | Sandia | Converter/viewer |

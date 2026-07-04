@@ -252,9 +252,16 @@ idf.py -p COM14 flash
 
 В `scripts/` — инструменты для ПК: экспорт в N42 (`waterfall_n42.py`), офлайн
 2D-просмотрщик водопада (`waterfall_viewer.html`), захват в `.aswf`
-(`waterfall_client.py`).
+(`waterfall_client.py`) и desktop-рекордер с автосшивкой сегментов на лету
+(`wf_recorder_app.py` / `wf_pull_client.py`, #REC-12) для многочасовой/многодневной
+записи без постоянного WS-соединения.
 
 ![Офлайн-просмотрщик waterfall_viewer.html — heatmap водопада из .n42](images/waterfall-viewer.png)
+
+> **Продвинутый вьюер.** Для полноценного нативного приложения (3D-водопад, 2D-карта,
+> панель «Срезы/Сечения/Выборки») см. отдельный репозиторий
+> **[waterfall-viewer](https://github.com/VibeEngineering-LLC/waterfall-viewer)** —
+> он мощнее однофайлового HTML-вьюера из `scripts/`.
 
 📖 Форматы (ASWW / ASWF / N42), полный Web API водопада, калибровка и работа со
 скриптами — [`WATERFALL.md`](WATERFALL.md).
@@ -297,10 +304,12 @@ atomspectra-esp32/
 │   ├── index.html             основной Web UI (спектр, кнопки, экспорт)
 │   ├── setup.html             captive portal (настройка WiFi)
 │   └── waterfall.html         Web UI водопада (heatmap)
-├── scripts/                   ПК-инструменты: N42-экспорт, просмотрщик, захват
+├── scripts/                   ПК-инструменты: N42-экспорт, просмотрщик, захват, рекордер
 │   ├── waterfall_n42.py       водопад → ANSI N42.42
-│   ├── waterfall_viewer.html  офлайн 2D-просмотрщик .n42
-│   └── waterfall_client.py    захват WS-стрима в .aswf
+│   ├── waterfall_viewer.html  офлайн 2D-просмотрщик .n42/.aswf
+│   ├── waterfall_client.py    захват WS-стрима в .aswf
+│   ├── wf_pull_client.py      pull-запись сегментов + автосшивка в .aswf (#REC-12)
+│   └── wf_recorder_app.py     desktop-GUI поверх wf_pull_client.py (+ wf_recorder.bat)
 ├── partitions.csv             таблица разделов (3 MB app + 12.9 MB LittleFS)
 ├── sdkconfig.defaults         конфиг ESP32-S3 USB OTG
 ├── CMakeLists.txt

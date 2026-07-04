@@ -9,9 +9,16 @@ PC-side helpers for the AtomSpectra waterfall (spectrogram). See [`../WATERFALL.
 | File | Purpose / Назначение |
 |---|---|
 | `waterfall_n42.py` | Waterfall → **ANSI N42.42** (`.n42`) for InterSpec / PeakEasy / Cambio |
-| `waterfall_viewer.html` | Offline 2D `.n42` heatmap viewer (open in a browser, no server) |
+| `waterfall_viewer.html` | Offline 2D `.n42`/`.aswf` heatmap viewer (open in a browser, no server) |
 | `waterfall_client.py` | Capture the live WS stream into an unbounded `.aswf` file |
+| `wf_pull_client.py` | CLI: pull finalized segments from the board and stitch them into one `.aswf` on the fly (idempotent, resumable) |
+| `wf_recorder_app.py` / `wf_recorder.bat` | Desktop GUI (#REC-12) around `wf_pull_client.py` — Start/Stop, **New file…**, live counters |
 | `example-waterfall.n42` | Sample export of a real run — drag it into the viewer to try it / образец реального прогона |
+
+> **Продвинутый вьюер / advanced viewer.** For a full native desktop viewer (3D waterfall
+> render, 2D map, a slice/section/sample panel) see
+> **[VibeEngineering-LLC/waterfall-viewer](https://github.com/VibeEngineering-LLC/waterfall-viewer)**
+> — a separate standalone application, more capable than the single-file HTML viewer here.
 
 ```
 pip install requests websocket-client    # waterfall_n42.py / waterfall_client.py
@@ -54,6 +61,38 @@ PSRAM ring). Stop with Ctrl+C — the header with the final row count is written
 
 ```bash
 python waterfall_client.py <board-ip> -o capture.aswf
+```
+
+## wf_pull_client.py — segment pull + on-the-fly stitching (#REC-12)
+
+Pull-based alternative to `waterfall_client.py`: instead of holding a live WS connection,
+it lists **finalized** segments on the board (`/api/waterfall/segments`), fetches each one
+once, appends its rows into a single growing `.aswf`, and only then deletes the segment on
+the board (delete happens after the local file is fsynced to disk — a crash mid-transfer
+never loses a segment). Safe against restarts: progress (which segments are already
+ingested, running row/duration totals) is tracked in a sidecar `<file>.state.json`, so
+stopping and re-running the same command resumes without re-ingesting or duplicating rows.
+
+```bash
+python wf_pull_client.py <board-ip> --stitch capture.aswf --interval 60
+```
+
+## wf_recorder_app.py / wf_recorder.bat — desktop recorder GUI (#REC-12)
+
+A small tkinter GUI around `wf_pull_client.py` — no extra dependencies beyond `requests`.
+Polls the board in the background and shows live counters (rows in file / duration /
+instrument temperature / segments on the board), with:
+
+- **▶ Старт / ⏸ Стоп** — start/stop the polling loop
+- **Новый файл…** — stop the current recording, pick a new output path, and wipe that
+  path's `.aswf` + `.state.json` + `.temps.csv` if they already exist, so the next Start
+  begins a genuinely fresh recording instead of resuming/appending to old data
+- **Открыть папку** — open the output folder in Explorer
+
+Launch by double-clicking `wf_recorder.bat`, or directly:
+
+```bash
+python wf_recorder_app.py --host http://<board-ip> --stitch out.aswf --interval 60
 ```
 
 > `.n42` and `.aswf` captures are git-ignored — they are generated artifacts, not source.
