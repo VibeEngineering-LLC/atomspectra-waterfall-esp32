@@ -29,7 +29,10 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-sys.stdout.reconfigure(encoding="utf-8")
+if sys.stdout is not None:
+    sys.stdout.reconfigure(encoding="utf-8")
+if sys.stderr is not None:
+    sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wf_pull_client as wpc  # noqa: E402  (Stitcher, get_csrf, list_segments, ...)
