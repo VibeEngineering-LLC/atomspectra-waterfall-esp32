@@ -80,6 +80,7 @@ class RecorderCore:
                 self._one_pass()
             except Exception as e:  # сеть/плата недоступны — ждём следующий проход
                 self._log(f"проход не удался: {e}")
+                self.board = {}   # сбросить устаревший статус платы → UI покажет «нет связи»
             self.events.put(("status", None))
             self._stop.wait(self.interval)
         self._log("остановлено")
