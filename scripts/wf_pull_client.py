@@ -46,7 +46,10 @@ import time
 import urllib.request
 import urllib.error
 
-sys.stdout.reconfigure(encoding="utf-8")
+if sys.stdout is not None:
+    sys.stdout.reconfigure(encoding="utf-8")
+if sys.stderr is not None:
+    sys.stderr.reconfigure(encoding="utf-8")
 
 HTTP_TIMEOUT = 30  # сек на запрос; сегмент ~1 МБ по LAN укладывается с запасом
 
