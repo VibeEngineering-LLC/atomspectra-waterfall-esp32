@@ -75,6 +75,15 @@ class RecorderCore:
     def _loop(self):
         self._log(f"старт: плата {self.host}, файл {self.stitcher.path}, "
                   f"интервал {self.interval} с")
+        # быстрый prefetch температуры и статуса платы до первого полного прохода
+        try:
+            t = self.stitcher.log_temps(self.host)
+            if t:
+                self.last_temp = t
+            self.board = json.loads(wpc.http_get(self.host + "/api/waterfall/status"))
+            self.events.put(("status", None))
+        except Exception:
+            pass
         while not self._stop.is_set():
             try:
                 self._one_pass()
