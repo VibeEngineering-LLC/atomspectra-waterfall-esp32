@@ -261,6 +261,12 @@ desktop recorder with on-the-fly segment stitching (`wf_recorder_app.py` /
 `wf_pull_client.py`, #REC-12) for multi-hour/multi-day recording without holding a live
 WS connection.
 
+> **Prebuilt Windows exe of the recorder (no Python install needed):**
+> [`wf-recorder-v0.1.0`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0)
+> — self-contained `wf_recorder.exe` (~12 MB), double-click to launch. Validated by an
+> 11-hour soak test (60 segments, 660 rows, 0 losses; report
+> [`docs/rec12_report.md`](docs/rec12_report.md)).
+
 ![Offline viewer waterfall_viewer.html — waterfall heatmap from a .n42 file](images/waterfall-viewer.png)
 
 > **Advanced viewer.** For a full native application (3D waterfall render, 2D map, a

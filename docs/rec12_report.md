@@ -80,6 +80,27 @@ scripts\wf_recorder.bat
 python scripts\wf_recorder_app.py --host http://atomspectra.local --interval 60
 ```
 
+### 3.1 Готовый Windows exe (#PKG-1)
+
+Для пользователей без Python — самодостаточный `wf_recorder.exe`
+(~12 МБ, tkinter + `requests` + `wf_pull_client` внутри):
+
+- **Скачать:**
+  [Release `wf-recorder-v0.1.0`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0)
+- **Запуск:** двойной клик → GUI откроется. По умолчанию файл записи —
+  `received/spectrogram.aswf` рядом с exe (создастся автоматически).
+- **Пересборка из исходников** (Python 3.10+, PyInstaller):
+  ```
+  cd scripts
+  python -m PyInstaller --onefile --windowed --name wf_recorder \
+    --hidden-import wf_pull_client --paths . wf_recorder_app.py
+  # результат: scripts/dist/wf_recorder.exe
+  ```
+
+Логика внутри exe идентична `.py`-версии (тот же `wf_pull_client.Stitcher`,
+тот же `state.json`, тот же порядок «сшить → fsync → delete на плате»),
+включая fix `_default_output_path()` для frozen-запуска.
+
 ---
 
 ## 4. Результаты

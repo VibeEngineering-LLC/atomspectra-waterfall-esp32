@@ -341,6 +341,25 @@ td.warn { color: var(--warn); font-weight: 600; }
     </div>
     <p>Запуск (двойной клик по <code>wf_recorder.bat</code>) или напрямую:</p>
     <pre>python scripts\wf_recorder_app.py --host http://atomspectra.local --interval 60</pre>
+
+    <h3>3.1 Готовый Windows exe (#PKG-1)</h3>
+    <p>Для пользователей без Python — самодостаточный <code>wf_recorder.exe</code>
+    (~12 МБ, tkinter + <code>requests</code> + <code>wf_pull_client</code> внутри):</p>
+    <ul>
+      <li><strong>Скачать:</strong>
+        <a href="https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0">Release <code>wf-recorder-v0.1.0</code></a>.</li>
+      <li><strong>Запуск:</strong> двойной клик → GUI откроется. По умолчанию файл записи —
+        <code>received/spectrogram.aswf</code> рядом с exe (создастся автоматически).</li>
+      <li><strong>Пересборка из исходников</strong> (Python 3.10+, PyInstaller):</li>
+    </ul>
+    <pre>cd scripts
+python -m PyInstaller --onefile --windowed --name wf_recorder \
+  --hidden-import wf_pull_client --paths . wf_recorder_app.py
+# результат: scripts/dist/wf_recorder.exe</pre>
+    <p>Логика внутри exe идентична <code>.py</code>-версии (тот же
+    <code>wf_pull_client.Stitcher</code>, тот же <code>state.json</code>, тот же порядок
+    «сшить → fsync → delete на плате»), включая fix
+    <code>_default_output_path()</code> для frozen-запуска.</p>
   </section>
 
   <!-- ── §4 Результаты ── -->

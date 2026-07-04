@@ -260,6 +260,12 @@ Web UI в индустриальный **ANSI N42.42** (InterSpec / PeakEasy / C
 (`wf_recorder_app.py` / `wf_pull_client.py`, #REC-12) для многочасовой/многодневной
 записи без постоянного WS-соединения.
 
+> **Готовый Windows exe рекордера (без установки Python):**
+> [`wf-recorder-v0.1.0`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0)
+> — самодостаточный `wf_recorder.exe` (~12 МБ), двойной клик, GUI откроется.
+> Проверен 11-часовым соак-тестом (60 сегментов, 660 строк, 0 потерь; отчёт
+> [`docs/rec12_report.md`](docs/rec12_report.md)).
+
 ![Офлайн-просмотрщик waterfall_viewer.html — heatmap водопада из .n42](images/waterfall-viewer.png)
 
 > **Продвинутый вьюер.** Для полноценного нативного приложения (3D-водопад, 2D-карта,
