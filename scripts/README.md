@@ -108,6 +108,11 @@ next to the exe (unlike the .py version, which defaults to `../received/`).
 Двойной клик — GUI откроется. По умолчанию файл записи — `received/spectrogram.aswf`
 рядом с exe.
 
+> **Asset обновлён 2026-07-05:** исправлен `AttributeError: 'NoneType' object has no attribute
+> 'reconfigure'` при запуске exe — в режиме `--windowed` PyInstaller обнуляет `sys.stdout`/
+> `sys.stderr`; вызов `.reconfigure()` в `wf_recorder_app.py` и `wf_pull_client.py` теперь
+> обёрнут guard-ом `if sys.stdout is not None`. Commit `85eadb7`.
+
 To rebuild from source:
 
 ```bash

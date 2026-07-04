@@ -101,6 +101,10 @@ python scripts\wf_recorder_app.py --host http://atomspectra.local --interval 60
 тот же `state.json`, тот же порядок «сшить → fsync → delete на плате»),
 включая fix `_default_output_path()` для frozen-запуска.
 
+> **Asset обновлён 2026-07-05 (commit `85eadb7`):** исправлен старт exe — режим `--windowed`
+> PyInstaller обнуляет `sys.stdout`/`sys.stderr`; вызов `.reconfigure()` в обоих файлах
+> (`wf_recorder_app.py`, `wf_pull_client.py`) обёрнут guard-ом `if sys.stdout is not None`.
+
 ---
 
 ## 4. Результаты
