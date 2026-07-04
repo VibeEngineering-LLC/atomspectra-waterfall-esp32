@@ -113,10 +113,14 @@ class Stitcher:
         self.path = path
         self.state_path = path + ".state.json"
         self.temps_path = path + ".temps.csv"
-        if os.path.exists(self.state_path):
+        file_ok = os.path.exists(path) and os.path.getsize(path) >= 8
+        if file_ok and os.path.exists(self.state_path):
             with open(self.state_path, "r", encoding="utf-8") as f:
                 self.state = json.load(f)
         else:
+            if os.path.exists(self.state_path) and not file_ok:
+                print(f"  ⚠ {path} отсутствует/пуст, а {self.state_path} есть — "
+                      f"файл шва перемещён/удалён вручную, начинаю новый (state сброшен)")
             self.state = {"ingested": {}, "rows": 0, "dur_sum": 0, "started_at": None}
 
     def _save_state(self):
