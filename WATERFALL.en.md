@@ -120,6 +120,17 @@ Total storage capacity ≈ **763 rows**. At a 10-min interval that's ≈ **5.3 d
 continuous recording, at a 1-hour interval ≈ **31 days** (before the keep-last ring
 engages).
 
+> **Stability (#STAB-2, 2026-07-04):** a 9.40 h board-path recording run — 0 reboots, 0
+> `seg_dropped`, every `SEG_ROLLOVER` clean (see the #WF-1 fix in
+> [`KNOWN_ISSUES.en.md`](KNOWN_ISSUES.en.md)). Full report: [`docs/stab2_report.md`](docs/stab2_report.md).
+>
+> **⚠ #FW-19:** the n42 export only returns the last **256 rows** (~4.25 h at a ~60 s
+> cadence) — a separate limit from the `ring_capacity` field (`/api/waterfall/status`),
+> smaller than the ~763-row partition-capacity estimate above. For recordings longer than
+> ~4.25 h, pull segments periodically via `/api/waterfall/segment` (see below) instead of
+> waiting until the end of the recording. Details: [`docs/stab2_report.md`](docs/stab2_report.md)
+> §6, [`KNOWN_ISSUES.en.md`](KNOWN_ISSUES.en.md) (#FW-19).
+
 > Serving a segment (`/api/waterfall/segment?name=…`) is **strictly read-only**: the
 > board never deletes the file. Deletion is only by the keep-last ring (or the future
 > A2 uploader after a successful send). So a browser/receiver can never erase data that
