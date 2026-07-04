@@ -303,6 +303,25 @@ ring_capacity`, not the wraparound fact).
 instead of waiting until the end of the recording for a single export. Details and the
 telemetry from the test that found this: [`docs/stab2_report.md`](docs/stab2_report.md) §6.
 
+### Pull polling (`wf_pull_client.py`, #REC-12): no pin against the keep-last ring
+
+The keep-last ring (`make_room()`, `main/spectrogram.c:304-321`) deletes the oldest
+FINALIZED segment when Flash space is short — except the currently open segment and any
+**pinned** one (`s_seg_pinned`). Only the push offload path (#REC-11-A2, `wf_offload.c`)
+pins a segment; the pull path (`GET /api/waterfall/segment`, `main/web_waterfall.c:468`)
+does **not** pin the segment while it downloads it.
+
+If the PC client polls SLOWER than the board fills Flash with unread segments, the ring
+can delete a segment before `wf_pull_client.py` gets a chance to fetch it. The next
+`GET .../segment?name=...` then fails (`error:get:...` in the client log), no delete/ack
+is sent, but the segment is already physically gone — the data is lost for good, leaving
+a hole in the stitched `.aswf`. This is NOT detected as a "board pause" (the `gap` check
+in `wf_pull_client.py:161-169` only catches recording pauses, not segments the ring ate).
+
+**Workaround:** keep the client's `--interval` well below the time it takes the ring to
+eat an unread segment at the current recording rate. There is currently no automatic
+protection (a pin, like push has) for the pull download path — not implemented.
+
 ---
 
 ## Compatibility
