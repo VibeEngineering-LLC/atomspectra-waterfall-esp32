@@ -360,6 +360,13 @@ python -m PyInstaller --onefile --windowed --name wf_recorder \
     <code>wf_pull_client.Stitcher</code>, тот же <code>state.json</code>, тот же порядок
     «сшить → fsync → delete на плате»), включая fix
     <code>_default_output_path()</code> для frozen-запуска.</p>
+    <blockquote>
+      <strong>Asset обновлён 2026-07-05 (commit <code>85eadb7</code>):</strong> исправлен старт exe —
+      режим <code>--windowed</code> PyInstaller обнуляет <code>sys.stdout</code>/<code>sys.stderr</code>;
+      вызов <code>.reconfigure()</code> в <code>wf_recorder_app.py</code> и
+      <code>wf_pull_client.py</code> обёрнут guard-ом
+      <code>if sys.stdout is not None</code>.
+    </blockquote>
   </section>
 
   <!-- ── §4 Результаты ── -->
