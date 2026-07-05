@@ -26,15 +26,21 @@
 #define WF_HDR_RESERVE        4096            // .aswf JSON-заголовок (добивается пробелами)
 #define WF_SEG_HEADER         (8 + WF_HDR_RESERVE)  // offset payload в сегменте (= 4104)
 
-// #FW-5: формат сегмента v2 — к каждой строке в файле (16384 Б спектра uint16 LE)
-// приписаны 2 Б реальной длительности среза (uint16 LE, секунды = дельта живого
-// времени прибора total_time_sec). Запись фикс. размера WF_ROW_STRIDE → reconcile
-// по размеру файла остаётся тривиальным. Старые сегменты v1 (без длительностей,
-// stride = WF_ROW_BYTES) распознаются по отсутствию "row_stride" в JSON-шапке.
-// Шапка v2 самоописываема: "version":2, "row_stride":16386,
-// "row_time":{"dtype":"uint16","unit":"sec","offset":16384}.
+// Формат сегмента v3 (ASWF v3):
+// • После JSON-шапки (offset 8+hlen) идёт baseline-секция: 8192×uint32 LE (32768 Б) —
+//   накопительный спектр на момент старта записи.
+// • Payload (строки) начинается с offset 8+hlen+WF_BASELINE_BYTES.
+// • Каждая строка = спектр (uint16×8192) + duration (uint16) + timestamp (uint32) +
+//   latitude (float32) + longitude (float32) + dose_rate (float32).
+// • Шапка самоописываема: "version":3, "row_fields":[...], "baseline":{...}.
+// v1: stride=WF_ROW_BYTES (нет поля row_stride); v2: stride=16386; v3: stride=16402.
 #define WF_DUR_BYTES          2                              // uint16 LE, секунды
-#define WF_ROW_STRIDE         (WF_ROW_BYTES + WF_DUR_BYTES)  // = 16386, запись строки в сегмент
+#define WF_TS_BYTES           4                              // uint32 LE, unix timestamp
+#define WF_GPS_BYTES          8                              // float32 LE lat + lon (NaN без GPS)
+#define WF_DOSE_BYTES         4                              // float32 LE µSv/h (NaN если k=0)
+#define WF_ROW_STRIDE         (WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + WF_GPS_BYTES + WF_DOSE_BYTES)
+                                                             // = 16402, запись строки v3
+#define WF_BASELINE_BYTES     (WF_CHANNELS * 4)             // = 32768, baseline секция (uint32 LE)
 
 typedef struct {
     bool     recording;
@@ -123,3 +129,8 @@ void spectrogram_offload_release(uint32_t idx);
 // #REC-11 pull: удалить завершённый сегмент по индексу (PC подтвердил приём через
 // POST /api/waterfall/segment/delete). Не трогает открытый/pinned сегмент. true=удалён.
 bool spectrogram_seg_delete(uint32_t idx);
+
+// v3: дозовый коэффициент µSv/h per cps. 0.0 → NaN в dose_rate строк.
+// Сохраняется в NVS, переживает ребут.
+void  spectrogram_set_dose_k(float k);
+float spectrogram_get_dose_k(void);
