@@ -93,7 +93,8 @@ def parse_aswf(blob, name):
     hdr = json.loads(blob[8:8 + hlen].decode("utf-8"))
     baseline_bytes = 0
     if "baseline" in hdr:
-        baseline_bytes = hdr["baseline"]["count"] * 4
+        b = hdr["baseline"]
+        baseline_bytes = b.get("channels", b.get("count", 0)) * 4
     payload_off = 8 + hlen + baseline_bytes
     return hdr, blob[:payload_off], blob[payload_off:]
 
