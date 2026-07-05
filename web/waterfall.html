@@ -896,14 +896,13 @@ async function refreshStatus(){
   document.getElementById("bStart").disabled=s.recording;
   document.getElementById("bStop").disabled=!s.recording;
   wfStat=s;
-  // #UI-1: (пере)синхронизация клиентского якоря времени записи.
-  if(s.recording && !(s.started_at>1600000000)){
-   var base=(s.total_rows||0)*(s.interval_sec||intervalSec);
-   var pred=(recAnchorBase>=0)?recAnchorBase+(Date.now()-recAnchorMs)/1000:-1;
-   if(pred<0 || Math.abs(base-pred)>(s.interval_sec||intervalSec)){
-    recAnchorMs=Date.now(); recAnchorBase=base;   // ресинк только при заметном расхождении
-   }
-  }else{ recAnchorBase=-1; }
+  // #FW-21: «Время записи» = elapsed_sec с платы (монотонные часы, не зависит от
+  // NTP/started_at). Клиент лишь запоминает свежее число + метку Date.now() для
+  // плавного секундного тика между поллами. F5 НЕ сбрасывает: значение живёт на
+  // плате — первый же refreshStatus после перезагрузки даёт корректную длительность.
+  if(s.recording && s.elapsed_sec!==undefined){
+   elapsedBase=(s.elapsed_sec||0); elapsedAtMs=Date.now();
+  }else{ elapsedBase=-1; }
   var rc=s.ring_capacity||1, rn=s.ring_count||0;
   var rpct=Math.min(100,rn/rc*100);
   document.getElementById("ringtxt").textContent=rn+"/"+rc;
@@ -931,21 +930,22 @@ async function refreshStatus(){
 function fmtHMS(s){s=Math.max(0,Math.floor(s));
  var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
  function p(n){return(n<10?"0":"")+n;}return p(h)+":"+p(m)+":"+p(x);}
-// #UI-1: клиентский якорь для плавного «живого» тика, когда плата без NTP
-// (started_at=0). База = строки×интервал квантована по интервалу; anchor даёт
-// секундный ход от Date.now(), ресинк в refreshStatus при расхождении.
-var recAnchorMs=0, recAnchorBase=-1;
+// #FW-21: elapsedBase = последнее elapsed_sec с платы, elapsedAtMs = когда получено.
+// Тик = elapsedBase + прошедшее с момента получения → плавный ход между поллами.
+// -1 = не пишем / плата не отдала elapsed_sec (старая прошивка — fallback ниже).
+var elapsedAtMs=0, elapsedBase=-1;
 function recElapsed(){
  if(!wfStat)return 0;
- var base=(wfStat.total_rows||0)*(wfStat.interval_sec||intervalSec);
- if(!wfStat.recording)return base;
+ if(!wfStat.recording)return (wfStat.total_rows||0)*(wfStat.interval_sec||intervalSec);
+ if(elapsedBase>=0)return elapsedBase+(Date.now()-elapsedAtMs)/1000;   // плата elapsed_sec + плавный тик
+ // fallback (прошивка без elapsed_sec): NTP-время если валидно, иначе «--:--:--».
  if(wfStat.started_at>1600000000)return Math.max(0,Date.now()/1000-wfStat.started_at);
- if(recAnchorBase<0)return base;                       // якорь ещё не поставлен
- return recAnchorBase+(Date.now()-recAnchorMs)/1000;   // плавный ход между статусами
+ return -1;
 }
 function tickRecTime(){
  var el=document.getElementById("rectime"); if(!el)return;
- el.textContent=fmtHMS(recElapsed());
+ var e=recElapsed();
+ el.textContent=(e<0)?"--:--:--":fmtHMS(e);
  el.style.color=(wfStat&&wfStat.recording)?"var(--accent)":"#f0c45a";
 }
 
