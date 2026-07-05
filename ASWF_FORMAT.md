@@ -439,6 +439,23 @@ POST /api/waterfall/segment/delete?name=seg_00000.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
+### Экспорт кольца ОЗУ в ASWF
+
+```
+GET /api/waterfall/export.aswf
+Authorization: Basic <base64(login:password)>
+```
+
+Ответ `200 application/octet-stream` — полный файл ASWF v3.
+
+Экспортирует текущее кольцо PSRAM (последние `ring_capacity` строк) в единый файл ASWF v3.
+Baseline-секция отсутствует (кольцо — скользящее окно, не полная сессия).
+Поля строки: `spectrum`, `duration`, `timestamp`, `latitude` (NaN), `longitude` (NaN), `dose_rate` / `dose_rate_usv_h`.
+Возвращает `404`, если данных ещё нет.
+
+> **Примечание об именовании полей:** firmware использует `"name":"dose_rate"` с `"unit":"usv_h"` в `row_fields`;
+> в документации применяется псевдоним `dose_rate_usv_h` для ясности. Парсер должен поддерживать оба варианта.
+
 ---
 
 ## Кольцевой буфер сегментов

@@ -102,6 +102,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn amber" id="bStop"><span data-i18n="btn.stop">&#9632; Стоп</span></button>
 <button class="btn red" id="bClear"><span data-i18n="btn.clear">&#128465; Очистить</span></button>
 <button class="btn" id="bExportN42"><span data-i18n="btn.export_n42">&#11015; Экспорт .n42</span></button>
+<button class="btn" id="bExportAswf"><span data-i18n="btn.export_aswf">&#11015; Экспорт .aswf</span></button>
 <!-- #REC-11-A1: FSA-стрим на диск деприкейтнут (был #REC-9; F5 терял данные).
      Запись теперь автономна на плате (сегменты на Flash); забор — внешним вьювером.
      Кнопка скрыта; JS оставлен спящим (срабатывает только по клику). -->
@@ -218,7 +219,7 @@ var DICT={
  ru:{
   "title":"AtomSpectra · Водопад","device":"Прибор",
   "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
-  "btn.start":"▶ Старт","btn.stop":"■ Стоп","btn.clear":"🗑 Очистить","btn.export_n42":"⬇ Экспорт .n42",
+  "btn.start":"▶ Старт","btn.stop":"■ Стоп","btn.clear":"🗑 Очистить","btn.export_n42":"⬇ Экспорт .n42","btn.export_aswf":"⬇ Экспорт .aswf",
   "btn.disk":"💾 Стрим на диск…","btn.disk_stop":"■ Стрим на диск (стоп)",
   "btn.disk_title":"Сохранять входящий стрим в .aswf-файл на диске ПК",
   "lbl.interval_s":"Интервал, с","btn.apply":"применить",
@@ -249,7 +250,7 @@ var DICT={
   "log.disk_flush_err":"диск: flush err ","log.disk_done":"диск: запись завершена (%1 стр., %2 МБ) → %3",
   "log.disk_ckpt":"диск: контрольная точка #%1 — файл зафиксирован на диске (%2 стр., %3 МБ)",
   "log.disk_ckpt_err":"диск: ошибка контрольной точки ","log.disk_blob":"диск: blob скачан (%1 стр., %2 МБ) → %3","log.disk_close_err":"диск: close err ",
-  "log.cleared":"очищено","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)",
+  "log.cleared":"очищено","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)","log.export_aswf":"экспорт .aswf (ASWF v3)",
   "confirm.clear":"Очистить накопленную спектрограмму?",
   "unload.recording":"Идёт запись на диск. Закрыть страницу?",
   "flash.off":"выкл","flash.full":"⚠ Flash заполнен (стрим продолжается)",
@@ -273,7 +274,7 @@ var DICT={
  en:{
   "title":"AtomSpectra · Waterfall","device":"Device",
   "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
-  "btn.start":"▶ Start","btn.stop":"■ Stop","btn.clear":"🗑 Clear","btn.export_n42":"⬇ Export .n42",
+  "btn.start":"▶ Start","btn.stop":"■ Stop","btn.clear":"🗑 Clear","btn.export_n42":"⬇ Export .n42","btn.export_aswf":"⬇ Export .aswf",
   "btn.disk":"💾 Stream to disk…","btn.disk_stop":"■ Stream to disk (stop)",
   "btn.disk_title":"Save the incoming stream to an .aswf file on the PC disk",
   "lbl.interval_s":"Interval, s","btn.apply":"apply",
@@ -304,7 +305,7 @@ var DICT={
   "log.disk_flush_err":"disk: flush err ","log.disk_done":"disk: recording finished (%1 rows, %2 MB) → %3",
   "log.disk_ckpt":"disk: checkpoint #%1 — file committed to disk (%2 rows, %3 MB)",
   "log.disk_ckpt_err":"disk: checkpoint error ","log.disk_blob":"disk: blob downloaded (%1 rows, %2 MB) → %3","log.disk_close_err":"disk: close err ",
-  "log.cleared":"cleared","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)",
+  "log.cleared":"cleared","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)","log.export_aswf":"export .aswf (ASWF v3)",
   "confirm.clear":"Clear the accumulated spectrogram?",
   "unload.recording":"Disk recording in progress. Close the page?",
   "flash.off":"off","flash.full":"⚠ Flash full (stream continues)",
@@ -1191,6 +1192,8 @@ document.getElementById("iv").onchange=applyInterval;
 document.getElementById("persist").onchange=async function(){
  await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
 document.getElementById("bExportN42").onclick=function(){window.location="/api/waterfall/export.n42";lg(t("log.export"));};
+document.getElementById("bExportAswf").onclick=function(){window.location="/api/waterfall/export.aswf";lg(t("log.export_aswf"));};
+
 document.getElementById("bDisk").onclick=function(){
  if(dskWritable||dskMemChunks)stopDiskStream();else startDiskStream();
 };

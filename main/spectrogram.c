@@ -45,8 +45,10 @@ static uint16_t        *s_dur;       // #FW-5: кольцо реальных д�
 static uint32_t         s_prev_time; // #FW-5: предыдущее device total_time_sec (дельта = живое время среза)
 static spectrum_data_t *s_snap;     // start()/seg_header_build() (serial/calib для шапки)
 static spectrum_data_t *s_wf_snap;  // приватный буфер периодического wf_task (P3-4)
-static uint32_t        *s_baseline; // PSRAM: 8192×uint32 — снимок накопительного спектра при start()
-static float            s_dose_k;   // µSv/h per cps из NVS (0.0 → NaN в dose_rate строк)
+static uint32_t        *s_baseline;     // PSRAM: 8192×uint32 — снимок накопительного спектра при start()
+static float            s_dose_k;       // µSv/h per cps из NVS (0.0 → NaN в dose_rate строк)
+static float           *s_dose_lut;     // PSRAM: 8192×float LUT кривой МД (NULL → scalar k)
+static int              s_dose_curve_n; // точек загружено (0 → scalar k)
 
 static wf_status_t       s_status;
 static wf_row_cb_t       s_row_cb;
@@ -134,6 +136,75 @@ static void settings_load(void)
     if (nvs_get_u32(h, "dose_k_bits", &dose_bits) == ESP_OK)
         memcpy(&s_dose_k, &dose_bits, 4);
     nvs_close(h);
+}
+
+#define DOSE_CURVE_PATH       "/storage/dose_curve.csv"
+#define DOSE_CURVE_MAX_POINTS 512
+
+static void build_dose_lut(const float *ch_arr, const float *k_arr, int n)
+{
+    if (!s_dose_lut || n <= 0) return;
+    int pi = 0;
+    for (int ci = 0; ci < WF_CHANNELS; ci++) {
+        float ch = (float)ci;
+        if (n == 1) { s_dose_lut[ci] = k_arr[0]; continue; }
+        if (ch <= ch_arr[0])   { s_dose_lut[ci] = k_arr[0];   continue; }
+        if (ch >= ch_arr[n-1]) { s_dose_lut[ci] = k_arr[n-1]; continue; }
+        while (pi + 1 < n - 1 && ch_arr[pi + 1] <= ch) pi++;
+        float t = (ch - ch_arr[pi]) / (ch_arr[pi+1] - ch_arr[pi]);
+        s_dose_lut[ci] = k_arr[pi] + t * (k_arr[pi+1] - k_arr[pi]);
+    }
+}
+
+void spectrogram_load_dose_curve(void)
+{
+    if (!s_dose_lut) { s_dose_curve_n = 0; return; }
+    static float ch_buf[DOSE_CURVE_MAX_POINTS];
+    static float k_buf[DOSE_CURVE_MAX_POINTS];
+    int n = 0;
+    FILE *f = fopen(DOSE_CURVE_PATH, "r");
+    if (!f) { s_dose_curve_n = 0; ESP_LOGI(TAG, "dose_curve: no file"); return; }
+    char line[80];
+    while (fgets(line, sizeof(line), f) && n < DOSE_CURVE_MAX_POINTS) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\r' || *p == '\0') continue;
+        if (*p != '.' && (*p < '0' || *p > '9')) continue; // заголовок
+        float ch, k;
+        if (sscanf(p, "%f,%f", &ch, &k) == 2 && ch >= 0.0f && ch < WF_CHANNELS && k >= 0.0f)
+            ch_buf[n] = ch, k_buf[n] = k, n++;
+    }
+    fclose(f);
+    if (n < 1) { s_dose_curve_n = 0; ESP_LOGW(TAG, "dose_curve: 0 valid points"); return; }
+    // insertion sort по channel
+    for (int i = 1; i < n; i++) {
+        float tc = ch_buf[i], tk = k_buf[i]; int j = i - 1;
+        while (j >= 0 && ch_buf[j] > tc) { ch_buf[j+1] = ch_buf[j]; k_buf[j+1] = k_buf[j]; j--; }
+        ch_buf[j+1] = tc; k_buf[j+1] = tk;
+    }
+    build_dose_lut(ch_buf, k_buf, n);
+    s_dose_curve_n = n;
+    ESP_LOGI(TAG, "dose_curve: %d points loaded", n);
+}
+
+int spectrogram_get_dose_curve_n(void) { return s_dose_curve_n; }
+
+float spectrogram_compute_dose_rate(const uint16_t *bins, uint32_t dur)
+{
+    uint32_t nan_bits = 0x7FC00000u;
+    float result;
+    memcpy(&result, &nan_bits, 4);
+    if (dur == 0) return result;
+    if (s_dose_lut && s_dose_curve_n > 0) {
+        double wsum = 0.0;
+        for (int i = 0; i < WF_CHANNELS; i++) wsum += (double)bins[i] * s_dose_lut[i];
+        result = (float)(wsum / (double)dur);
+    } else if (s_dose_k > 0.0f) {
+        uint64_t total = 0;
+        for (int i = 0; i < WF_CHANNELS; i++) total += bins[i];
+        result = ((float)total / (float)dur) * s_dose_k;
+    }
+    return result;
 }
 
 static void settings_save(uint32_t interval_sec, bool persist)
@@ -495,6 +566,9 @@ void spectrogram_init(void)
     // v3: baseline (32 КБ) — не критично, пишем нули если нет PSRAM
     s_baseline = heap_caps_calloc(WF_CHANNELS, sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     if (!s_baseline) ESP_LOGW(TAG, "baseline alloc failed — zeros on start");
+    // v3: LUT кривой мощности дозы (32 КБ PSRAM, nullable)
+    s_dose_lut = heap_caps_malloc(WF_CHANNELS * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (!s_dose_lut) ESP_LOGW(TAG, "dose_lut alloc failed — curve disabled");
 
     if (!s_ring || !s_dur || !s_prev || !s_row || !s_snap || !s_wf_snap || !s_fs_buf) {
         ESP_LOGE(TAG, "PSRAM alloc failed");
@@ -517,6 +591,7 @@ void spectrogram_init(void)
     xTaskCreatePinnedToCore(wf_fs_task, "wf_fs", 8192, NULL, 2, NULL, 1);
     // stack 8192: producer теперь без FS, но оставляем запас (snapshot + row_cb).
     xTaskCreatePinnedToCore(wf_task, "wf", 8192, NULL, 3, NULL, 1);
+    spectrogram_load_dose_curve(); // попытка; FS смонтирована в main до вызова init()
 }
 
 // #FW-6: запись одной строки в сегмент. Вызывается ТОЛЬКО из wf_fs_task без
@@ -545,7 +620,13 @@ static void seg_write_row(const uint8_t *row, uint16_t dur)
             memcpy(&lat_v,  &nan_bits, 4);
             memcpy(&lon_v,  &nan_bits, 4);
             memcpy(&dose_v, &nan_bits, 4);
-            if (s_dose_k > 0.0f && dur > 0) {
+            if (s_dose_lut && s_dose_curve_n > 0 && dur > 0) {
+                // кривая: взвешенная сумма bins[i]*lut[i]
+                double wsum = 0.0;
+                const uint16_t *sp = (const uint16_t *)row;
+                for (int ci = 0; ci < WF_CHANNELS; ci++) wsum += (double)sp[ci] * s_dose_lut[ci];
+                dose_v = (float)(wsum / (double)dur);
+            } else if (s_dose_k > 0.0f && dur > 0) {
                 uint64_t sum = 0;
                 const uint16_t *sp = (const uint16_t *)row;
                 for (int ci = 0; ci < WF_CHANNELS; ci++) sum += sp[ci];

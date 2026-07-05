@@ -248,6 +248,149 @@ static esp_err_t h_window(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---- v3: GET /api/waterfall/export.aswf — кольцо PSRAM в бинарном ASWF v3 ---- */
+
+typedef struct {
+    httpd_req_t    *req;
+    uint8_t        *tail;        /* 18-байт буфер: dur(2)+ts(4)+lat(4)+lon(4)+dose(4) */
+    const uint16_t *durs;
+    uint32_t        r0;
+    uint32_t        r;
+    uint32_t        interval_sec;
+    time_t          row_start;
+} aswf_ctx_t;
+
+static bool aswf_row_emit(void *vctx, const uint16_t *row, size_t bytes)
+{
+    aswf_ctx_t *c = (aswf_ctx_t *)vctx;
+    if (httpd_resp_send_chunk(c->req, (const char *)row, (ssize_t)bytes) != ESP_OK) return false;
+
+    uint32_t local = c->r - c->r0;
+    uint32_t dur = c->durs ? (uint32_t)c->durs[local] : 0;
+    if (dur == 0) dur = c->interval_sec;
+    c->r++;
+
+    time_t ts = c->row_start;
+    c->row_start += (time_t)dur;
+
+    float dose = spectrogram_compute_dose_rate(row, dur);
+    uint32_t nan_bits = 0x7FC00000u;
+    float lat_v, lon_v;
+    memcpy(&lat_v, &nan_bits, 4);
+    memcpy(&lon_v, &nan_bits, 4);
+
+    uint32_t ts32 = (uint32_t)ts;
+    uint8_t *t = c->tail;
+    t[0] = dur & 0xFF;           t[1] = (dur >> 8) & 0xFF;
+    t[2] = ts32 & 0xFF;          t[3] = (ts32 >> 8) & 0xFF;
+    t[4] = (ts32 >> 16) & 0xFF;  t[5] = (ts32 >> 24) & 0xFF;
+    memcpy(t + 6,  &lat_v, 4);
+    memcpy(t + 10, &lon_v, 4);
+    memcpy(t + 14, &dose,  4);
+    return httpd_resp_send_chunk(c->req, (const char *)t, 18) == ESP_OK;
+}
+
+/* GET /api/waterfall/export.aswf -> ASWF v3 (кольцо PSRAM, без baseline-секции).
+   Совместим с v3-парсерами. wf_pull_client.py с v3-поддержкой читает напрямую. */
+static esp_err_t h_export_aswf(httpd_req_t *req)
+{
+    wf_status_t s;
+    spectrogram_get_status(&s);
+    if (s.ring_count == 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no waterfall data");
+        return ESP_FAIL;
+    }
+
+    spectrum_data_t *sp = malloc(sizeof(*sp));
+    if (sp) spectrum_get_snapshot(sp);
+
+    uint16_t *row  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
+    char     *hbuf = malloc(WF_HDR_RESERVE);
+    uint8_t  *tail = malloc(18);
+    if (!row || !hbuf || !tail) {
+        if (row)  heap_caps_free(row);
+        if (hbuf) free(hbuf);
+        if (tail) free(tail);
+        if (sp)   free(sp);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
+
+    uint32_t r0 = (s.ring_count <= s.total_rows) ? (s.total_rows - s.ring_count) : 0;
+    time_t first_ts = s.started_at + (time_t)r0 * (time_t)s.interval_sec;
+    time_t now = time(NULL);
+
+    int cap = WF_HDR_RESERVE;
+    int n = snprintf(hbuf, cap,
+        "{\"saved_rows\":%" PRIu32 ",\"saved_at\":%ld"
+        ",\"format\":\"atomspectra-waterfall\",\"version\":3"
+        ",\"channels\":%d,\"dtype\":\"uint16\",\"byte_order\":\"little\""
+        ",\"row_stride\":%d"
+        ",\"row_fields\":["
+        "{\"name\":\"spectrum\",\"dtype\":\"uint16\",\"channels\":%d,\"offset\":0},"
+        "{\"name\":\"duration\",\"dtype\":\"uint16\",\"unit\":\"sec\",\"offset\":%d},"
+        "{\"name\":\"timestamp\",\"dtype\":\"uint32\",\"unit\":\"unix_sec\",\"offset\":%d},"
+        "{\"name\":\"latitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
+        "{\"name\":\"longitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
+        "{\"name\":\"dose_rate\",\"dtype\":\"float32\",\"unit\":\"usv_h\",\"offset\":%d}"
+        "]"
+        ",\"compressed\":false"
+        ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
+        (uint32_t)s.ring_count, (long)now,
+        WF_CHANNELS, WF_ROW_STRIDE,
+        WF_CHANNELS,
+        WF_ROW_BYTES,
+        WF_ROW_BYTES + WF_DUR_BYTES,
+        WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES,
+        WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 4,
+        WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 8,
+        s.interval_sec, (long)first_ts);
+    if (n > 0 && n < cap && sp && sp->serial_number[0])
+        n += snprintf(hbuf + n, cap - n, ",\"serial\":\"%s\"", sp->serial_number);
+    if (n > 0 && n < cap && sp && sp->calib_valid) {
+        n += snprintf(hbuf + n, cap - n, ",\"calibration\":[");
+        for (int i = 0; i <= sp->calib_order && n > 0 && n < cap; i++)
+            n += snprintf(hbuf + n, cap - n, "%s%.15g", i ? "," : "", sp->calibration[i]);
+        if (n > 0 && n < cap) n += snprintf(hbuf + n, cap - n, "]");
+    }
+    if (n > 0 && n < cap) n += snprintf(hbuf + n, cap - n, "}");
+    if (n < 0) n = 0;
+    if (n > cap) n = cap;
+    memset(hbuf + n, ' ', cap - n);
+
+    uint8_t magic[8] = {'A','S','W','F', 0,0,0,0};
+    uint32_t hlen = (uint32_t)WF_HDR_RESERVE;
+    memcpy(magic + 4, &hlen, 4);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"waterfall.aswf\"");
+
+    httpd_resp_send_chunk(req, (const char *)magic, 8);
+    httpd_resp_send_chunk(req, hbuf, WF_HDR_RESERVE);
+
+    uint16_t *durs = calloc(s.ring_count, sizeof(uint16_t));
+    if (durs) spectrogram_copy_window_durations(durs, s.ring_count);
+    aswf_ctx_t ctx = {
+        .req          = req,
+        .tail         = tail,
+        .durs         = durs,
+        .r0           = r0,
+        .r            = r0,
+        .interval_sec = s.interval_sec,
+        .row_start    = first_ts,
+    };
+    spectrogram_stream_window(row, s.ring_count, NULL, aswf_row_emit, &ctx);
+    if (durs) free(durs);
+
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    heap_caps_free(row);
+    free(hbuf);
+    free(tail);
+    if (sp) free(sp);
+    return ESP_OK;
+}
+
 /* Контекст отдачи одной строки кольца как <RadMeasurement>. */
 typedef struct {
     httpd_req_t *req;
@@ -643,6 +786,62 @@ static esp_err_t h_offload_set(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* v3: GET /api/waterfall/dose_curve — статус загруженной кривой */
+static esp_err_t h_dose_curve_get(httpd_req_t *req)
+{
+    int n = spectrogram_get_dose_curve_n();
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"n\":%d,\"mode\":\"%s\"}",
+             n, n > 0 ? "curve" : "scalar");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+/* v3: POST /api/waterfall/dose_curve — загрузить CSV-файл кривой */
+static esp_err_t h_dose_curve_set(httpd_req_t *req)
+{
+    if (!web_csrf_check(req)) return ESP_FAIL;
+    int len = req->content_len;
+    if (len <= 0 || len > 64 * 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad size");
+        return ESP_FAIL;
+    }
+    FILE *f = fopen("/storage/dose_curve.csv", "w");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "FS error");
+        return ESP_FAIL;
+    }
+    char buf[512];
+    int remaining = len;
+    while (remaining > 0) {
+        int to_read = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+        int rd = httpd_req_recv(req, buf, to_read);
+        if (rd <= 0) { fclose(f); unlink("/storage/dose_curve.csv"); return ESP_FAIL; }
+        fwrite(buf, 1, rd, f);
+        remaining -= rd;
+    }
+    fclose(f);
+    spectrogram_load_dose_curve();
+    int n = spectrogram_get_dose_curve_n();
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"n\":%d}", n);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+/* v3: POST /api/waterfall/dose_curve/clear — удалить кривую */
+static esp_err_t h_dose_curve_clear(httpd_req_t *req)
+{
+    if (!web_csrf_check(req)) return ESP_FAIL;
+    unlink("/storage/dose_curve.csv");
+    spectrogram_load_dose_curve();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"n\":0}");
+    return ESP_OK;
+}
+
 /* v3: GET /api/waterfall/dose_k */
 static esp_err_t h_dose_k_get(httpd_req_t *req)
 {
@@ -699,7 +898,8 @@ void web_waterfall_register(httpd_handle_t server)
     reg(server, "/api/waterfall/clear",  HTTP_POST, h_clear);
     reg(server, "/api/waterfall/config", HTTP_POST, h_config);
     reg(server, "/api/waterfall/window", HTTP_GET,  h_window);
-    reg(server, "/api/waterfall/export.n42", HTTP_GET, h_export_n42);
+    reg(server, "/api/waterfall/export.aswf", HTTP_GET, h_export_aswf);
+    reg(server, "/api/waterfall/export.n42",  HTTP_GET, h_export_n42);
     // #REC-11-A1: листинг и отдача сегментов (СТРОГО read-only).
     reg(server, "/api/waterfall/segments", HTTP_GET, h_segments);
     reg(server, "/api/waterfall/segment",  HTTP_GET, h_segment);
@@ -708,9 +908,12 @@ void web_waterfall_register(httpd_handle_t server)
     // #REC-11-A2: конфиг/статус автономной выгрузки сегментов.
     reg(server, "/api/waterfall/offload",  HTTP_GET,  h_offload_get);
     reg(server, "/api/waterfall/offload",  HTTP_POST, h_offload_set);
-    // v3: дозовый коэффициент
-    reg(server, "/api/waterfall/dose_k",  HTTP_GET,  h_dose_k_get);
-    reg(server, "/api/waterfall/dose_k",  HTTP_POST, h_dose_k_set);
+    // v3: дозовый коэффициент и кривая
+    reg(server, "/api/waterfall/dose_k",            HTTP_GET,  h_dose_k_get);
+    reg(server, "/api/waterfall/dose_k",            HTTP_POST, h_dose_k_set);
+    reg(server, "/api/waterfall/dose_curve",        HTTP_GET,  h_dose_curve_get);
+    reg(server, "/api/waterfall/dose_curve",        HTTP_POST, h_dose_curve_set);
+    reg(server, "/api/waterfall/dose_curve/clear",  HTTP_POST, h_dose_curve_clear);
 
     httpd_uri_t ws = {
         .uri = "/ws/waterfall", .method = HTTP_GET,

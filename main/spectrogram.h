@@ -134,3 +134,12 @@ bool spectrogram_seg_delete(uint32_t idx);
 // Сохраняется в NVS, переживает ребут.
 void  spectrogram_set_dose_k(float k);
 float spectrogram_get_dose_k(void);
+
+// v3: кривая мощности дозы (LUT по каналам). Файл /storage/dose_curve.csv:
+// две колонки channel,dose_k (float). До 512 точек; интерполируется линейно.
+// При загруженной кривой dose_rate в строках = взвешенная сумма bins[i]*lut[i]/dur.
+// Scalar s_dose_k используется как fallback если кривая не загружена.
+void  spectrogram_load_dose_curve(void);  // (пере)загрузить с диска
+int   spectrogram_get_dose_curve_n(void); // число точек (0 = кривая не загружена)
+// v3: вычислить мощность дозы строки (LUT если загружена, иначе scalar k, иначе NaN).
+float spectrogram_compute_dose_rate(const uint16_t *bins, uint32_t dur);

@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_heap_caps.h"   /* #TCP-5: диагностика свободного DMA-блока перед open */
 #include <string.h>
 
 static const char *TAG = "usb_cdc";
@@ -211,7 +212,7 @@ static void try_open_device(void)
     const cdc_acm_host_device_config_t dev_config = {
         .connection_timeout_ms = 5000,
         .out_buffer_size = 1024,
-        .in_buffer_size = 1024,  /* #TCP-5 ОТКАТ: 1024*36 → ESP_ERR_NO_MEM на нашей S3 (DMA-RAM < 36КБ, мост мёртв). Вернул проверенный 1024; #TCP-5 переоткрыт — нужен подбор размера/освобождение DMA-RAM */
+        .in_buffer_size = 1024,        /* #TCP-5: откат до 1024 — 36КБ → ESP_ERR_NO_MEM (DMA largest_block=31744). Тест на native Linux отложен до починки железа */
         .event_cb = handle_event,
         .data_cb = handle_rx,
         .user_arg = NULL,
@@ -226,6 +227,16 @@ static void try_open_device(void)
     if (num_devs > 0 && (s_attempt <= 3 || (s_attempt % 15) == 0)) {
         ESP_LOGI(TAG, "USB bus: %d device(s) enumerated (addrs:", num_devs);
         for (int i = 0; i < num_devs; i++) ESP_LOGI(TAG, "  addr=%d", dev_addrs[i]);
+    }
+
+    /* #TCP-5 диагностика: сколько DMA/internal RAM реально доступно перед аллокацией in_buffer (36КБ) */
+    if (s_attempt <= 3 || (s_attempt % 15) == 0) {
+        ESP_LOGW(TAG, "#TCP-5 DMA free: largest_block=%u total=%u | INTERNAL largest=%u total=%u | want in_buf=%u",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)dev_config.in_buffer_size);
     }
 
     esp_err_t err = cdc_acm_host_open_vendor_specific(ANALYZER_VID, ANALYZER_PID, 0, &dev_config, &s_cdc_dev);

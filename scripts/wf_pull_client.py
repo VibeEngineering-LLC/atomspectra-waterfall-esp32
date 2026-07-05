@@ -82,24 +82,43 @@ def list_segments(host):
 # ---------------------------------------------------------------- .aswf разбор
 
 def parse_aswf(blob, name):
-    """-> (hdr dict, prefix bytes 'ASWF'+u32+шапка, payload bytes)."""
+    """-> (hdr dict, prefix bytes magic+hdr+baseline, payload bytes).
+
+    v3: baseline-секция (если "baseline" в заголовке) включается в prefix,
+    чтобы merged-файл оставался корректным ASWF v3.
+    """
     if blob[:4] != b"ASWF":
         raise ValueError(f"{name}: bad magic {blob[:4]!r}")
     hlen = struct.unpack_from("<I", blob, 4)[0]
     hdr = json.loads(blob[8:8 + hlen].decode("utf-8"))
-    return hdr, blob[:8 + hlen], blob[8 + hlen:]
+    baseline_bytes = 0
+    if "baseline" in hdr:
+        baseline_bytes = hdr["baseline"]["count"] * 4
+    payload_off = 8 + hlen + baseline_bytes
+    return hdr, blob[:payload_off], blob[payload_off:]
 
 
-def payload_rows_durs(payload, stride, name):
+def payload_rows_durs(payload, stride, name, hdr=None):
     """Целые строки + сумма длительностей. Некратный хвост (краш при записи)
-    отбрасывается с предупреждением — в единый файл идут только целые строки."""
+    отбрасывается с предупреждением — в единый файл идут только целые строки.
+
+    hdr: если передан, берёт смещение поля duration из row_fields (v3).
+    v1/v2 fallback: duration в последних 2 байтах каждой строки (stride-2).
+    """
     n_rows = len(payload) // stride
     rem = len(payload) % stride
     if rem:
         print(f"  ⚠ {name}: некратный хвост {rem} B отброшен (недописанная строка)")
+    # v3: duration offset из row_fields; v1/v2: stride-2 (последние 2 байта строки)
+    dur_off = stride - 2
+    if hdr and "row_fields" in hdr:
+        for f in hdr["row_fields"]:
+            if f.get("name") == "duration":
+                dur_off = f["offset"]
+                break
     dur = 0
     for i in range(n_rows):
-        dur += struct.unpack_from("<H", payload, i * stride + stride - 2)[0]
+        dur += struct.unpack_from("<H", payload, i * stride + dur_off)[0]
     return payload[:n_rows * stride], n_rows, dur
 
 
@@ -142,7 +161,7 @@ class Stitcher:
         hdr, prefix, payload = parse_aswf(blob, name)
         ch = hdr["channels"]
         stride = hdr.get("row_stride", ch * 2)
-        whole, n_rows, dur = payload_rows_durs(payload, stride, name)
+        whole, n_rows, dur = payload_rows_durs(payload, stride, name, hdr)
 
         gap = None
         if not os.path.exists(self.path):

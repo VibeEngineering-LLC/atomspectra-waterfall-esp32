@@ -430,6 +430,23 @@ POST /api/waterfall/segment/delete?name=seg_00000.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
+### Export RAM Ring as ASWF
+
+```
+GET /api/waterfall/export.aswf
+Authorization: Basic <base64(login:password)>
+```
+
+Response `200 application/octet-stream` — complete ASWF v3 file.
+
+Exports the current PSRAM ring (last `ring_capacity` rows) as a single ASWF v3 file.
+No baseline section (ring is a rolling window, not a full session).
+Row fields: `spectrum`, `duration`, `timestamp`, `latitude` (NaN), `longitude` (NaN), `dose_rate_usv_h`.
+Returns `404` if no data has been recorded yet.
+
+> **Note on field naming:** The device firmware uses `"name":"dose_rate"` with `"unit":"usv_h"` in `row_fields`;
+> this doc uses the alias `dose_rate_usv_h` for clarity. Parsers should handle both names.
+
 ---
 
 ## Segment Ring
