@@ -153,6 +153,16 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="mut" id="bc-status-wf" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
 </section>
 
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="dose.title">Мощность дозы</span></div>
+<div class="kv"><span data-i18n="dose.label">Коэффициент k (µSv·h⁻¹/cps)</span>
+<input type="number" id="dose-k-val" min="0" step="any" style="width:130px;background:var(--bg2);color:var(--fg);border:1px solid #444;padding:3px 6px;border-radius:4px">
+</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="dose.hint">0 — мощность дозы не записывается (NaN в файле). Сохраняется в NVS.</div>
+<button class="btn green" onclick="saveDoseK('dose-k-status')" data-i18n="dose.save">Сохранить</button>
+<div class="mut" id="dose-k-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</section>
+
 </div>
 </div>
 
@@ -189,6 +199,7 @@ var DICT={
   "boot.clrWf":"Очищать водопад при старте",
   "boot.hint":"Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.",
   "boot.save":"Сохранить","boot.saved":"Сохранено","boot.saveErr":"Ошибка сохранения",
+  "dose.title":"Мощность дозы","dose.label":"Коэффициент k (µSv·h⁻¹/cps)","dose.hint":"0 — мощность дозы не записывается (NaN в файле). Сохраняется в NVS.","dose.save":"Сохранить","dose.saved":"Сохранено","dose.saveErr":"Ошибка",
   "cal.set":"задана (%1 коэфф., порядок %2)","cal.unset":"не задана",
   "confirm.rebootDev":"Перезагрузить прибор?","confirm.rebootEsp":"Перезагрузить ESP32?","confirm.resetWifi":"Сбросить WiFi и войти в режим настройки?",
   "up.d":"д","up.h":"ч","up.m":"м","up.s":"с",
@@ -224,6 +235,7 @@ var DICT={
   "boot.clrWf":"Clear waterfall on start",
   "boot.hint":"Applied once on power-up / board reboot. Everything is off by default.",
   "boot.save":"Save","boot.saved":"Saved","boot.saveErr":"Save error",
+  "dose.title":"Dose rate","dose.label":"Coefficient k (µSv·h⁻¹/cps)","dose.hint":"0 — dose rate not recorded (NaN in file). Stored in NVS.","dose.save":"Save","dose.saved":"Saved","dose.saveErr":"Error",
   "cal.set":"set (%1 coef., order %2)","cal.unset":"not set",
   "confirm.rebootDev":"Reboot device?","confirm.rebootEsp":"Reboot ESP32?","confirm.resetWifi":"Reset WiFi and enter setup mode?",
   "up.d":"d","up.h":"h","up.m":"m","up.s":"s",
@@ -399,6 +411,24 @@ async function rebootDevice(){if(!confirm(t("confirm.rebootDev")))return;await p
 async function rebootEsp(){if(!confirm(t("confirm.rebootEsp")))return;await post("/api/reboot-esp");}
 async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post("/api/wifi/reset");}
 
+async function loadDoseK(){
+ try{
+  var r=await(await fetch("/api/waterfall/dose_k")).json();
+  var v=r.dose_k;
+  document.getElementById("dose-k-val").value=(typeof v==="number"&&isFinite(v)&&v>0)?v:0;
+ }catch(e){}
+}
+async function saveDoseK(statusId){
+ var s=document.getElementById(statusId||"dose-k-status");
+ var k=parseFloat(document.getElementById("dose-k-val").value)||0;
+ try{
+  var r=await(await post("/api/waterfall/dose_k",{headers:{"Content-Type":"application/json"},body:JSON.stringify({dose_k:k})})).json();
+  s.textContent=r.ok?t("dose.saved"):t("dose.saveErr");
+  s.style.color=r.ok?"var(--accent)":"#ff8a82";
+ }catch(e){ s.textContent=t("dose.saveErr"); s.style.color="#ff8a82"; }
+ setTimeout(function(){s.textContent="";},2500);
+}
+
 (async function(){
  applyI18n();
  document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
@@ -408,6 +438,7 @@ async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post
  await refreshDevice();
  await refreshSpectrum();
  await loadBootConfig();
+ await loadDoseK();
  setInterval(refreshSystem,2000);
  setInterval(refreshDevice,5000);
  setInterval(refreshSpectrum,2000);

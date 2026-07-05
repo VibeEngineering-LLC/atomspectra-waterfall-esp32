@@ -643,6 +643,42 @@ static esp_err_t h_offload_set(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* v3: GET /api/waterfall/dose_k */
+static esp_err_t h_dose_k_get(httpd_req_t *req)
+{
+    float k = spectrogram_get_dose_k();
+    char resp[48];
+    snprintf(resp, sizeof(resp), "{\"dose_k\":%.8g}", (double)k);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+/* v3: POST /api/waterfall/dose_k  body: {"dose_k": <float>} */
+static esp_err_t h_dose_k_set(httpd_req_t *req)
+{
+    if (!web_csrf_check(req)) return ESP_FAIL;
+    char body[64] = {0};
+    int recv_len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (recv_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+        return ESP_FAIL;
+    }
+    body[recv_len] = '\0';
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad JSON");
+        return ESP_FAIL;
+    }
+    cJSON *it = cJSON_GetObjectItem(root, "dose_k");
+    if (it && cJSON_IsNumber(it))
+        spectrogram_set_dose_k((float)cJSON_GetNumberValue(it));
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 static void reg(httpd_handle_t srv, const char *uri, httpd_method_t m,
                 esp_err_t (*h)(httpd_req_t *))
 {
@@ -672,6 +708,9 @@ void web_waterfall_register(httpd_handle_t server)
     // #REC-11-A2: конфиг/статус автономной выгрузки сегментов.
     reg(server, "/api/waterfall/offload",  HTTP_GET,  h_offload_get);
     reg(server, "/api/waterfall/offload",  HTTP_POST, h_offload_set);
+    // v3: дозовый коэффициент
+    reg(server, "/api/waterfall/dose_k",  HTTP_GET,  h_dose_k_get);
+    reg(server, "/api/waterfall/dose_k",  HTTP_POST, h_dose_k_set);
 
     httpd_uri_t ws = {
         .uri = "/ws/waterfall", .method = HTTP_GET,
