@@ -3,135 +3,167 @@
 [🇬🇧 English](ASWF_FORMAT.en.md) · [← README](README.md) · [Водопад](WATERFALL.md)
 
 **ASWF** (AtomSpectra Waterfall Format) — бинарный формат хранения спектрограммы
-(водопада): последовательность спектров, снятых через фиксированные интервалы.
-Каждый файл `.aswf` самодостаточен и содержит полный заголовок и данные, пригодные
-для автономного парсинга без внешней схемы.
+(водопада): хронологическая последовательность спектров, снятых через фиксированные
+интервалы. Каждый файл `.aswf` самодостаточен — содержит полный заголовок и данные,
+не требует внешней схемы.
+
+---
+
+## История версий
+
+| Версия | Ключевые изменения |
+|--------|-------------------|
+| **v1** | Базовый формат. 16384 байт/строка (8192 × uint16 LE). Нет поля длительности. |
+| **v2** | +2 байта uint16 LE длительности в конце каждой строки. `row_stride=16386`, `row_time` в заголовке. |
+| **v3** | Self-describing `row_fields`. Поля метки времени, GPS, мощности дозы. Секция baseline. Флаг сжатия. |
 
 ---
 
 ## Структура файла
 
+### v1 / v2
+
 ```
-┌────────────────────────────────────────────────────────┐
-│  Offset 0 │ 4 байта │ Магическое число "ASWF" (ASCII)  │
-│  Offset 4 │ 4 байта │ uint32 LE: длина JSON-области     │
-│  Offset 8 │ N байт  │ JSON-заголовок (UTF-8 + пробелы)  │
-│  Offset 8+N         │ Строки данных (payload)            │
-└────────────────────────────────────────────────────────┘
+Offset 0:      4 bytes   Магия "ASWF" (ASCII)
+Offset 4:      4 bytes   uint32 LE: hlen (зарезервированный размер JSON-области)
+Offset 8:      hlen bytes JSON-заголовок (UTF-8, дополнен пробелами до hlen)
+Offset 8+hlen: N × stride строк данных (старейшая первая)
 ```
 
-| Поле          | Смещение | Размер   | Тип       | Значение                        |
-|---------------|----------|----------|-----------|---------------------------------|
-| Магия         | 0        | 4        | ASCII     | `41 53 57 46` = `"ASWF"`       |
-| `hlen`        | 4        | 4        | uint32 LE | Зарезервированный размер JSON   |
-| JSON-шапка    | 8        | `hlen`   | UTF-8     | Метаданные (доби́та пробелами)  |
-| Payload       | 8+`hlen` | N×stride | binary    | Строки спектра, старейшая первой |
+### v3
 
-**Важно:** `hlen` — это **зарезервированный** (выровненный) размер JSON-области,
-а не длина самого JSON-текста. Текущее значение всегда `4096`. Парсер обязан
-использовать именно `hlen` для вычисления смещения payload, а не сканировать `}`.
+```
+Offset 0:          4 bytes     Магия "ASWF" (ASCII)
+Offset 4:          4 bytes     uint32 LE: hlen
+Offset 8:          hlen bytes  JSON-заголовок (UTF-8, дополнен пробелами до hlen)
+Offset 8+hlen:     B bytes     Baseline-спектр (если "baseline" есть в заголовке; иначе 0)
+Offset 8+hlen+B:   N × stride  Строки данных (старейшая первая)
+```
+
+где `B = baseline.count × 4` (uint32 на канал), либо `0` если секция отсутствует.
+
+> **Важно:** `hlen` — зарезервированный размер, не фактическая длина JSON-текста.
+> Текущее значение всегда `4096`. Смещение payload = `8 + hlen + B`.
+> Парсер обязан использовать `hlen` и `B`, а не сканировать `}`.
 
 ---
 
 ## JSON-заголовок
 
-Заголовок содержит полное описание формата; все поля, нужные для декодирования,
-указаны внутри файла — внешняя схема не нужна.
+Заголовок полностью самоописываем — все поля, нужные для декодирования, внутри файла.
 
-### Поля заголовка
+### Поля (все версии)
 
 | Ключ           | Тип              | Обязательный | Описание |
 |----------------|------------------|:---:|------|
 | `format`       | string           | да  | Всегда `"atomspectra-waterfall"` |
-| `version`      | int              | да  | Версия формата: `1` или `2` |
+| `version`      | int              | да  | `1`, `2` или `3` |
 | `channels`     | int              | да  | Каналов в строке; текущее значение `8192` |
-| `dtype`        | string           | да  | Тип элемента: `"uint16"` |
+| `dtype`        | string           | да  | Тип элемента спектра: `"uint16"` |
 | `byte_order`   | string           | да  | Порядок байт: `"little"` |
-| `row_stride`   | int              | v2  | Размер строки в байтах `16386` (v2); отсутствует в v1 |
-| `row_time`     | object           | v2  | Описание поля длительности (см. ниже) |
 | `interval_sec` | int              | да  | Номинальный интервал записи, секунды |
-| `started_at`   | int (unix ts)    | да  | Время первой строки (UTC, секунды от эпохи) |
-| `saved_rows`   | int              | да  | Число строк в файле; `0` у незакрытого сегмента |
-| `saved_at`     | int (unix ts)    | да  | Время финализации файла; `0` у незакрытого сегмента |
+| `started_at`   | int (unix ts)    | да  | Метка времени первой строки (UTC, с от эпохи); `0` = NTP не синхронизирован |
+| `saved_rows`   | int              | да  | Число строк в файле; `0` у открытого/незакрытого файла |
+| `saved_at`     | int (unix ts)    | да  | Время финализации; `0` у открытого файла |
 | `serial`       | string           | нет | Серийный номер устройства |
 | `calibration`  | array of floats  | нет | Коэффициенты энергетической калибровки |
 
-#### Объект `row_time` (только v2)
+### Дополнительные поля v2
+
+| Ключ         | Тип   | Описание |
+|--------------|-------|----------|
+| `row_stride` | int   | Размер строки в байтах (`16386`). Отсутствует в v1 |
+| `row_time`   | object | `{"dtype":"uint16","unit":"sec","offset":16384}` |
+
+### Дополнительные поля v3
+
+| Ключ          | Тип    | Описание |
+|---------------|--------|----------|
+| `row_fields`  | array  | Описание полей каждой строки (см. ниже) |
+| `row_stride`  | int    | Суммарный размер строки в байтах (вычисляется из `row_fields`) |
+| `compressed`  | bool   | `true` = строки сжаты RLE (по умолчанию `false`) |
+| `baseline`    | object | Описание baseline-секции между заголовком и payload (см. ниже) |
+
+### Объект `row_fields` (v3)
+
+Массив дескрипторов полей строки. Парсер читает только описанные поля; неизвестные — игнорирует.
 
 ```json
-{
-  "dtype":  "uint16",
-  "unit":   "sec",
-  "offset": 16384
-}
+"row_fields": [
+  {"name": "spectrum",         "dtype": "uint16",  "count": 8192, "offset": 0},
+  {"name": "duration",         "dtype": "uint16",                 "offset": 16384},
+  {"name": "timestamp",        "dtype": "uint32",                 "offset": 16386},
+  {"name": "latitude",         "dtype": "float32",                "offset": 16390},
+  {"name": "longitude",        "dtype": "float32",                "offset": 16394},
+  {"name": "dose_rate_usv_h",  "dtype": "float32",                "offset": 16398}
+]
 ```
 
-Поле `offset` — смещение поля длительности **внутри строки** (в байтах).
+| Поле               | Тип     | Описание |
+|--------------------|---------|----------|
+| `spectrum`         | uint16  | Спектр: `count` каналов, LE, импульсы за интервал |
+| `duration`         | uint16  | Фактическая длительность среза, секунды (0 = использовать `interval_sec`) |
+| `timestamp`        | uint32  | Unix-метка начала строки (UTC, с); 0 = неизвестно |
+| `latitude`         | float32 | Широта в десятичных градусах; NaN = нет данных |
+| `longitude`        | float32 | Долгота в десятичных градусах; NaN = нет данных |
+| `dose_rate_usv_h`  | float32 | Мощность дозы, мкЗв/ч; NaN = нет данных |
 
-### Пример заголовка v2
+Поля `latitude`, `longitude`, `dose_rate_usv_h`, `timestamp` — опциональны.
+Если устройство не имеет GPS или дозиметра — соответствующие дескрипторы отсутствуют в `row_fields`.
+
+### Объект `baseline` (v3)
 
 ```json
-{
-  "saved_rows": 660,
-  "saved_at": 1783198621,
-  "format": "atomspectra-waterfall",
-  "version": 2,
-  "channels": 8192,
-  "dtype": "uint16",
+"baseline": {
+  "dtype":      "uint32",
+  "count":      8192,
   "byte_order": "little",
-  "row_stride": 16386,
-  "row_time": {"dtype": "uint16", "unit": "sec", "offset": 16384},
-  "interval_sec": 60,
-  "started_at": 1783157403,
-  "serial": "AS-001",
-  "calibration": [0.0, 0.298, 0.0]
+  "offset":     4104
 }
 ```
 
----
+Baseline — накопленный спектр устройства на момент **начала** текущей сессии записи.
+Физически: 8192 × uint32 LE = 32768 байт, расположены между JSON-областью и payload.
+`offset` в объекте = `8 + hlen` (для `hlen=4096` → 4104; всегда совпадает).
 
-## Форматы строк
+Полезен для абсолютной реконструкции спектра (baseline + сумма строк водопада = полный накопленный спектр).
 
-### v1 — строка 16384 байта
+### Пример заголовка v3
 
+```json
+{
+  "format":      "atomspectra-waterfall",
+  "version":     3,
+  "channels":    8192,
+  "dtype":       "uint16",
+  "byte_order":  "little",
+  "interval_sec": 60,
+  "started_at":  1783157403,
+  "saved_rows":  660,
+  "saved_at":    1783197003,
+  "serial":      "AS-001",
+  "calibration": [0.0, 0.298, 0.0],
+  "compressed":  false,
+  "row_stride":  16402,
+  "row_fields": [
+    {"name": "spectrum",        "dtype": "uint16",  "count": 8192, "offset": 0},
+    {"name": "duration",        "dtype": "uint16",                 "offset": 16384},
+    {"name": "timestamp",       "dtype": "uint32",                 "offset": 16386},
+    {"name": "latitude",        "dtype": "float32",                "offset": 16390},
+    {"name": "longitude",       "dtype": "float32",                "offset": 16394},
+    {"name": "dose_rate_usv_h", "dtype": "float32",                "offset": 16398}
+  ],
+  "baseline": {
+    "dtype": "uint32", "count": 8192, "byte_order": "little", "offset": 4104
+  }
+}
 ```
-Байты [0 .. 16383]:  8192 × uint16 LE — счёт за интервал, канал за каналом
-```
-
-Реальная длительность строки = `interval_sec` (номинал).
-
-### v2 — строка 16386 байт (текущая)
-
-```
-Байты [0     .. 16383]:  8192 × uint16 LE — счёт за интервал
-Байты [16384 .. 16385]:  uint16 LE — реальная длительность, секунды
-```
-
-Поле длительности (`duration`) содержит **фактическое живое время прибора**
-за этот интервал в секундах. Если значение равно `0` — использовать `interval_sec`.
-
-### Определение версии
-
-```python
-is_v2 = "row_stride" in header
-stride = header.get("row_stride", header["channels"] * 2)
-```
-
-### Число строк
-
-```python
-n_rows = (file_size - (8 + hlen)) // stride
-```
-
-Если `saved_rows` в заголовке равен `0` (незакрытый сегмент), вычислить `n_rows`
-по формуле выше.
 
 ---
 
 ## Данные спектра
 
-Каждый канал строки — **дельта** накопительного спектра: сколько импульсов
-зафиксировано за данный интервал. Тип `uint16` — значения от `0` до `65535`.
+Каждый канал строки — **дельта** накопительного спектра: число импульсов за данный интервал. Тип `uint16` — значения `0–65535`.
 
 ### Абсолютный спектр (сумма за всё время)
 
@@ -141,6 +173,8 @@ for row in rows:
     for ch in range(channels):
         absolute[ch] += row[ch]
 ```
+
+При наличии baseline (v3): полный накопленный спектр = `baseline[ch] + absolute[ch]`.
 
 ### Скорость счёта (отсчётов/с) для строки i
 
@@ -153,100 +187,220 @@ rate  = [row[i][ch] / dur_i for ch in range(channels)]
 
 ## Временны́е метки строк
 
+### v1 / v2 — реконструкция через `started_at`
+
 ```
 t[0] = started_at
 t[i] = started_at + sum(duration[0..i-1])
 ```
 
-Для строки с `duration[j] == 0` вместо реального значения подставить `interval_sec`.
+Для строки `j` с `duration[j] == 0` подставить `interval_sec`.
+При `started_at == 0` (NTP не синхронизирован) временна́я шкала относительна.
 
-В v1 формуле `duration[j] == interval_sec` для всех строк.
+### v3 — прямое поле `timestamp`
 
----
-
-## Калибровка: канал → энергия (кэВ)
-
-Если поле `calibration` присутствует, энергия вычисляется как полином:
-
-```
-E(ch) = a[0] + a[1]·ch + a[2]·ch² + …
-```
-
-где `a = calibration` (массив коэффициентов, индекс = степень полинома).
-
-Пример из заголовка выше: `E(ch) = 0.0 + 0.298·ch + 0.0·ch²` — линейная шкала.
-
-Если поле отсутствует, энергетическая шкала неизвестна; ось X — номер канала.
+Если поле `timestamp` присутствует в `row_fields`, метка времени читается прямо из строки (uint32, UTC, секунды). `0` = неизвестно.
+Поле `timestamp` имеет приоритет над реконструированным значением.
 
 ---
 
-## Python: минимальный парсер
+## Сжатие (v3, `compressed: true`)
+
+При `compressed: true` область спектра каждой строки хранится в **RLE-кодировке**.
+Поля вне спектра (`duration`, `timestamp`, GPS, `dose_rate`) — всегда без сжатия,
+после спектрового потока.
+
+### Формат RLE-потока
+
+Поток состоит из uint16 LE элементов:
+- Значение `< 0x8000` → **literal**: один канал со значением `v`
+- Значение `0x8000..0xFFFE` → **run**: `v & 0x7FFF` последовательных нулей
+- Значение `0xFFFF` → зарезервировано
+
+Поток заканчивается когда декодировано ровно `channels` каналов.
+
+> **Ограничение:** max значение в одном канале = 32767 (`0x7FFF`). Для каналов с
+> большим числом отсчётов сжатие неприменимо — такие файлы должны иметь `compressed: false`.
+
+**Сжатие нарушает произвольный доступ к строкам** — чтение возможно только
+последовательно с начала payload. Для `compressed: false` (дефолт) random-access работает.
+
+При `compressed: true` поле `row_stride` **отсутствует** (переменная длина строк);
+число строк определяется декодированием, а не по размеру файла.
+
+---
+
+## Определение версии и смещений
 
 ```python
-import json
-import struct
+import json, struct, math
 from pathlib import Path
 
+def open_aswf(path):
+    buf  = Path(path).read_bytes()
+    assert buf[:4] == b"ASWF", f"Not ASWF: {buf[:4]!r}"
+    hlen = struct.unpack_from("<I", buf, 4)[0]
+    hdr  = json.loads(buf[8:8 + hlen].decode("utf-8"))
+    ver  = hdr.get("version", 1)
+
+    # Смещение baseline
+    baseline_bytes = 0
+    if "baseline" in hdr:
+        baseline_bytes = hdr["baseline"]["count"] * 4
+
+    payload_off = 8 + hlen + baseline_bytes
+
+    # Stride и число строк
+    if ver == 1:
+        stride = hdr["channels"] * 2           # 16384
+        compressed = False
+    elif ver == 2:
+        stride = hdr.get("row_stride", hdr["channels"] * 2)
+        compressed = False
+    else:  # v3
+        compressed = hdr.get("compressed", False)
+        stride = hdr.get("row_stride", 0) if not compressed else 0
+
+    n_rows = hdr.get("saved_rows") or (
+        (len(buf) - payload_off) // stride if stride else None
+    )
+    return hdr, buf, payload_off, stride, n_rows, compressed
+```
+
+---
+
+## Python: полный парсер (v1–v3)
+
+```python
+import json, struct, math
+from pathlib import Path
+
+NAN = float("nan")
+
 def read_aswf(path):
-    """Читает .aswf, возвращает (header, rows, durations).
+    """Читает .aswf (v1/v2/v3), возвращает (header, rows).
 
-    rows       — list из N кортежей по channels элементов uint16.
-    durations  — list из N значений uint16 (0 = использовать interval_sec).
-                 Для v1 все значения равны header["interval_sec"].
+    rows — list of dict с ключами из row_fields:
+      'spectrum'  : tuple of int
+      'duration'  : int (секунды; 0 = подставь interval_sec)
+      'timestamp' : int (unix ts; 0 = неизвестно)   [v3]
+      'latitude'  : float (NaN = нет данных)        [v3]
+      'longitude' : float (NaN = нет данных)        [v3]
+      'dose_rate_usv_h': float (NaN = нет данных)   [v3]
     """
-    buf   = Path(path).read_bytes()
-    magic = buf[:4]
-    if magic != b"ASWF":
-        raise ValueError(f"Не ASWF-файл: magic={magic!r}")
+    buf  = Path(path).read_bytes()
+    assert buf[:4] == b"ASWF", f"Not ASWF: {buf[:4]!r}"
 
-    hlen   = struct.unpack_from("<I", buf, 4)[0]
-    header = json.loads(buf[8:8 + hlen].decode("utf-8"))
+    hlen = struct.unpack_from("<I", buf, 4)[0]
+    hdr  = json.loads(buf[8:8 + hlen].decode("utf-8"))
+    ver  = hdr.get("version", 1)
+    ch   = hdr["channels"]
+    iv   = hdr["interval_sec"]
 
-    ch     = header["channels"]
-    stride = header.get("row_stride", ch * 2)
-    is_v2  = "row_stride" in header
+    # Baseline
+    baseline = None
+    baseline_bytes = 0
+    if "baseline" in hdr:
+        bi = hdr["baseline"]
+        baseline_bytes = bi["count"] * 4
+        baseline = struct.unpack_from(f"<{bi['count']}I", buf, 8 + hlen)
 
-    payload = buf[8 + hlen:]
-    n_rows  = len(payload) // stride
+    payload_off = 8 + hlen + baseline_bytes
+    payload     = buf[payload_off:]
 
-    rows      = []
-    durations = []
-    for i in range(n_rows):
-        off  = i * stride
-        row  = struct.unpack_from(f"<{ch}H", payload, off)
-        rows.append(row)
-        if is_v2:
-            dur = struct.unpack_from("<H", payload, off + ch * 2)[0]
-        else:
-            dur = header["interval_sec"]
-        durations.append(dur)
+    # row_fields: строим lookup
+    if ver >= 3 and "row_fields" in hdr:
+        fields = {f["name"]: f for f in hdr["row_fields"]}
+        stride = hdr.get("row_stride", 0)
+        compressed = hdr.get("compressed", False)
+    else:
+        fields     = None
+        stride     = hdr.get("row_stride", ch * 2)
+        compressed = False
 
-    return header, rows, durations
+    def get_field(row_buf, off, dtype):
+        if dtype == "uint16":  return struct.unpack_from("<H", row_buf, off)[0]
+        if dtype == "uint32":  return struct.unpack_from("<I", row_buf, off)[0]
+        if dtype == "float32": return struct.unpack_from("<f", row_buf, off)[0]
+        raise ValueError(dtype)
+
+    rows = []
+    if not compressed:
+        n = len(payload) // stride
+        for i in range(n):
+            rb = payload[i * stride:(i + 1) * stride]
+            row = {}
+            if fields:
+                sf = fields["spectrum"]
+                row["spectrum"] = struct.unpack_from(f"<{ch}H", rb, sf["offset"])
+                for name, fd in fields.items():
+                    if name == "spectrum": continue
+                    row[name] = get_field(rb, fd["offset"], fd["dtype"])
+            else:
+                row["spectrum"] = struct.unpack_from(f"<{ch}H", rb, 0)
+                dur_off = ch * 2
+                if len(rb) >= dur_off + 2:
+                    row["duration"] = struct.unpack_from("<H", rb, dur_off)[0]
+                else:
+                    row["duration"] = iv
+            rows.append(row)
+    else:
+        # RLE-декодирование
+        pos = 0
+        raw = payload
+        while pos < len(raw):
+            spec = []
+            while len(spec) < ch:
+                v = struct.unpack_from("<H", raw, pos)[0]; pos += 2
+                if v < 0x8000:
+                    spec.append(v)
+                elif v < 0xFFFF:
+                    spec.extend([0] * (v & 0x7FFF))
+            spec = tuple(spec[:ch])
+            row = {"spectrum": spec}
+            # фиксированные поля после спектра
+            if fields:
+                for name, fd in fields.items():
+                    if name == "spectrum": continue
+                    row[name] = get_field(raw, pos, fd["dtype"]); pos += 4
+            rows.append(row)
+
+    return hdr, rows, baseline
 
 
-def row_timestamp(header, durations, index):
-    """Unix-timestamp начала строки index."""
-    ts = header["started_at"]
-    iv = header["interval_sec"]
+def row_timestamp(hdr, rows, index):
+    """Unix-timestamp начала строки index (v2 реконструкция или v3 прямое поле)."""
+    row = rows[index]
+    if "timestamp" in row and row["timestamp"] > 0:
+        return row["timestamp"]
+    ts = hdr["started_at"]
+    iv = hdr["interval_sec"]
     for j in range(index):
-        ts += durations[j] if durations[j] > 0 else iv
+        d = rows[j].get("duration", iv)
+        ts += d if d > 0 else iv
     return ts
 
 
-def channel_to_kev(header, ch):
-    """Энергия канала ch в кэВ (None если калибровки нет)."""
-    cal = header.get("calibration")
-    if not cal:
-        return None
+def channel_to_kev(hdr, ch):
+    cal = hdr.get("calibration")
+    if not cal: return None
     return sum(a * ch**i for i, a in enumerate(cal))
 ```
 
 ---
 
-## HTTP API устройства
+## Калибровка: канал → энергия (кэВ)
 
-Сегменты хранятся на Flash и доступны по HTTP **без авторизации** (список) и
-**с авторизацией** (содержимое файла).
+```
+E(ch) = a[0] + a[1]·ch + a[2]·ch² + …
+```
+
+`a = calibration` (массив коэффициентов, индекс = степень полинома).
+Если поле отсутствует — ось X в номерах каналов.
+
+---
+
+## HTTP API устройства
 
 ### Список сегментов
 
@@ -259,22 +413,15 @@ GET /api/waterfall/segments
 ```json
 {
   "segments": [
-    { "name": "seg_00000.aswf", "size": 1056870, "finalized": true  },
-    { "name": "seg_00001.aswf", "size": 524904,  "finalized": false }
+    {"name": "seg_00000.aswf", "size": 1056870, "finalized": true},
+    {"name": "seg_00001.aswf", "size": 524904,  "finalized": false}
   ],
   "ring_capacity": 64,
   "seg_count": 2
 }
 ```
 
-| Поле        | Описание |
-|-------------|----------|
-| `name`      | Имя файла, используется в запросе скачивания |
-| `size`      | Размер файла в байтах |
-| `finalized` | `false` — сегмент ещё открыт (записывается); заголовок имеет `saved_rows=0` |
-
-Незакрытый сегмент (`finalized: false`) можно читать, но число строк
-в заголовке равно `0` — вычислить по размеру файла.
+`finalized: false` — сегмент открыт; `saved_rows=0`, число строк вычислить по размеру.
 
 ### Скачивание сегмента
 
@@ -283,41 +430,26 @@ GET /api/waterfall/segment?name=seg_00000.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
-Ответ `200 application/octet-stream` — бинарный `.aswf` файл.
+Ответ `200 application/octet-stream`.
 
-### Удаление сегмента (подтверждение приёма)
+### Удаление (подтверждение приёма)
 
 ```
 POST /api/waterfall/segment/delete?name=seg_00000.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
-Ответ `200` — файл удалён с Flash.
-
 ---
 
 ## Кольцевой буфер сегментов
 
-Устройство хранит ограниченное количество финализированных сегментов.
-При превышении лимита старейший сегмент удаляется автоматически.
+Каждый сегмент: до 64 строк (~1 МБ payload), не более 10 минут записи.
+При переполнении кольца — старейший сегмент удаляется автоматически.
 Незакрытый сегмент (`finalized: false`) в лимит не входит.
-
-Каждый сегмент содержит до `64` строк (~1 МБ payload) и не превышает
-10 минут записи при любом интервале.
 
 ---
 
 ## Склейка сегментов
-
-Для получения непрерывного файла за длительный период:
-
-1. Забрать все сегменты (`GET /api/waterfall/segment?name=…`).
-2. Отсортировать по `started_at` из заголовка.
-3. Объединить payload в хронологическом порядке.
-4. Взять метаданные (calibration, serial, interval_sec) из первого сегмента.
-5. Пересчитать `saved_rows` = сумма строк всех сегментов.
-
-Пример:
 
 ```python
 import json, struct
@@ -331,44 +463,72 @@ def merge_aswf(paths_sorted, out_path):
     hdr    = json.loads(first[8:8 + hlen].decode("utf-8"))
     stride = hdr.get("row_stride", hdr["channels"] * 2)
 
-    # собрать payload
+    # baseline берём из первого файла (если есть)
+    baseline_bytes = 0
+    baseline_data  = b""
+    if "baseline" in hdr:
+        baseline_bytes = hdr["baseline"]["count"] * 4
+        baseline_data  = first[8 + hlen:8 + hlen + baseline_bytes]
+
     payload = b""
     for buf in files:
         h2 = struct.unpack_from("<I", buf, 4)[0]
-        payload += buf[8 + h2:]
+        bl = hdr["baseline"]["count"] * 4 if "baseline" in hdr else 0
+        payload += buf[8 + h2 + bl:]
 
-    total_rows = len(payload) // stride
-    hdr["saved_rows"] = total_rows
-    hdr["saved_at"]   = 0  # неизвестно при ручной склейке
+    hdr["saved_rows"] = len(payload) // stride
+    hdr["saved_at"]   = 0
 
     hdr_bytes = json.dumps(hdr, ensure_ascii=False).encode("utf-8")
-    hdr_bytes = hdr_bytes.ljust(HDR_RESERVE)  # добить пробелами
+    hdr_bytes = hdr_bytes.ljust(HDR_RESERVE)
 
     with open(out_path, "wb") as f:
         f.write(b"ASWF")
         f.write(struct.pack("<I", HDR_RESERVE))
         f.write(hdr_bytes)
+        f.write(baseline_data)
         f.write(payload)
 ```
 
 ---
 
-## Ограничения и граничные случаи
+## Граничные случаи
 
 | Ситуация | Поведение |
 |----------|-----------|
-| `saved_rows == 0` | Сегмент не финализирован. Вычислить строки по размеру файла. |
-| `saved_at == 0`   | Время финализации неизвестно (открытый или ручная склейка). |
-| `duration == 0`   | Реальная длительность неизвестна. Подставить `interval_sec`. |
-| Неизвестные ключи JSON | Игнорировать (возможны расширения в будущих версиях). |
-| `hlen` отличается от 4096 | Зарезервировано для будущего. Использовать фактический `hlen`. |
-| Усечённый последний ряд | `len(payload) % stride != 0` → отбросить неполный хвост. |
+| `saved_rows == 0` | Файл открыт. Для несжатых: вычислить из размера. |
+| `saved_at == 0` | Время финализации неизвестно. |
+| `duration == 0` | Подставить `interval_sec`. |
+| `started_at == 0` | NTP не синхронизирован. Временна́я ось относительна. |
+| `timestamp == 0` | Метка строки неизвестна (v3). Реконструировать через `started_at`. |
+| `latitude/longitude == NaN` | Нет GPS-фикса. |
+| `dose_rate_usv_h == NaN` | Дозиметр недоступен. |
+| Неизвестные ключи JSON | Игнорировать (расширяемость). |
+| Неизвестные поля в `row_fields` | Пропустить (неизвестный `offset`+`dtype`). |
+| `hlen` ≠ 4096 | Использовать фактический `hlen`. |
+| Усечённый хвост | `len(payload) % stride ≠ 0` → отбросить хвост. |
+| `compressed: true` + baseline | Baseline без изменений (всегда несжатый). |
 
 ---
 
-## История версий формата
+## Совместимость версий
 
-| Версия | Изменения |
-|--------|-----------|
-| v1     | 16384 байт/строка. Нет поля длительности. `row_stride` отсутствует в заголовке. |
-| v2     | +2 байта uint16 LE длительности в конце каждой строки. `row_stride=16386`, `row_time` в заголовке. |
+| Парсер ↓ / Файл → | v1 | v2 | v3 (без baseline) | v3 (с baseline) |
+|---|:---:|:---:|:---:|:---:|
+| v1-парсер | ✅ | ⚠ (лишние 2 байта/строка → сдвиг) | ⚠ | ❌ |
+| v2-парсер | ✅ | ✅ | ✅ (спектр+duration OK, новые поля пропускаются) | ❌ (baseline воспринимается как строки) |
+| v3-парсер | ✅ | ✅ | ✅ | ✅ |
+
+Рекомендация: всегда проверять `"version"` перед парсингом.
+
+---
+
+## Таблица размеров строк
+
+| Версия | Поля | Размер строки |
+|--------|------|--------------|
+| v1 | 8192 × uint16 | 16384 байт |
+| v2 | спектр + duration (uint16) | 16386 байт |
+| v3 minimal | спектр + duration + timestamp | 16390 байт |
+| v3 full | + latitude + longitude + dose_rate | 16402 байт |
+| v3 compressed | переменная | — |

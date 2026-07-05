@@ -3,135 +3,168 @@
 [🇷🇺 Русская версия](ASWF_FORMAT.md) · [← README](README.en.md) · [Waterfall](WATERFALL.en.md)
 
 **ASWF** (AtomSpectra Waterfall Format) is a binary format for storing a spectrogram
-(waterfall): a time series of spectra captured at fixed intervals.
+(waterfall): a chronological sequence of spectra captured at fixed intervals.
 Each `.aswf` file is self-contained — it carries its full header and data, requiring
 no external schema to parse.
 
 ---
 
+## Version History
+
+| Version | Key Changes |
+|---------|-------------|
+| **v1** | Base format. 16384 bytes/row (8192 × uint16 LE). No duration field. |
+| **v2** | +2-byte uint16 LE duration appended to each row. `row_stride=16386`, `row_time` in header. |
+| **v3** | Self-describing `row_fields`. Per-row timestamp, GPS, dose rate. Baseline section. Compression flag. |
+
+---
+
 ## File Structure
 
+### v1 / v2
+
 ```
-┌────────────────────────────────────────────────────────┐
-│  Offset 0 │ 4 bytes │ Magic number "ASWF" (ASCII)      │
-│  Offset 4 │ 4 bytes │ uint32 LE: JSON area length       │
-│  Offset 8 │ N bytes │ JSON header (UTF-8 + spaces pad)  │
-│  Offset 8+N         │ Data rows (payload)                │
-└────────────────────────────────────────────────────────┘
+Offset 0:      4 bytes   Magic "ASWF" (ASCII)
+Offset 4:      4 bytes   uint32 LE: hlen (reserved JSON area size)
+Offset 8:      hlen bytes JSON header (UTF-8, space-padded to hlen)
+Offset 8+hlen: N × stride data rows (oldest first)
 ```
 
-| Field         | Offset   | Size     | Type      | Value                           |
-|---------------|----------|----------|-----------|---------------------------------|
-| Magic         | 0        | 4        | ASCII     | `41 53 57 46` = `"ASWF"`       |
-| `hlen`        | 4        | 4        | uint32 LE | Reserved JSON area size         |
-| JSON header   | 8        | `hlen`   | UTF-8     | Metadata (space-padded to hlen) |
-| Payload       | 8+`hlen` | N×stride | binary    | Spectrum rows, oldest first     |
+### v3
 
-**Important:** `hlen` is the **reserved** (padded) JSON area size, not the actual
-JSON text length. The current value is always `4096`. Parsers must use `hlen` to
-compute the payload offset — do not scan for `}`.
+```
+Offset 0:          4 bytes     Magic "ASWF" (ASCII)
+Offset 4:          4 bytes     uint32 LE: hlen
+Offset 8:          hlen bytes  JSON header (UTF-8, space-padded to hlen)
+Offset 8+hlen:     B bytes     Baseline spectrum (if "baseline" key present; otherwise 0)
+Offset 8+hlen+B:   N × stride  Data rows (oldest first)
+```
+
+where `B = baseline.count × 4` (uint32 per channel), or `0` if the section is absent.
+
+> **Important:** `hlen` is the reserved JSON area size, not the actual JSON text length.
+> Current value is always `4096`. Payload offset = `8 + hlen + B`.
+> Parsers must use `hlen` and `B`, not scan for `}`.
 
 ---
 
 ## JSON Header
 
-The header is fully self-describing: every field needed for decoding is present
-inside the file — no external schema required.
+The header is fully self-describing — every field needed for decoding is present inside the file.
 
-### Header Fields
+### Fields (all versions)
 
 | Key            | Type             | Required | Description |
 |----------------|------------------|:---:|------|
 | `format`       | string           | yes | Always `"atomspectra-waterfall"` |
-| `version`      | int              | yes | Format version: `1` or `2` |
+| `version`      | int              | yes | `1`, `2`, or `3` |
 | `channels`     | int              | yes | Channels per row; current value `8192` |
-| `dtype`        | string           | yes | Element type: `"uint16"` |
+| `dtype`        | string           | yes | Spectrum element type: `"uint16"` |
 | `byte_order`   | string           | yes | Byte order: `"little"` |
-| `row_stride`   | int              | v2  | Row size in bytes `16386` (v2); absent in v1 |
-| `row_time`     | object           | v2  | Duration field descriptor (see below) |
 | `interval_sec` | int              | yes | Nominal recording interval, seconds |
-| `started_at`   | int (unix ts)    | yes | Timestamp of the first row (UTC, epoch seconds) |
-| `saved_rows`   | int              | yes | Rows in the file; `0` for an open (unfinalised) segment |
-| `saved_at`     | int (unix ts)    | yes | Finalisation timestamp; `0` for an open segment |
+| `started_at`   | int (unix ts)    | yes | Timestamp of first row (UTC, epoch seconds); `0` = NTP not synced |
+| `saved_rows`   | int              | yes | Rows in file; `0` for an open/unfinalised file |
+| `saved_at`     | int (unix ts)    | yes | Finalisation timestamp; `0` for an open file |
 | `serial`       | string           | no  | Device serial number |
 | `calibration`  | array of floats  | no  | Energy calibration polynomial coefficients |
 
-#### `row_time` object (v2 only)
+### Additional v2 Fields
+
+| Key          | Type   | Description |
+|--------------|--------|-------------|
+| `row_stride` | int    | Row size in bytes (`16386`). Absent in v1 |
+| `row_time`   | object | `{"dtype":"uint16","unit":"sec","offset":16384}` |
+
+### Additional v3 Fields
+
+| Key           | Type   | Description |
+|---------------|--------|-------------|
+| `row_fields`  | array  | Per-row field descriptors (see below) |
+| `row_stride`  | int    | Total row size in bytes (derived from `row_fields`) |
+| `compressed`  | bool   | `true` = rows are RLE-compressed (default `false`) |
+| `baseline`    | object | Baseline section descriptor (see below) |
+
+### `row_fields` Object (v3)
+
+Array of field descriptors. Parsers read only described fields; unknown fields are ignored.
 
 ```json
-{
-  "dtype":  "uint16",
-  "unit":   "sec",
-  "offset": 16384
-}
+"row_fields": [
+  {"name": "spectrum",         "dtype": "uint16",  "count": 8192, "offset": 0},
+  {"name": "duration",         "dtype": "uint16",                 "offset": 16384},
+  {"name": "timestamp",        "dtype": "uint32",                 "offset": 16386},
+  {"name": "latitude",         "dtype": "float32",                "offset": 16390},
+  {"name": "longitude",        "dtype": "float32",                "offset": 16394},
+  {"name": "dose_rate_usv_h",  "dtype": "float32",                "offset": 16398}
+]
 ```
 
-`offset` is the byte offset of the duration field **within each row**.
+| Field              | Type    | Description |
+|--------------------|---------|-------------|
+| `spectrum`         | uint16  | Spectrum: `count` channels LE, counts per interval |
+| `duration`         | uint16  | Actual live time in seconds (0 = use `interval_sec`) |
+| `timestamp`        | uint32  | Unix timestamp of row start (UTC, seconds); 0 = unknown |
+| `latitude`         | float32 | Decimal degrees; NaN = no data |
+| `longitude`        | float32 | Decimal degrees; NaN = no data |
+| `dose_rate_usv_h`  | float32 | Dose rate in µSv/h; NaN = no data |
 
-### Example v2 Header
+Fields `latitude`, `longitude`, `dose_rate_usv_h`, `timestamp` are optional.
+If the device has no GPS or dosimeter, the corresponding descriptor is simply absent from `row_fields`.
+
+### `baseline` Object (v3)
 
 ```json
-{
-  "saved_rows": 660,
-  "saved_at": 1783198621,
-  "format": "atomspectra-waterfall",
-  "version": 2,
-  "channels": 8192,
-  "dtype": "uint16",
+"baseline": {
+  "dtype":      "uint32",
+  "count":      8192,
   "byte_order": "little",
-  "row_stride": 16386,
-  "row_time": {"dtype": "uint16", "unit": "sec", "offset": 16384},
-  "interval_sec": 60,
-  "started_at": 1783157403,
-  "serial": "AS-001",
-  "calibration": [0.0, 0.298, 0.0]
+  "offset":     4104
 }
 ```
 
----
+Baseline is the device's cumulative spectrum at the **start** of the current recording session.
+Physically: 8192 × uint32 LE = 32768 bytes, stored between the JSON area and the payload.
+`offset` = `8 + hlen` (for `hlen=4096` → 4104; always matches).
 
-## Row Formats
+Useful for absolute spectrum reconstruction:
+`total[ch] = baseline[ch] + sum of all waterfall rows[ch]`.
 
-### v1 — 16384 bytes per row
+### Example v3 Header
 
+```json
+{
+  "format":      "atomspectra-waterfall",
+  "version":     3,
+  "channels":    8192,
+  "dtype":       "uint16",
+  "byte_order":  "little",
+  "interval_sec": 60,
+  "started_at":  1783157403,
+  "saved_rows":  660,
+  "saved_at":    1783197003,
+  "serial":      "AS-001",
+  "calibration": [0.0, 0.298, 0.0],
+  "compressed":  false,
+  "row_stride":  16402,
+  "row_fields": [
+    {"name": "spectrum",        "dtype": "uint16",  "count": 8192, "offset": 0},
+    {"name": "duration",        "dtype": "uint16",                 "offset": 16384},
+    {"name": "timestamp",       "dtype": "uint32",                 "offset": 16386},
+    {"name": "latitude",        "dtype": "float32",                "offset": 16390},
+    {"name": "longitude",       "dtype": "float32",                "offset": 16394},
+    {"name": "dose_rate_usv_h", "dtype": "float32",                "offset": 16398}
+  ],
+  "baseline": {
+    "dtype": "uint32", "count": 8192, "byte_order": "little", "offset": 4104
+  }
+}
 ```
-Bytes [0 .. 16383]:  8192 × uint16 LE — counts per interval, channel by channel
-```
-
-Effective row duration = `interval_sec` (nominal).
-
-### v2 — 16386 bytes per row (current)
-
-```
-Bytes [0     .. 16383]:  8192 × uint16 LE — counts per interval
-Bytes [16384 .. 16385]:  uint16 LE — actual live time, seconds
-```
-
-The duration field holds the **actual live time of the detector** for this interval.
-If the value is `0`, substitute `interval_sec`.
-
-### Version Detection
-
-```python
-is_v2  = "row_stride" in header
-stride = header.get("row_stride", header["channels"] * 2)
-```
-
-### Row Count
-
-```python
-n_rows = (file_size - (8 + hlen)) // stride
-```
-
-If `saved_rows` in the header is `0` (unfinalised segment), compute `n_rows`
-from the formula above.
 
 ---
 
 ## Spectrum Data
 
-Each channel value in a row is a **delta** of the cumulative spectrum: the number of
-pulses registered during this interval. Type `uint16` — values `0` to `65535`.
+Each channel value in a row is a **delta** of the cumulative spectrum: counts during this interval. Type `uint16` — values `0–65535`.
 
 ### Absolute Spectrum (sum over all rows)
 
@@ -141,6 +174,8 @@ for row in rows:
     for ch in range(channels):
         absolute[ch] += row[ch]
 ```
+
+With baseline (v3): total accumulated spectrum = `baseline[ch] + absolute[ch]`.
 
 ### Count Rate (counts/s) for Row i
 
@@ -153,99 +188,210 @@ rate  = [row[i][ch] / dur_i for ch in range(channels)]
 
 ## Row Timestamps
 
+### v1 / v2 — Reconstruct via `started_at`
+
 ```
 t[0] = started_at
 t[i] = started_at + sum(duration[0..i-1])
 ```
 
-For any row where `duration[j] == 0`, substitute `interval_sec` in the sum.
+For row `j` where `duration[j] == 0`, substitute `interval_sec`.
+When `started_at == 0` (NTP not synced), the time axis is relative only.
 
-In v1, `duration[j] == interval_sec` for all rows.
+### v3 — Direct `timestamp` Field
 
----
-
-## Energy Calibration: Channel → keV
-
-If `calibration` is present, energy is computed as a polynomial:
-
-```
-E(ch) = a[0] + a[1]·ch + a[2]·ch² + …
-```
-
-where `a = calibration` (coefficient array, index = polynomial degree).
-
-Example from the header above: `E(ch) = 0.0 + 0.298·ch` — linear scale.
-
-If absent, the energy scale is unknown; use channel number as the X axis.
+If `timestamp` is present in `row_fields`, the row timestamp is read directly from the row (uint32, UTC, seconds). `0` = unknown; fall back to reconstruction from `started_at`.
 
 ---
 
-## Python: Minimal Parser
+## Compression (v3, `compressed: true`)
+
+When `compressed: true`, the spectrum portion of each row is stored in **RLE encoding**.
+Non-spectrum fields (`duration`, `timestamp`, GPS, `dose_rate`) are always uncompressed,
+appended after the spectrum stream.
+
+### RLE Stream Format
+
+The stream consists of uint16 LE elements:
+- Value `< 0x8000` → **literal**: one channel with value `v`
+- Value `0x8000..0xFFFE` → **run**: `v & 0x7FFF` consecutive zero channels
+- Value `0xFFFF` → reserved
+
+The stream ends when exactly `channels` channels have been decoded.
+
+> **Limitation:** maximum per-channel value = 32767 (`0x7FFF`). Files where any channel
+> exceeds this value must use `compressed: false`.
+
+**Compression breaks random row access** — payload must be read sequentially from the start.
+For `compressed: false` (default), random access by row index works normally.
+
+When `compressed: true`, `row_stride` is **absent** (variable row length);
+row count cannot be derived from file size — sequential decoding required.
+
+---
+
+## Version Detection and Offsets
 
 ```python
-import json
-import struct
+import json, struct
+from pathlib import Path
+
+def open_aswf(path):
+    buf  = Path(path).read_bytes()
+    assert buf[:4] == b"ASWF", f"Not ASWF: {buf[:4]!r}"
+    hlen = struct.unpack_from("<I", buf, 4)[0]
+    hdr  = json.loads(buf[8:8 + hlen].decode("utf-8"))
+    ver  = hdr.get("version", 1)
+
+    baseline_bytes = 0
+    if "baseline" in hdr:
+        baseline_bytes = hdr["baseline"]["count"] * 4
+
+    payload_off = 8 + hlen + baseline_bytes
+
+    if ver == 1:
+        stride, compressed = hdr["channels"] * 2, False
+    elif ver == 2:
+        stride, compressed = hdr.get("row_stride", hdr["channels"] * 2), False
+    else:  # v3
+        compressed = hdr.get("compressed", False)
+        stride = hdr.get("row_stride", 0) if not compressed else 0
+
+    n_rows = hdr.get("saved_rows") or (
+        (len(buf) - payload_off) // stride if stride else None
+    )
+    return hdr, buf, payload_off, stride, n_rows, compressed
+```
+
+---
+
+## Python: Full Parser (v1–v3)
+
+```python
+import json, struct, math
 from pathlib import Path
 
 def read_aswf(path):
-    """Read an .aswf file, return (header, rows, durations).
+    """Read an .aswf file (v1/v2/v3), return (header, rows, baseline).
 
-    rows       -- list of N tuples, each with `channels` uint16 values.
-    durations  -- list of N uint16 values (0 = use interval_sec).
-                  For v1 all values equal header["interval_sec"].
+    rows  -- list of dicts with keys from row_fields:
+      'spectrum'        : tuple of int
+      'duration'        : int (seconds; 0 = use interval_sec)
+      'timestamp'       : int (unix ts; 0 = unknown)    [v3]
+      'latitude'        : float (NaN = no data)         [v3]
+      'longitude'       : float (NaN = no data)         [v3]
+      'dose_rate_usv_h' : float (NaN = no data)         [v3]
+    baseline -- tuple of uint32 (or None if absent)
     """
-    buf   = Path(path).read_bytes()
-    magic = buf[:4]
-    if magic != b"ASWF":
-        raise ValueError(f"Not an ASWF file: magic={magic!r}")
+    buf  = Path(path).read_bytes()
+    assert buf[:4] == b"ASWF", f"Not ASWF: {buf[:4]!r}"
 
-    hlen   = struct.unpack_from("<I", buf, 4)[0]
-    header = json.loads(buf[8:8 + hlen].decode("utf-8"))
+    hlen = struct.unpack_from("<I", buf, 4)[0]
+    hdr  = json.loads(buf[8:8 + hlen].decode("utf-8"))
+    ver  = hdr.get("version", 1)
+    ch   = hdr["channels"]
+    iv   = hdr["interval_sec"]
 
-    ch     = header["channels"]
-    stride = header.get("row_stride", ch * 2)
-    is_v2  = "row_stride" in header
+    baseline = None
+    baseline_bytes = 0
+    if "baseline" in hdr:
+        bi = hdr["baseline"]
+        baseline_bytes = bi["count"] * 4
+        baseline = struct.unpack_from(f"<{bi['count']}I", buf, 8 + hlen)
 
-    payload = buf[8 + hlen:]
-    n_rows  = len(payload) // stride
+    payload_off = 8 + hlen + baseline_bytes
+    payload     = buf[payload_off:]
 
-    rows      = []
-    durations = []
-    for i in range(n_rows):
-        off  = i * stride
-        row  = struct.unpack_from(f"<{ch}H", payload, off)
-        rows.append(row)
-        if is_v2:
-            dur = struct.unpack_from("<H", payload, off + ch * 2)[0]
-        else:
-            dur = header["interval_sec"]
-        durations.append(dur)
+    if ver >= 3 and "row_fields" in hdr:
+        fields     = {f["name"]: f for f in hdr["row_fields"]}
+        stride     = hdr.get("row_stride", 0)
+        compressed = hdr.get("compressed", False)
+    else:
+        fields     = None
+        stride     = hdr.get("row_stride", ch * 2)
+        compressed = False
 
-    return header, rows, durations
+    def get_field(rb, off, dtype):
+        if dtype == "uint16":  return struct.unpack_from("<H", rb, off)[0]
+        if dtype == "uint32":  return struct.unpack_from("<I", rb, off)[0]
+        if dtype == "float32": return struct.unpack_from("<f", rb, off)[0]
+        raise ValueError(dtype)
+
+    rows = []
+    if not compressed:
+        n = len(payload) // stride
+        for i in range(n):
+            rb  = payload[i * stride:(i + 1) * stride]
+            row = {}
+            if fields:
+                sf = fields["spectrum"]
+                row["spectrum"] = struct.unpack_from(f"<{ch}H", rb, sf["offset"])
+                for name, fd in fields.items():
+                    if name == "spectrum": continue
+                    row[name] = get_field(rb, fd["offset"], fd["dtype"])
+            else:
+                row["spectrum"] = struct.unpack_from(f"<{ch}H", rb, 0)
+                dur_off = ch * 2
+                if len(rb) >= dur_off + 2:
+                    row["duration"] = struct.unpack_from("<H", rb, dur_off)[0]
+                else:
+                    row["duration"] = iv
+            rows.append(row)
+    else:
+        pos = 0
+        raw = payload
+        while pos < len(raw):
+            spec = []
+            while len(spec) < ch:
+                v = struct.unpack_from("<H", raw, pos)[0]; pos += 2
+                if v < 0x8000:
+                    spec.append(v)
+                elif v < 0xFFFF:
+                    spec.extend([0] * (v & 0x7FFF))
+            spec = tuple(spec[:ch])
+            row = {"spectrum": spec}
+            if fields:
+                for name, fd in fields.items():
+                    if name == "spectrum": continue
+                    row[name] = get_field(raw, pos, fd["dtype"]); pos += 4
+            rows.append(row)
+
+    return hdr, rows, baseline
 
 
-def row_timestamp(header, durations, index):
-    """Unix timestamp of the start of row `index`."""
-    ts = header["started_at"]
-    iv = header["interval_sec"]
+def row_timestamp(hdr, rows, index):
+    """Unix timestamp for the start of row `index`."""
+    row = rows[index]
+    if "timestamp" in row and row["timestamp"] > 0:
+        return row["timestamp"]
+    ts = hdr["started_at"]
+    iv = hdr["interval_sec"]
     for j in range(index):
-        ts += durations[j] if durations[j] > 0 else iv
+        d = rows[j].get("duration", iv)
+        ts += d if d > 0 else iv
     return ts
 
 
-def channel_to_kev(header, ch):
-    """Energy of channel ch in keV, or None if no calibration."""
-    cal = header.get("calibration")
-    if not cal:
-        return None
+def channel_to_kev(hdr, ch):
+    cal = hdr.get("calibration")
+    if not cal: return None
     return sum(a * ch**i for i, a in enumerate(cal))
 ```
 
 ---
 
-## Device HTTP API
+## Energy Calibration: Channel → keV
 
-Segments are stored on the device's Flash and accessible over HTTP.
+```
+E(ch) = a[0] + a[1]·ch + a[2]·ch² + …
+```
+
+`a = calibration` (coefficient array, index = polynomial degree).
+If absent, use channel number as the X axis.
+
+---
+
+## Device HTTP API
 
 ### List Segments
 
@@ -258,22 +404,15 @@ Response `200 application/json`:
 ```json
 {
   "segments": [
-    { "name": "seg_00000.aswf", "size": 1056870, "finalized": true  },
-    { "name": "seg_00001.aswf", "size": 524904,  "finalized": false }
+    {"name": "seg_00000.aswf", "size": 1056870, "finalized": true},
+    {"name": "seg_00001.aswf", "size": 524904,  "finalized": false}
   ],
   "ring_capacity": 64,
   "seg_count": 2
 }
 ```
 
-| Field       | Description |
-|-------------|-------------|
-| `name`      | Filename, used in the download request |
-| `size`      | File size in bytes |
-| `finalized` | `false` — segment still open (being written); header has `saved_rows=0` |
-
-An unfinalised segment (`finalized: false`) can still be read; compute row count
-from file size, not `saved_rows`.
+`finalized: false` — segment still open; `saved_rows=0`, compute row count from file size.
 
 ### Download a Segment
 
@@ -282,7 +421,7 @@ GET /api/waterfall/segment?name=seg_00000.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
-Response `200 application/octet-stream` — binary `.aswf` file.
+Response `200 application/octet-stream`.
 
 ### Delete a Segment (confirm receipt)
 
@@ -291,32 +430,17 @@ POST /api/waterfall/segment/delete?name=seg_00000.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
-Response `200` — file deleted from Flash.
-
 ---
 
 ## Segment Ring
 
-The device keeps a bounded number of finalised segments. When the ring is full,
-the oldest segment is deleted automatically. The currently open segment
-(`finalized: false`) does not count toward the limit.
-
-Each segment holds up to `64` rows (~1 MB payload) and covers at most
-10 minutes of recording regardless of interval.
+Each segment: up to 64 rows (~1 MB payload), at most 10 minutes of recording.
+When the ring is full, the oldest finalised segment is deleted automatically.
+The open segment (`finalized: false`) does not count toward the limit.
 
 ---
 
 ## Merging Segments
-
-To reconstruct a continuous file for a long recording period:
-
-1. Fetch all segments (`GET /api/waterfall/segment?name=…`).
-2. Sort by `started_at` from each header.
-3. Concatenate payloads in chronological order.
-4. Take metadata (`calibration`, `serial`, `interval_sec`) from the first segment.
-5. Recompute `saved_rows` = sum of row counts from all segments.
-
-Example:
 
 ```python
 import json, struct
@@ -330,14 +454,20 @@ def merge_aswf(paths_sorted, out_path):
     hdr    = json.loads(first[8:8 + hlen].decode("utf-8"))
     stride = hdr.get("row_stride", hdr["channels"] * 2)
 
+    baseline_bytes = 0
+    baseline_data  = b""
+    if "baseline" in hdr:
+        baseline_bytes = hdr["baseline"]["count"] * 4
+        baseline_data  = first[8 + hlen:8 + hlen + baseline_bytes]
+
     payload = b""
     for buf in files:
         h2 = struct.unpack_from("<I", buf, 4)[0]
-        payload += buf[8 + h2:]
+        bl = hdr["baseline"]["count"] * 4 if "baseline" in hdr else 0
+        payload += buf[8 + h2 + bl:]
 
-    total_rows    = len(payload) // stride
-    hdr["saved_rows"] = total_rows
-    hdr["saved_at"]   = 0  # unknown for manual merge
+    hdr["saved_rows"] = len(payload) // stride
+    hdr["saved_at"]   = 0
 
     hdr_bytes = json.dumps(hdr, ensure_ascii=False).encode("utf-8")
     hdr_bytes = hdr_bytes.ljust(HDR_RESERVE)
@@ -346,6 +476,7 @@ def merge_aswf(paths_sorted, out_path):
         f.write(b"ASWF")
         f.write(struct.pack("<I", HDR_RESERVE))
         f.write(hdr_bytes)
+        f.write(baseline_data)
         f.write(payload)
 ```
 
@@ -355,18 +486,39 @@ def merge_aswf(paths_sorted, out_path):
 
 | Situation | Behaviour |
 |-----------|-----------|
-| `saved_rows == 0` | Segment unfinalised. Compute row count from file size. |
-| `saved_at == 0`   | Finalisation time unknown (open segment or manual merge). |
-| `duration == 0`   | Actual live time unknown. Substitute `interval_sec`. |
-| Unknown JSON keys | Ignore (future versions may add fields). |
-| `hlen` ≠ 4096     | Reserved for future use. Always use the actual `hlen` from the file. |
-| Truncated last row | `len(payload) % stride != 0` → discard the incomplete tail. |
+| `saved_rows == 0` | File open. For uncompressed: compute from file size. |
+| `saved_at == 0` | Finalisation time unknown. |
+| `duration == 0` | Substitute `interval_sec`. |
+| `started_at == 0` | NTP not synced. Time axis is relative only. |
+| `timestamp == 0` | Row timestamp unknown (v3). Reconstruct via `started_at`. |
+| `latitude/longitude == NaN` | No GPS fix. |
+| `dose_rate_usv_h == NaN` | Dosimeter unavailable. |
+| Unknown JSON keys | Ignore (extensibility). |
+| Unknown `row_fields` entries | Skip (unknown `offset`+`dtype`). |
+| `hlen` ≠ 4096 | Use the actual `hlen` from the file. |
+| Truncated last row | `len(payload) % stride ≠ 0` → discard the tail. |
+| `compressed: true` + baseline | Baseline is always uncompressed. |
 
 ---
 
-## Format Version History
+## Version Compatibility
 
-| Version | Changes |
-|---------|---------|
-| v1      | 16384 bytes per row. No duration field. `row_stride` absent from header. |
-| v2      | +2-byte uint16 LE duration appended to each row. `row_stride=16386`, `row_time` added to header. |
+| Parser ↓ / File → | v1 | v2 | v3 (no baseline) | v3 (with baseline) |
+|---|:---:|:---:|:---:|:---:|
+| v1 parser | ✅ | ⚠ (2 extra bytes/row → offset drift) | ⚠ | ❌ |
+| v2 parser | ✅ | ✅ | ✅ (spectrum+duration OK, new fields ignored) | ❌ (baseline read as rows) |
+| v3 parser | ✅ | ✅ | ✅ | ✅ |
+
+Always check `"version"` before parsing.
+
+---
+
+## Row Size Reference
+
+| Version | Fields | Row Size |
+|---------|--------|----------|
+| v1 | 8192 × uint16 | 16384 bytes |
+| v2 | spectrum + duration (uint16) | 16386 bytes |
+| v3 minimal | + timestamp (uint32) | 16390 bytes |
+| v3 full | + latitude + longitude + dose_rate | 16402 bytes |
+| v3 compressed | variable | — |
