@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
-<script src="demo-shim.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="demo-shim.js"></script>
 <title data-i18n="page.title">AtomSpectra · Сохранённые</title>
 <style>
 :root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
@@ -330,7 +330,7 @@ async function deleteCurrent(){
 function overlayOnMain(){
  if(currentIdx<0)return;
  try{localStorage.setItem("aswf-overlay",String(currentIdx));}catch(e){}
- location.href="index.html?overlay="+currentIdx;
+ location.href="/?overlay="+currentIdx;
 }
 
 (async function(){

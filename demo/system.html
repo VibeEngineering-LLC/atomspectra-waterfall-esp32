@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
-<script src="demo-shim.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="demo-shim.js"></script>
 <title data-i18n="page.title">AtomSpectra · Система</title>
 <style>
 :root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
@@ -42,7 +42,8 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 .chip.lang:hover{ filter:brightness(1.15); }
 .boot-row{ display:flex; align-items:center; gap:9px; padding:8px 0; font-size:12.5px; cursor:pointer; border-bottom:1px solid #161c15; color:#dfe5dc; }
 .boot-row input{ width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
-@media (max-width:900px){ .grid{ grid-template-columns:1fr } }
+.grid-3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+@media (max-width:900px){ .grid{ grid-template-columns:1fr } .grid-3{ grid-template-columns:1fr } }
 </style>
 </head>
 <body>
@@ -108,6 +109,10 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn" onclick="resetWifi()" data-i18n="wifi.reset">Сбросить WiFi (режим настройки)</button>
 </section>
 
+</div>
+
+<div class="grid">
+
 <section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#9678;</span> <span data-i18n="dev.title">Прибор · AtomSpectra</span></div>
 <div style="display:flex;justify-content:space-between;margin-bottom:6px">
@@ -126,6 +131,50 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </section>
 
 <section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.titleBoot">Старт платы</span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div>
+<div style="font-size:12px;color:#8a9686;margin-bottom:8px" data-i18n="boot.secSpec">Спектр</div>
+<label class="boot-row"><input type="checkbox" id="bc-as-spec"><span data-i18n="boot.asSpec">Автозапуск набора спектра</span></label>
+<label class="boot-row"><input type="checkbox" id="bc-clr-spec"><span data-i18n="boot.clrSpec">Очищать спектр при старте</span></label>
+</div>
+<div>
+<div style="font-size:12px;color:#8a9686;margin-bottom:8px" data-i18n="boot.secWf">Водопад</div>
+<label class="boot-row"><input type="checkbox" id="bc-as-wf"><span data-i18n="boot.asWf">Автозапуск записи водопада</span></label>
+<label class="boot-row"><input type="checkbox" id="bc-clr-wf"><span data-i18n="boot.clrWf">Очищать водопад при старте</span></label>
+</div>
+</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
+<button class="btn green" onclick="saveBootConfig('bc-status')" data-i18n="boot.save">Сохранить</button>
+<div class="mut" id="bc-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</section>
+
+</div>
+
+<div class="grid">
+
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="dose.title">Мощность дозы</span></div>
+<div class="kv"><span data-i18n="dose.label">Коэффициент k (µSv·h⁻¹/cps)</span>
+<input type="number" id="dose-k-val" min="0" step="any" style="width:130px;background:var(--panel);color:var(--txt);border:1px solid #444;padding:3px 6px;border-radius:4px">
+</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="dose.hint">0 — мощность дозы не записывается (NaN в файле). Сохраняется в NVS.</div>
+<button class="btn green" onclick="saveDoseK('dose-k-status')" data-i18n="dose.save">Сохранить</button>
+<div class="mut" id="dose-k-status" style="font-size:11px;margin-top:5px;text-align:center;min-height:14px"></div>
+<div style="margin-top:12px;padding-top:11px;border-top:1px solid #1c241c">
+<div style="font-size:12px;color:#8a9686;margin-bottom:7px" data-i18n="dose.curveLabel">Кривая мощности дозы</div>
+<div class="mut" id="dose-curve-stat" style="font-size:11px;margin-bottom:7px" data-i18n="dose.curveNone">Кривая не загружена (scalar k)</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-bottom:8px" data-i18n="dose.curveHint">CSV: channel,k_factor (до 512 точек, без заголовка). Приоритет над scalar k.</div>
+<input type="file" id="dose-curve-file" accept=".csv,.txt" style="font-size:11px;color:var(--txt);background:var(--panel);border:1px solid #444;border-radius:4px;padding:3px 6px;width:100%;margin-bottom:8px">
+<div style="display:flex;gap:8px">
+<button class="btn green" style="margin-top:0" onclick="loadDoseCurveFile('dose-curve-status')" data-i18n="dose.curveLoad">Загрузить CSV</button>
+<button class="btn" style="margin-top:0" onclick="clearDoseCurve('dose-curve-status')" data-i18n="dose.curveClear">Сбросить</button>
+</div>
+<div class="mut" id="dose-curve-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</div>
+</section>
+
+<section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#8644;</span> <span data-i18n="tcp.title">TCP-мост (serial-over-WiFi)</span></div>
 <div class="kv"><span data-i18n="tcp.port">Порт</span><span>8234</span></div>
 <div class="kv"><span data-i18n="wifi.state">Состояние</span><span id="tcp-state">—</span></div>
@@ -134,24 +183,6 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn red" style="margin-top:0" onclick="rebootEsp()" data-i18n="btn.rebootEsp">Reboot ESP</button>
 <button class="btn green" style="margin-top:0" onclick="location.reload()" data-i18n="btn.refresh">Обновить</button>
 </div>
-</section>
-
-<section class="panel">
-<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.titleSpec">Старт платы · Спектр</span></div>
-<label class="boot-row"><input type="checkbox" id="bc-as-spec"><span data-i18n="boot.asSpec">Автозапуск набора спектра</span></label>
-<label class="boot-row"><input type="checkbox" id="bc-clr-spec"><span data-i18n="boot.clrSpec">Очищать спектр при старте</span></label>
-<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
-<button class="btn green" id="bc-save-spec" onclick="saveBootConfig('bc-status-spec')" data-i18n="boot.save">Сохранить</button>
-<div class="mut" id="bc-status-spec" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
-</section>
-
-<section class="panel">
-<div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.titleWf">Старт платы · Водопад</span></div>
-<label class="boot-row"><input type="checkbox" id="bc-as-wf"><span data-i18n="boot.asWf">Автозапуск записи водопада</span></label>
-<label class="boot-row"><input type="checkbox" id="bc-clr-wf"><span data-i18n="boot.clrWf">Очищать водопад при старте</span></label>
-<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
-<button class="btn green" id="bc-save-wf" onclick="saveBootConfig('bc-status-wf')" data-i18n="boot.save">Сохранить</button>
-<div class="mut" id="bc-status-wf" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
 </section>
 
 </div>
@@ -182,6 +213,7 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra на ПК подключаются к <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> вместо COM-порта.",
   "tcp.clientConnected":"клиент подключён","tcp.free":"свободен",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Обновить",
+  "boot.titleBoot":"Старт платы","boot.secSpec":"Спектр","boot.secWf":"Водопад",
   "boot.titleSpec":"Старт платы · Спектр",
   "boot.titleWf":"Старт платы · Водопад",
   "boot.asSpec":"Автозапуск набора спектра",
@@ -190,6 +222,8 @@ var DICT={
   "boot.clrWf":"Очищать водопад при старте",
   "boot.hint":"Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.",
   "boot.save":"Сохранить","boot.saved":"Сохранено","boot.saveErr":"Ошибка сохранения",
+  "dose.title":"Мощность дозы","dose.label":"Коэффициент k (µSv·h⁻¹/cps)","dose.hint":"0 — мощность дозы не записывается (NaN в файле). Сохраняется в NVS.","dose.save":"Сохранить","dose.saved":"Сохранено","dose.saveErr":"Ошибка",
+  "dose.curveLabel":"Кривая мощности дозы","dose.curveNone":"Кривая не загружена (scalar k)","dose.curveHint":"CSV: channel,k_factor (до 512 точек, без заголовка). Приоритет над scalar k.","dose.curveLoad":"Загрузить CSV","dose.curveClear":"Сбросить кривую","dose.curveLoaded":"Кривая загружена (%1 точек)","dose.curveOk":"Загружено: %1 точек","dose.curveClearOk":"Кривая сброшена","dose.curveErr":"Ошибка загрузки","dose.curveNoFile":"Выберите CSV файл",
   "cal.set":"задана (%1 коэфф., порядок %2)","cal.unset":"не задана",
   "confirm.rebootDev":"Перезагрузить прибор?","confirm.rebootEsp":"Перезагрузить ESP32?","confirm.resetWifi":"Сбросить WiFi и войти в режим настройки?",
   "up.d":"д","up.h":"ч","up.m":"м","up.s":"с",
@@ -217,6 +251,7 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra on PC connect to <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> instead of COM port.",
   "tcp.clientConnected":"client connected","tcp.free":"free",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Refresh",
+  "boot.titleBoot":"Board start","boot.secSpec":"Spectrum","boot.secWf":"Waterfall",
   "boot.titleSpec":"Board start · Spectrum",
   "boot.titleWf":"Board start · Waterfall",
   "boot.asSpec":"Autostart spectrum acquisition",
@@ -225,6 +260,8 @@ var DICT={
   "boot.clrWf":"Clear waterfall on start",
   "boot.hint":"Applied once on power-up / board reboot. Everything is off by default.",
   "boot.save":"Save","boot.saved":"Saved","boot.saveErr":"Save error",
+  "dose.title":"Dose rate","dose.label":"Coefficient k (µSv·h⁻¹/cps)","dose.hint":"0 — dose rate not recorded (NaN in file). Stored in NVS.","dose.save":"Save","dose.saved":"Saved","dose.saveErr":"Error",
+  "dose.curveLabel":"Dose rate curve","dose.curveNone":"No curve loaded (scalar k)","dose.curveHint":"CSV: channel,k_factor (up to 512 points, no header). Priority over scalar k.","dose.curveLoad":"Load CSV","dose.curveClear":"Clear curve","dose.curveLoaded":"Curve loaded (%1 points)","dose.curveOk":"Loaded: %1 points","dose.curveClearOk":"Curve cleared","dose.curveErr":"Load error","dose.curveNoFile":"Select a CSV file",
   "cal.set":"set (%1 coef., order %2)","cal.unset":"not set",
   "confirm.rebootDev":"Reboot device?","confirm.rebootEsp":"Reboot ESP32?","confirm.resetWifi":"Reset WiFi and enter setup mode?",
   "up.d":"d","up.h":"h","up.m":"m","up.s":"s",
@@ -400,6 +437,73 @@ async function rebootDevice(){if(!confirm(t("confirm.rebootDev")))return;await p
 async function rebootEsp(){if(!confirm(t("confirm.rebootEsp")))return;await post("/api/reboot-esp");}
 async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post("/api/wifi/reset");}
 
+async function loadDoseK(){
+ try{
+  var r=await(await fetch("/api/waterfall/dose_k")).json();
+  var v=r.dose_k;
+  document.getElementById("dose-k-val").value=(typeof v==="number"&&isFinite(v)&&v>0)?v:0;
+ }catch(e){}
+}
+async function saveDoseK(statusId){
+ var s=document.getElementById(statusId||"dose-k-status");
+ var k=parseFloat(document.getElementById("dose-k-val").value)||0;
+ try{
+  var r=await(await post("/api/waterfall/dose_k",{headers:{"Content-Type":"application/json"},body:JSON.stringify({dose_k:k})})).json();
+  s.textContent=r.ok?t("dose.saved"):t("dose.saveErr");
+  s.style.color=r.ok?"var(--accent)":"#ff8a82";
+ }catch(e){ s.textContent=t("dose.saveErr"); s.style.color="#ff8a82"; }
+ setTimeout(function(){s.textContent="";},2500);
+}
+
+async function loadDoseCurveStatus(){
+ try{
+  var r=await(await fetch("/api/waterfall/dose_curve")).json();
+  var el=document.getElementById("dose-curve-stat");
+  if(!el)return;
+  if(r.n>0){
+   el.textContent=tfmt("dose.curveLoaded",r.n);
+   el.style.color="var(--accent)";
+  }else{
+   el.textContent=t("dose.curveNone");
+   el.style.color="";
+  }
+ }catch(e){}
+}
+async function loadDoseCurveFile(statusId){
+ var s=document.getElementById(statusId||"dose-curve-status");
+ var fi=document.getElementById("dose-curve-file");
+ if(!fi||!fi.files||!fi.files[0]){s.textContent=t("dose.curveNoFile");s.style.color="#f0c45a";setTimeout(function(){s.textContent="";},2500);return;}
+ var file=fi.files[0];
+ try{
+  var text=await file.text();
+  var r=await(await post("/api/waterfall/dose_curve",{headers:{"Content-Type":"text/plain"},body:text})).json();
+  if(r.ok){
+   s.textContent=tfmt("dose.curveOk",r.n);
+   s.style.color="var(--accent)";
+   await loadDoseCurveStatus();
+  }else{
+   s.textContent=t("dose.curveErr");
+   s.style.color="#ff8a82";
+  }
+ }catch(e){ s.textContent=t("dose.curveErr"); s.style.color="#ff8a82"; }
+ setTimeout(function(){s.textContent="";},3000);
+}
+async function clearDoseCurve(statusId){
+ var s=document.getElementById(statusId||"dose-curve-status");
+ try{
+  var r=await(await post("/api/waterfall/dose_curve/clear")).json();
+  if(r.ok){
+   s.textContent=t("dose.curveClearOk");
+   s.style.color="var(--accent)";
+   await loadDoseCurveStatus();
+  }else{
+   s.textContent=t("dose.curveErr");
+   s.style.color="#ff8a82";
+  }
+ }catch(e){ s.textContent=t("dose.curveErr"); s.style.color="#ff8a82"; }
+ setTimeout(function(){s.textContent="";},2500);
+}
+
 (async function(){
  applyI18n();
  document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
@@ -409,6 +513,8 @@ async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post
  await refreshDevice();
  await refreshSpectrum();
  await loadBootConfig();
+ await loadDoseK();
+ await loadDoseCurveStatus();
  setInterval(refreshSystem,2000);
  setInterval(refreshDevice,5000);
  setInterval(refreshSpectrum,2000);
