@@ -23,6 +23,7 @@
 // (~1 МБ) ИЛИ MAX_AGE (чтобы при больших интервалах не висел открытым часами).
 #define WF_SEG_MAX_ROWS       64              // 64 * 16 КБ = 1 МБ payload на сегмент
 #define WF_SEG_MAX_AGE_SEC    600             // финализировать открытый сегмент не реже 10 мин
+#define WF_FSYNC_BATCH        4               // #WF-1: fsync раз в N строк снижает hist_drop (SPI); fflush каждой строки; seg_finalize() всегда syncs
 #define WF_HDR_RESERVE        4096            // .aswf JSON-заголовок (добивается пробелами)
 #define WF_SEG_HEADER         (8 + WF_HDR_RESERVE)  // offset payload в сегменте (= 4104)
 
