@@ -123,7 +123,7 @@
     if (path === "/api/list") return jsonResp({ spectra: [] });
     if (path === "/api/waterfall/status") return jsonResp(wfStatusJSON());
     if (path === "/api/waterfall/window") return binResp(windowBuffer());
-    if (path === "/api/waterfall/dose_k") return jsonResp({ dose_k: 0 });
+    if (path === "/api/waterfall/dose_k") return jsonResp({ dose_k: 0.0006 });
     if (path === "/api/waterfall/dose_curve") return jsonResp({ n: 0 });
     if (path === "/api/save") return jsonResp({ ok: true, index: 1 });
     if (method === "POST") return jsonResp({ ok: true });
