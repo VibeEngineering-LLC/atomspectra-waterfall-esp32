@@ -644,9 +644,10 @@ static void seg_write_row(const uint8_t *row, uint16_t dur)
             ESP_LOGE(TAG, "seg row write failed (wr=%zu) — drop segment", wr);
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
         } else {
-            fsync(fileno(s_seg_fp));
             s_seg_rows++;
             LOCK(); s_status.flash_rows++; UNLOCK();
+            if (s_seg_rows % WF_FSYNC_BATCH == 0)
+                fsync(fileno(s_seg_fp));
             // #FW-8: место под хвост текущего сегмента + весь следующий освобождаем
             // ЗАРАНЕЕ, в середине сегмента. Иначе unlink 1МБ кольцом (десятки секунд
             // стираний Flash с заморозкой кэша) фазово совпадал с ролловером
