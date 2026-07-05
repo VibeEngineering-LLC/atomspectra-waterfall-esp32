@@ -123,6 +123,8 @@
     if (path === "/api/list") return jsonResp({ spectra: [] });
     if (path === "/api/waterfall/status") return jsonResp(wfStatusJSON());
     if (path === "/api/waterfall/window") return binResp(windowBuffer());
+    if (path === "/api/waterfall/dose_k") return jsonResp({ dose_k: 0 });
+    if (path === "/api/waterfall/dose_curve") return jsonResp({ n: 0 });
     if (path === "/api/save") return jsonResp({ ok: true, index: 1 });
     if (method === "POST") return jsonResp({ ok: true });
     if (/^\/api\/saved\/\d+\/spectrum\.json$/.test(path))
@@ -284,6 +286,8 @@
        * re-assign after page scripts ran so demo doesn't navigate to a 404. */
       var wfN42 = document.getElementById("bExportN42");
       if (wfN42) wfN42.onclick = function (e) { e.preventDefault(); exportN42(); return false; };
+      var wfAswf = document.getElementById("bExportAswf");
+      if (wfAswf) wfAswf.onclick = function (e) { e.preventDefault(); return false; };
     } catch (e) { }
   });
 })();
