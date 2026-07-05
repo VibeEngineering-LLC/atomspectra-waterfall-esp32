@@ -1121,7 +1121,10 @@ static esp_err_t handle_settings_backup(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No response to -inf (device busy/offline?)");
         return ESP_FAIL;
     }
-    char info_line[700];
+    // #FW-17: static + 2048Б — под полную -inf с 99-элементным PileUp[] (см.
+    // s_info_raw в spectrum.c). НЕ на стеке: httpd-воркер сериализует запросы
+    // (async off), реентранси нет; 2КБ на стеке 8192 — лишний риск.
+    static char info_line[2048];
     spectrum_get_info_raw(info_line, sizeof(info_line), NULL);
 
     spectrum_get_tcpot_raw(line, sizeof(line), &seq_before);

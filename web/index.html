@@ -99,6 +99,8 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <span class="big" id="big-time">00:00:00</span><span class="mut">|</span>
 <span class="big ac"><span id="big-cps">0</span><span class="mut" style="font-size:12px"> CPS</span></span><span class="mut">|</span>
 <span class="big w"><span id="big-total">0</span><span class="mut" style="font-size:12px"> counts</span></span>
+<span class="mut" id="big-dose-sep" style="display:none">|</span>
+<span class="big ac" id="big-dose-wrap" style="display:none"><span id="big-dose">0.000</span><span class="mut" style="font-size:12px"> µSv/h</span></span>
 </div>
 </div>
 <div class="row">
@@ -205,7 +207,7 @@ var DICT={
   "log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
   "log.cal":"Calibration: [%1]","log.calErr":"Calibration error: %1","log.calClear":"Calibration cleared",
-  "st.real":"Реал.","st.live":"Живое","st.dead":"Мёртв.",
+  "st.real":"Реал.","st.live":"Живое","st.dead":"Мёртв.","st.dose":"МД",
   "err.prefix":"Error: %1"
  },
  en:{
@@ -246,7 +248,7 @@ var DICT={
   "log.sent":"Sent: %1","log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
   "log.cal":"Calibration: [%1]","log.calErr":"Calibration error: %1","log.calClear":"Calibration cleared",
-  "st.real":"Real","st.live":"Live","st.dead":"Dead",
+  "st.real":"Real","st.live":"Live","st.dead":"Dead","st.dose":"DR",
   "err.prefix":"Error: %1"
  }
 };
@@ -291,8 +293,10 @@ var devSeq=0;  /* #UI-1: курсор seq последнего показанн�
 var failStreak=0;  /* #UI-2: подряд-неудачи fetch спектра; гасим экран только после >=3 (одиночный 503 при конкуренции — не гасит) */
 var PL=65,PT=15,PW=1120,PH=340,PR=PL+PW,PB=PT+PH;
 var csrfToken="";
+var doseK=0;
 
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
+async function loadDoseK(){try{var r=await(await fetch("/api/waterfall/dose_k")).json();doseK=(typeof r.dose_k==="number"&&r.dose_k>0)?r.dose_k:0;}catch(e){}}
 function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
 
 function lg(m){if(!logEl)return;logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight}
@@ -335,8 +339,10 @@ async function update(){
   var tStr=''+d.t1;
   if(d.t2>0)tStr+='/'+d.t2;
   if(d.t3>0)tStr+='/'+d.t3;
+  var doseStr=(doseK>0)?(d.cps*doseK).toFixed(3):"";
   stEl.innerHTML='<span class="ac">CPS <span>'+d.cps+'</span></span><span class="sep">|</span>'+
-   '<span class="w"><span>'+d.total.toLocaleString(lcl())+'</span> <span class="mut">'+tr("ax.cnt").toLowerCase()+'</span></span><span class="sep">|</span>'+
+   '<span class="w"><span>'+d.total.toLocaleString(lcl())+'</span> <span class="mut">'+tr("ax.cnt").toLowerCase()+'</span></span>'+
+   (doseStr?'<span class="sep">|</span><span><span class="mut">'+tr("st.dose")+'</span> <span class="ac">'+doseStr+'</span> <span class="mut">µSv/h</span></span>':'')+'<span class="sep">|</span>'+
    '<span><span class="mut">'+tr("st.real")+'</span> '+fmtTime(d.time)+'</span><span class="sep">|</span>'+
    '<span><span class="mut">'+tr("st.live")+'</span> '+fmtTime(lv)+'</span><span class="sep">|</span>'+
    '<span><span class="mut">'+tr("st.dead")+'</span> '+dpct.toFixed(2)+'%</span><span class="sep">|</span>'+
@@ -345,6 +351,7 @@ async function update(){
   document.getElementById("big-time").textContent=fmtHMS(d.time);
   document.getElementById("big-cps").textContent=d.cps;
   document.getElementById("big-total").textContent=d.total.toLocaleString(lcl());
+  if(doseK>0){var bigDr=(d.cps*doseK).toFixed(3);document.getElementById("big-dose").textContent=bigDr;document.getElementById("big-dose-sep").style.display="";document.getElementById("big-dose-wrap").style.display="";}else{document.getElementById("big-dose-sep").style.display="none";document.getElementById("big-dose-wrap").style.display="none";}
   draw(d);
  }catch(e){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
  finally{pollDevLog();}   /* #UI-2: devlog (#UI-1) теперь ПОСЛЕ спектра, не конкурентно — устраняет лишний сокет → меньше 503 */
@@ -604,6 +611,7 @@ function drawNuclides(N){
 (async function(){
  document.getElementById("ip-chip").textContent=location.hostname;
  await loadCsrf();
+ await loadDoseK();
  populateNucPanel();
  setInterval(update,2000);   /* #UI-15: 1000→2000ms — chunked /api/spectrum.json ел сокеты при F5; макс. uri_handlers=11 */
  setInterval(loadFlashInfo,10000);

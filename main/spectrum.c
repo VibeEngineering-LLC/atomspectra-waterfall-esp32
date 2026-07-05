@@ -26,9 +26,13 @@ static spectrum_data_t s_spectrum;
 static device_info_t   s_device_info;
 
 // #DEV-6: сырые тексты последних -inf / -tc_pot? ответов — источник для бэкапа
-// настроек (см. spectrum_process_info_response/_tcpot_response). 700Б с запасом:
-// реальный -inf ~404Б (комментарий #CMD-1), Tcpot-строка короче.
-static char     s_info_raw[700];
+// настроек (см. spectrum_process_info_response/_tcpot_response).
+// #FW-17: -inf с ПУСТЫМ PileUp[] ~404Б, но при реальном наборе таблица PileUp[]
+// растёт до 99 элементов (значения-счётчики) → строка -inf ~1.2-1.5 КБ. Прежние
+// 700Б молча резали её (store_raw_trimmed) на ~53-м элементе, теряя хвост PileUp[]
+// и "PileUpThr N". 2048Б — с запасом на 99 крупных элементов. Tcpot-строка короче,
+// ей 700Б хватает (20 пар термокомпенсации ~130Б).
+static char     s_info_raw[2048];
 static int      s_info_raw_len = 0;
 static uint32_t s_info_raw_seq = 0;
 static char     s_tcpot_raw[700];
