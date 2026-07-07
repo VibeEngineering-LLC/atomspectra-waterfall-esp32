@@ -1333,7 +1333,7 @@ void web_server_init(void)
     // tskNO_AFFINITY позволял httpd (prio 5) исполняться на core 0 рядом с
     // USB-приёмом — уводим целиком.
     config.core_id = 1;
-    config.max_uri_handlers = 45;        // 30 базовых (27 + /api/settings/backup,/restore,/service #DEV-6) + 13 waterfall (11 A1 вкл. websocket + 2× /api/waterfall/offload A2) = 43, +2 запас
+    config.max_uri_handlers = 60;        // #WF-2: 30 базовых + 21 waterfall (было 13; +dose_k×2, +dose_curve×3, +export.aswf, +segment/delete) = 51. Лимит 45 переполнялся → /ws/waterfall и 4 др. не регистрировались → 404 → цикл reconnect. 60 = +9 запас.
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
