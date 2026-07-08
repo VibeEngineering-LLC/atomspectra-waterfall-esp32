@@ -26,6 +26,25 @@ plugged directly into a computer over USB. This gateway turns an ESP32-S3 into a
 
 No cloud. No accounts. Everything runs on your local network.
 
+## ⚠ Before you start
+
+The gateway connects to the spectrometer over USB and sends it standard control
+commands (`-inf`, `-sta`, `-rst`). With the "clear spectrum on start" option
+enabled, the board will send the instrument `-rst` — **the spectrum accumulated
+in the instrument will be erased**.
+
+- Save important accumulated spectra with the AtomSpectra desktop software **before**
+  connecting the instrument to the gateway.
+- Flashing/OTA of the ESP32 board itself does not affect the instrument, but an
+  interrupted flash may require re-flashing over USB.
+
+## Disclaimer
+
+The firmware is provided "as is", without any warranty. The author is not liable for
+any direct or indirect damage: reset of accumulated data or instrument settings, data
+loss, or the instrument or board becoming inoperable. By using the firmware you accept
+these terms and act at your own risk.
+
 ## Architecture
 
 ```
