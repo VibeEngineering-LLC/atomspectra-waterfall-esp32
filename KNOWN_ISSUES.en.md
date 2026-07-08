@@ -75,6 +75,44 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### #FW-23: n42 export — `StartDateTime` 1970 on every row when auto-starting after reboot
+
+**Status:** fixed in [`79eff24`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/79eff24), in `main`. Firmware `firmware-v1.0.1`.
+
+When waterfall recording auto-started after a reboot/power-up, the n42 export showed
+`<StartDateTime>1970-01-01T...Z</StartDateTime>` on every segment — the start time was not
+synchronized with the real clock.
+
+**Cause:** initialization order in `app_main()` — `usb_host_cdc_init()` (waterfall
+boot-autostart) runs **before** `init_sntp()`. `spectrogram_start()` latches
+`started_at = time(NULL)` while the RTC is still at epoch 0 (no SNTP reply yet), so
+`started_at` is pinned near 1970. Reconnecting USB/WiFi does not fix the value.
+
+**Fix:** added an SNTP callback `spectrogram_time_synced()` (`main/spectrogram.c:831`).
+On the first SNTP reply, if recording is active and `started_at < WF_SANE_EPOCH`,
+`started_at` is recomputed backwards from elapsed time: `started_at = time(NULL) − elapsed`.
+The real recording start is restored retroactively without losing already-written segments.
+
+**Verification (2026-07-08):** a field n42 export `waterfall (30).n42` pulled from the board
+(firmware `firmware-v1.0.1`, flashed with the flasher) — 60 segments, **zero `1970`**, all
+dated `2026-07-08`; the boot-autostart segment is dated correctly (`12:24:51Z`), and
+StartDateTime increases monotonically. Fixed on hardware.
+
+### #WF-2: `/ws/waterfall` returns 404 → endless reconnect loop
+
+**Status:** fixed in [`6c81c37`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/6c81c37), in `main`.
+
+The waterfall WebSocket endpoint `/ws/waterfall` intermittently returned `404 Not Found`
+and the browser fell into a reconnect loop — the waterfall stream never came up.
+
+**Cause:** the ESP-IDF httpd URI-handler registry overflowed. `CONFIG_HTTPD_MAX_URI_HANDLERS`
+was 45, while the total number of registered handlers (pages, assets, REST API, segment
+endpoints) grew past 45. Registration of `/ws/waterfall` failed with
+`ESP_ERR_HTTPD_HANDLERS_FULL` → the server had no route → `404`.
+
+**Fix:** `CONFIG_HTTPD_MAX_URI_HANDLERS` raised `45 → 60` in `sdkconfig.defaults` — headroom
+for current and future endpoints.
+
 ### #WF-1: The device crash-looped while waterfall recording was active
 
 **Status:** fixed in [`33fb4a4`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/33fb4a4) (+ [`2b36737`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/2b36737)), in `main`.
