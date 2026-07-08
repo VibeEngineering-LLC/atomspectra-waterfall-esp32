@@ -25,6 +25,11 @@ static const char *TAG = "wf";
 #define WF_FLASH_RESERVE  (1024 * 1024)
 #define WF_SEG_PREP_ROW   (WF_SEG_MAX_ROWS / 2)  // #FW-8: фаза заблаговременного освобождения места кольцом
 #define WF_STATE_MAGIC    0x53465731u   /* 'WFS1' — persist-состояние записи (#REC-6) */
+// #FW-23: порог «время точно синхронизировано» — 2023-11-14. usb_host_cdc_init()
+// (autostart водопада на первом USB-коннекте) стартует РАНЬШЕ init_sntp() в
+// main.c, поэтому started_at при boot-автозапуске может зафиксироваться
+// near-epoch-0 (1970), если ESP32 ещё не получил первый SNTP-ответ.
+#define WF_SANE_EPOCH     1700000000
 
 // #REC-11-A1/#FW-14: поля saved_rows/saved_at в шапке .aswf идут ПЕРВЫМИ,
 // фикс. шириной WF_F_W (формат сохранён для совместимости читателей), но с
@@ -821,6 +826,24 @@ void spectrogram_restore(void)
     UNLOCK();
     ESP_LOGW(TAG, "restore: resumed recording in new segment, interval=%" PRIu32 "s",
              (uint32_t)st.interval_sec);
+}
+
+void spectrogram_time_synced(void)
+{
+    bool corrected = false;
+    time_t new_started_at = 0;
+    LOCK();
+    if (s_status.recording && s_status.started_at < (time_t)WF_SANE_EPOCH) {
+        int64_t elapsed_us = esp_timer_get_time() - s_started_uptime_us;
+        new_started_at = time(NULL) - (time_t)(elapsed_us / 1000000);
+        s_status.started_at = new_started_at;
+        corrected = true;
+    }
+    UNLOCK();
+    if (corrected) {
+        ESP_LOGW(TAG, "FW-23: started_at corrected after SNTP sync -> %ld", (long)new_started_at);
+        write_state(true);   // #REC-6: сохранить исправленный якорь на случай ребута
+    }
 }
 
 int spectrogram_start(void)
