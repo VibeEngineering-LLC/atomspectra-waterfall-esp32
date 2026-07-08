@@ -9,9 +9,19 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_heap_caps.h"   /* #TCP-5: диагностика свободного DMA-блока перед open */
+#include "esp_timer.h"       /* #FW-22: timestamp для last_* полей */
 #include <string.h>
 
 static const char *TAG = "usb_cdc";
+
+// #FW-22: state диагностики USB Host. Обновляется под mutex из hot-path (RX cb,
+// enum cb, open, TX). Getter копирует под тем же mutex.
+static usb_diag_snapshot_t s_diag;
+static SemaphoreHandle_t s_diag_mutex = NULL;
+#define DIAG_LOCK()   do { if (s_diag_mutex) xSemaphoreTake(s_diag_mutex, portMAX_DELAY); } while (0)
+#define DIAG_UNLOCK() do { if (s_diag_mutex) xSemaphoreGive(s_diag_mutex); } while (0)
+
+static inline uint32_t diag_now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 #define FTDI_SIO_RESET          0
 #define FTDI_SIO_SET_MODEM_CTRL 1
@@ -90,6 +100,16 @@ static bool is_complete_cal(const char *s)
 
 static void handle_rx_packet(void)
 {
+    // #FW-22: счётчик пакетов по типу
+    DIAG_LOCK();
+    switch (s_rx_packet.cmd) {
+    case CMD_HISTOGRAM:    s_diag.pkt_hist++; break;
+    case CMD_TEXT:         s_diag.pkt_text++; break;
+    case CMD_STAT:         s_diag.pkt_stat++; break;
+    case CMD_OSCILLOSCOPE: s_diag.pkt_osc++; break;
+    default:               s_diag.pkt_unknown++; break;
+    }
+    DIAG_UNLOCK();
     switch (s_rx_packet.cmd) {
     case CMD_HISTOGRAM:
         spectrum_process_histogram_chunk(s_rx_packet.data, s_rx_packet.len);
@@ -152,14 +172,29 @@ static void feed_shproto(const uint8_t *d, size_t n) {
     }
 }
 static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
-    if (++s_rx_cb_count <= 10) {
-        char h[80]; size_t p=0, show = data_len<16?data_len:16;
-        for (size_t i=0;i<show;i++) p+=snprintf(h+p,sizeof(h)-p,"%02x ",data[i]);
+    ++s_rx_cb_count;
+    // #FW-22: снимок первых 16 байт + счётчики
+    uint32_t now = diag_now_ms();
+    char h[48]; size_t p=0, show = data_len<16?data_len:16;
+    for (size_t i=0;i<show;i++) p+=snprintf(h+p,sizeof(h)-p,"%02x ",data[i]);
+    DIAG_LOCK();
+    s_diag.rx_cb_count = s_rx_cb_count;
+    s_diag.rx_bytes += (uint32_t)data_len;
+    s_diag.rx_last_ts_ms = now;
+    s_diag.rx_last_len = (uint32_t)data_len;
+    strncpy(s_diag.rx_last_first16_hex, h, sizeof(s_diag.rx_last_first16_hex)-1);
+    s_diag.rx_last_first16_hex[sizeof(s_diag.rx_last_first16_hex)-1] = '\0';
+    s_diag.drv_task_alive_ts_ms = now;
+    DIAG_UNLOCK();
+    if (s_rx_cb_count <= 10) {
         ESP_LOGI(TAG,"RX#%d len=%u: %s",s_rx_cb_count,(unsigned)data_len,h);
     }
     for (size_t off=0; off<data_len; ) {
         size_t ch=data_len-off; if(ch>64)ch=64; if(ch<=2)break;
-        if (data[off+1] & 0x8E) s_usb_rx_err++;  // #TCP-4: FTDI line-status byte = OE|PE|FE|FIFO
+        if (data[off+1] & 0x8E) {
+            s_usb_rx_err++;  // #TCP-4: FTDI line-status byte = OE|PE|FE|FIFO
+            DIAG_LOCK(); s_diag.line_status_errors = s_usb_rx_err; DIAG_UNLOCK();
+        }
         if(s_raw_rx_cb) s_raw_rx_cb(data+off+2,ch-2);
         feed_shproto(data+off+2,ch-2);
         off+=ch;
@@ -179,6 +214,7 @@ static void handle_event(const cdc_acm_host_dev_event_data_t *event, void *user_
             cdc_acm_host_close(s_cdc_dev);
             s_cdc_dev = NULL;
         }
+        DIAG_LOCK(); s_diag.cdc_open = false; DIAG_UNLOCK();  // #FW-22
         break;
     default:
         break;
@@ -190,6 +226,15 @@ static bool enum_filter_cb(const usb_device_desc_t *dev_desc, uint8_t *bConfigur
     ESP_LOGI(TAG, "USB device enumerated: VID=%04x PID=%04x class=%d subclass=%d",
              dev_desc->idVendor, dev_desc->idProduct,
              dev_desc->bDeviceClass, dev_desc->bDeviceSubClass);
+    // #FW-22: снапшот последнего увиденного устройства (даже если VID/PID не наш)
+    DIAG_LOCK();
+    s_diag.enum_cb_count++;
+    s_diag.last_seen_vid = dev_desc->idVendor;
+    s_diag.last_seen_pid = dev_desc->idProduct;
+    s_diag.last_seen_class = dev_desc->bDeviceClass;
+    s_diag.last_seen_subclass = dev_desc->bDeviceSubClass;
+    s_diag.last_seen_ts_ms = diag_now_ms();
+    DIAG_UNLOCK();
     *bConfigurationValue = 1;
     return true;
 }
@@ -199,6 +244,10 @@ static void usb_host_lib_task(void *arg)
     while (1) {
         uint32_t event_flags;
         usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        DIAG_LOCK();
+        s_diag.last_host_event_flags = event_flags;
+        s_diag.host_event_ts_ms = diag_now_ms();
+        DIAG_UNLOCK();
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
             usb_host_device_free_all();
         }
@@ -224,6 +273,7 @@ static void try_open_device(void)
     int num_devs = 0;
     uint8_t dev_addrs[8];
     usb_host_device_addr_list_fill(sizeof(dev_addrs)/sizeof(dev_addrs[0]), dev_addrs, &num_devs);
+    DIAG_LOCK(); s_diag.bus_devs_now = (uint8_t)num_devs; s_diag.conn_task_alive_ts_ms = diag_now_ms(); DIAG_UNLOCK();
     if (num_devs > 0 && (s_attempt <= 3 || (s_attempt % 15) == 0)) {
         ESP_LOGI(TAG, "USB bus: %d device(s) enumerated (addrs:", num_devs);
         for (int i = 0; i < num_devs; i++) ESP_LOGI(TAG, "  addr=%d", dev_addrs[i]);
@@ -239,7 +289,19 @@ static void try_open_device(void)
                  (unsigned)dev_config.in_buffer_size);
     }
 
+    // #FW-22: dma-снимок перед open (для web-diag)
+    DIAG_LOCK();
+    s_diag.dma_free_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    s_diag.dma_free_total   = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    s_diag.open_attempts    = (uint32_t)s_attempt;
+    DIAG_UNLOCK();
+
     esp_err_t err = cdc_acm_host_open_vendor_specific(ANALYZER_VID, ANALYZER_PID, 0, &dev_config, &s_cdc_dev);
+    DIAG_LOCK();
+    s_diag.last_open_errno = (int32_t)err;
+    s_diag.last_open_ts_ms = diag_now_ms();
+    s_diag.cdc_open = (err == ESP_OK);
+    DIAG_UNLOCK();
     if (err != ESP_OK) {
         if (s_attempt <= 3 || (s_attempt % 15) == 0) {
             ESP_LOGW(TAG, "open failed: %s (attempt %d, devs_on_bus=%d)", esp_err_to_name(err), s_attempt, num_devs);
@@ -247,13 +309,17 @@ static void try_open_device(void)
         return;
     }
 
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_RESET,0,0,0,NULL);
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_BAUDRATE,5,0,0,NULL);
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_DATA,0x0008,0,0,NULL);
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_FLOW_CTRL,0,0,0,NULL);
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_MODEM_CTRL,0x0303,0,0,NULL);
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_RESET,1,0,0,NULL);
-    cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_RESET,2,0,0,NULL);
+    // #FW-22: захват результата каждого FTDI control-request в bitmask
+    uint8_t ftdi_mask = 0;
+    esp_err_t fe = ESP_OK, flast = ESP_OK;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_RESET,0,0,0,NULL);        if (fe==ESP_OK) ftdi_mask |= 0x01; else flast = fe;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_BAUDRATE,5,0,0,NULL); if (fe==ESP_OK) ftdi_mask |= 0x02; else flast = fe;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_DATA,0x0008,0,0,NULL);if (fe==ESP_OK) ftdi_mask |= 0x04; else flast = fe;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_FLOW_CTRL,0,0,0,NULL);if (fe==ESP_OK) ftdi_mask |= 0x08; else flast = fe;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_SET_MODEM_CTRL,0x0303,0,0,NULL); if (fe==ESP_OK) ftdi_mask |= 0x10; else flast = fe;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_RESET,1,0,0,NULL);        if (fe==ESP_OK) ftdi_mask |= 0x20; else flast = fe;
+    fe = cdc_acm_host_send_custom_request(s_cdc_dev,FTDI_REQTYPE_OUT,FTDI_SIO_RESET,2,0,0,NULL);        if (fe==ESP_OK) ftdi_mask |= 0x40; else flast = fe;
+    DIAG_LOCK(); s_diag.ftdi_step_ok_mask = ftdi_mask; s_diag.ftdi_last_errno = (int32_t)flast; DIAG_UNLOCK();
     ESP_LOGI(TAG, "FTDI configured baud=%u 8N1", ANALYZER_BAUD);
     ESP_LOGI(TAG, "Analyzer connected (VID=%04x PID=%04x)", ANALYZER_VID, ANALYZER_PID);
     s_rx_cb_count = 0;
@@ -266,6 +332,11 @@ static void try_open_device(void)
     shproto_packet_add_data(&s_tx_packet, '\0');
     shproto_packet_complete(&s_tx_packet);
     esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
+    DIAG_LOCK();
+    s_diag.tx_packets++; s_diag.tx_bytes += s_tx_packet.len;
+    s_diag.last_tx_ts_ms = diag_now_ms(); s_diag.last_tx_errno = (int32_t)txerr;
+    strncpy(s_diag.last_tx_cmd, "-inf", sizeof(s_diag.last_tx_cmd)-1); s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd)-1]='\0';
+    DIAG_UNLOCK();
     ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s", (unsigned)s_tx_packet.len, esp_err_to_name(txerr));
 
     // Однократно отметить, что первый коннект после ребута состоялся: автозапуск
@@ -327,6 +398,8 @@ void usb_host_cdc_init(void)
     shproto_init(&s_tx_packet, s_tx_buf, sizeof(s_tx_buf));
     s_tx_mutex = xSemaphoreCreateMutex();
     s_devlog_mutex = xSemaphoreCreateMutex();  // #UI-1
+    s_diag_mutex = xSemaphoreCreateMutex();    // #FW-22
+    memset(&s_diag, 0, sizeof(s_diag));
 
     const usb_host_config_t host_config = {
         .skip_phy_setup = false,
@@ -338,6 +411,7 @@ void usb_host_cdc_init(void)
         ESP_LOGE(TAG, "usb_host_install failed: %s", esp_err_to_name(err));
         return;
     }
+    DIAG_LOCK(); s_diag.host_installed = true; DIAG_UNLOCK();  // #FW-22
     ESP_LOGI(TAG, "USB Host library installed");
 
     // #FW-8: usb_lib и CDC driver ВЫШЕ httpd (prio 5, tskNO_AFFINITY). Иначе при

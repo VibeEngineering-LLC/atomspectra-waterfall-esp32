@@ -1094,6 +1094,7 @@ void spectrogram_offload_done(uint32_t idx)
         if (unlink(p) != 0) ESP_LOGW(TAG, "offload_done: unlink %s failed", p);
         LOCK();
         if (s_status.seg_count) s_status.seg_count--;
+        s_status.flash_full = false;   // #FW-27: сборщик освободил место → снять индикатор. Если кольцо реально переполнено, make_room поднимет флаг снова на следующей строке.
         UNLOCK();
         s_seg_pinned = 0xFFFFFFFFu;
         ESP_LOGI(TAG, "offload_done: seg_%05" PRIu32 " removed from flash", idx);
@@ -1128,6 +1129,7 @@ bool spectrogram_seg_delete(uint32_t idx)
             if (unlink(p) == 0) {
                 LOCK();
                 if (s_status.seg_count) s_status.seg_count--;
+                s_status.flash_full = false;   // #FW-27: pull-ack освободил место → снять индикатор. make_room поднимет снова при реальном переполнении.
                 UNLOCK();
                 ok = true;
                 ESP_LOGI(TAG, "seg_delete: seg_%05" PRIu32 ".aswf removed (pull-ack)", idx);

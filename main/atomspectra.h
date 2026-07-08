@@ -20,6 +20,11 @@
 // #DEDUP-1: единая точка монтирования LittleFS. Раньше дублировалась локальными
 // #define в spectrum.c / spectrogram.c / web_server.c.
 #define STORAGE_PATH          "/storage"
+// #FW-24: сохранённые спектры — в подкаталоге, отделены от calib/current/wf_state
+// в корне mount (как /storage/wf у водопада). Все spec_NNNN.bin — здесь.
+// (Первопричина пустого списка была НЕ в readdir корня — он исправен — а в
+// несовпадении формата пути: save %04d vs list %d. Исправлено в handle_list.)
+#define SPEC_DIR              STORAGE_PATH "/spec"
 
 #define CMD_HISTOGRAM         0x01
 #define CMD_OSCILLOSCOPE      0x02
@@ -90,6 +95,63 @@ uint32_t tcp_bridge_dropped_bytes(void);
 uint32_t usb_host_cdc_rx_errors(void);  // #TCP-4
 void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz);  // #UI-1
 
+// #FW-22: глубокая диагностика USB Host. Снапшот всех счётчиков/last_* полей
+// для endpoint /api/usb-diag. Все поля volatile-снимаются под mutex внутри.
+// last_rx_first16 — hex 16 первых байт последнего RX-пакета (для анализа
+// line-status/CMD-id при подозрении на не-FTDI устройство или битые кадры).
+typedef struct {
+    // Host stack
+    bool     host_installed;
+    bool     cdc_driver_installed;
+    uint32_t last_host_event_flags;
+    uint32_t host_event_ts_ms;
+    // Enum
+    uint32_t enum_cb_count;         // раз enum_filter_cb вызывался
+    uint16_t last_seen_vid;
+    uint16_t last_seen_pid;
+    uint8_t  last_seen_class;
+    uint8_t  last_seen_subclass;
+    uint32_t last_seen_ts_ms;
+    uint8_t  bus_devs_now;          // usb_host_device_addr_list_fill сейчас
+    // CDC open
+    uint32_t open_attempts;
+    int32_t  last_open_errno;       // esp_err_t (0 = OK)
+    uint32_t last_open_ts_ms;
+    bool     cdc_open;              // s_cdc_dev != NULL
+    // FTDI init (bitmask 6 бит: RESET/SETBAUD/SETDATA/SETFLOW/SETMODEM/RESET_END)
+    uint8_t  ftdi_step_ok_mask;
+    int32_t  ftdi_last_errno;
+    // TX
+    uint32_t tx_packets;
+    uint32_t tx_bytes;
+    uint32_t last_tx_ts_ms;
+    int32_t  last_tx_errno;
+    char     last_tx_cmd[32];       // "-inf" / "-sta" / "-cal" / "-tc_pot?"
+    // RX
+    uint32_t rx_cb_count;           // всего data_cb вызовов
+    uint32_t rx_bytes;
+    uint32_t rx_last_ts_ms;
+    uint32_t rx_last_len;
+    char     rx_last_first16_hex[48]; // hex-строка 16*2+15 разделителей+NUL
+    uint32_t line_status_errors;    // #TCP-4 OE|PE|FE|FIFO
+    // Parser
+    uint32_t pkt_hist;
+    uint32_t pkt_text;
+    uint32_t pkt_stat;
+    uint32_t pkt_osc;
+    uint32_t pkt_unknown;
+    // Tasks
+    uint32_t drv_task_alive_ts_ms;  // hint через RX cb
+    uint32_t conn_task_alive_ts_ms; // отметка из usb_connect_task
+    // DMA
+    uint32_t dma_free_largest;
+    uint32_t dma_free_total;
+    // Watermark
+    uint32_t uptime_ms;
+} usb_diag_snapshot_t;
+
+void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out);
+
 void spectrum_init(void);
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len);
 void spectrum_process_stat_packet(const uint8_t *data, size_t len);
@@ -114,7 +176,7 @@ void spectrum_reset(void);
 const spectrum_data_t *spectrum_get_current(void);
 bool spectrum_get_snapshot(spectrum_data_t *out);
 const device_info_t   *spectrum_get_device_info(void);
-int  spectrum_save_to_flash(void);
+int  spectrum_save_to_flash(void);  // >=0 idx; -1 нет валидного спектра; -2 мало места; -3 ошибка FS (#FW-24)
 int  spectrum_load_from_flash(int index, spectrum_data_t *out);
 int  spectrum_delete_from_flash(int index);
 void spectrum_set_calibration(const double *coeffs, int order);
