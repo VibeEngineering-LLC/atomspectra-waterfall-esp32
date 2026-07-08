@@ -77,6 +77,11 @@ void   spectrogram_restore(void);
 // true, если водопад сейчас в режиме записи (для USB-реконнекта: переслать -sta).
 bool   spectrogram_is_recording(void);
 void   spectrogram_get_status(wf_status_t *out);
+// #FW-23: вызвать из SNTP time-sync callback. Если запись уже идёт и
+// started_at был зафиксирован ДО синхронизации часов (near-epoch), пересчитать
+// его через монотонный аптайм-якорь — иначе весь .n42-экспорт сегмента застрянет
+// на 1970 год. Идемпотентно/безопасно вызывать и когда коррекция не нужна.
+void   spectrogram_time_synced(void);
 int    spectrogram_start(void);
 int    spectrogram_stop(void);
 int    spectrogram_clear(void);

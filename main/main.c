@@ -5,16 +5,26 @@
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include <inttypes.h>
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"   // #FW-13 фикс №2: ожидание коммита свипа перед autosave
 
 static const char *TAG = "main";
 
+// #FW-23: usb_host_cdc_init() (boot-автозапуск водопада) стартует раньше SNTP —
+// started_at мог зафиксироваться near-epoch. На первый успешный sync — пересчитать.
+static void time_sync_cb(struct timeval *tv)
+{
+    (void)tv;
+    spectrogram_time_synced();
+}
+
 static void init_sntp(void)
 {
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_set_time_sync_notification_cb(time_sync_cb);
     esp_sntp_init();
 }
 
