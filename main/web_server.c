@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
+#include "esp_app_desc.h"   // #FW-28: esp_app_get_description() → версия прошивки
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "esp_littlefs.h"
@@ -332,8 +333,11 @@ static esp_err_t handle_save(httpd_req_t *req)
     char resp[64];
     if (idx >= 0)
         snprintf(resp, sizeof(resp), "{\"ok\":true,\"index\":%d}", idx);
-    else
-        snprintf(resp, sizeof(resp), "{\"ok\":false}");
+    else {
+        // #FW-24: конкретная причина отказа в UI
+        const char *err = (idx == -1) ? "novalid" : (idx == -2) ? "nospace" : "fserr";
+        snprintf(resp, sizeof(resp), "{\"ok\":false,\"err\":\"%s\"}", err);
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;
@@ -349,14 +353,20 @@ static esp_err_t handle_list(httpd_req_t *req)
     // save() занимает первую дырку, поэтому после удалений индексы не
     // обязательно идут без разрывов — старый "стоп после 20 пропусков" терял
     // спектры с большими индексами. readdir видит все файлы.
-    DIR *dir = opendir(STORAGE_PATH);
+    // #FW-24: спектры лежат в подкаталоге SPEC_DIR (/storage/spec) — отделены
+    // от calib.bin/current.bin/wf_state.bin в корне mount. readdir здесь исправен
+    // (корень тоже листится; пустой список был из-за %04d-бага в rebuild пути ниже).
+    DIR *dir = opendir(SPEC_DIR);
     struct dirent *de;
     while (dir && (de = readdir(dir)) != NULL) {
         int i = -1;
         if (sscanf(de->d_name, "spec_%d.bin", &i) != 1 || i < 0) continue;
         // Путь восстанавливаем из разобранного индекса (%d ограничен), а не из
         // d_name (%s до 255 байт) — иначе -Werror=format-truncation.
-        snprintf(path, sizeof(path), "%s/spec_%d.bin", STORAGE_PATH, i);
+        // #FW-24 КОРЕНЬ БАГА: save пишет spec_%04d.bin (нули), а тут было
+        // spec_%d.bin → fopen "spec_0.bin" ≠ "spec_0000.bin" → NULL → continue →
+        // КАЖДЫЙ файл пропускался → список всегда пуст. readdir был исправен.
+        snprintf(path, sizeof(path), "%s/spec_%04d.bin", SPEC_DIR, i);
         FILE *f = fopen(path, "rb");
         if (!f) continue;
         uint32_t counts = 0, time_sec = 0;
@@ -390,6 +400,7 @@ EMBED_HTML_HANDLER(handle_index,        index_html)
 EMBED_HTML_HANDLER(handle_saved_page,   saved_html)
 EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
+EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
 
 static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp, const char *filename)
 {
@@ -941,6 +952,11 @@ static esp_err_t handle_system(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
         return ESP_FAIL;
     }
+    // #FW-28: версия прошивки ESP32 из esp_app_get_description()->version
+    // (= PROJECT_VER = содержимое version.txt в корне проекта). Клиент сверяет
+    // с latest release VibeEngineering-LLC/atomspectra-waterfall-esp32 через GitHub API.
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    cJSON_AddStringToObject(root, "fw_version", app_desc ? app_desc->version : "?");
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "min_free_heap", esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(root, "uptime_sec", (double)(esp_timer_get_time() / 1000000));
@@ -1382,6 +1398,7 @@ void web_server_init(void)
         {"/saved",                       HTTP_GET,  handle_saved_page,       NULL},
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
         {"/service",                     HTTP_GET,  handle_service_page,     NULL},
+        {"/monitor",                     HTTP_GET,  handle_monitor_page,     NULL},
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };
 

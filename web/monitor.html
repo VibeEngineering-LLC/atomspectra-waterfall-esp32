@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="page.title">AtomSpectra · Мониторинг</title>
+<style>
+:root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); }
+body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; padding-bottom:28px; }
+a{ color:inherit; text-decoration:none; } button{ font-family:inherit; }
+.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
+.brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
+.logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
+.logo i{ width:15px; height:15px; border-radius:50%; border:2px solid var(--accent); }
+.logo b{ position:absolute; width:5px; height:5px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); }
+.chips{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.chip{ background:#10140f; border:1px solid #243024; border-radius:999px; padding:6px 12px; font-size:11.5px; color:var(--dim); }
+.chip.ok{ color:#aeb6a8; display:flex; align-items:center; gap:7px; }
+.dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 7px var(--accent); }
+.dot.off{ background:#5b655a; box-shadow:none; }
+nav{ display:flex; align-items:center; gap:2px; padding:0 20px; border-bottom:1px solid #1c241c; overflow-x:auto; }
+nav a,nav span{ padding:12px 16px; font-size:13px; color:var(--dim); flex-shrink:0; white-space:nowrap; }
+nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); }
+.panel{ background:var(--panel); border:1px solid var(--bd); border-radius:10px; padding:16px; }
+.mut{ color:#6b756a; }
+.ttl{ font-size:14px; font-weight:600; color:#e8efe2; margin-bottom:13px; display:flex; align-items:center; gap:8px; }
+.grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.grid-3{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.kv{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid #161c15; font-size:12.5px; }
+.kv span:first-child{ color:#7c887c; } .kv span:last-child{ color:#dfe5dc; text-align:right; font-variant-numeric:tabular-nums; }
+.btn{ border-radius:8px; padding:9px 14px; font-size:12.5px; cursor:pointer; background:#161b14; border:1px solid #2a322a; color:var(--txt); }
+.btn.green{ background:var(--accent-dim); border-color:rgba(52,211,192,.4); color:var(--accent); font-weight:600; }
+.btn.red{ background:rgba(240,90,80,.07); border-color:rgba(240,90,80,.4); color:#ff8a82; }
+.btn:hover{ filter:brightness(1.2); } .btn:disabled{ opacity:.45; cursor:default; filter:none; }
+.chip.lang{ cursor:pointer; color:var(--accent); border-color:rgba(52,211,192,.4); font-weight:600; padding:3px 8px; font-size:10.5px; line-height:1.2; min-width:28px; text-align:center; }
+.chip.lang:hover{ filter:brightness(1.15); }
+.ctl{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+.ctl label{ font-size:12px; color:#8a9686; display:flex; align-items:center; gap:8px; }
+.ctl input[type=number]{ width:90px; background:#0d110c; color:var(--txt); border:1px solid #2a322a; padding:6px 8px; border-radius:6px; font-family:inherit; font-size:12.5px; }
+.big{ font-size:30px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums; line-height:1.1; }
+.big small{ font-size:13px; font-weight:400; color:#6b756a; }
+.live-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; background:#5b655a; margin-right:7px; vertical-align:middle; }
+.live-dot.rec{ background:#ff5a50; box-shadow:0 0 8px #ff5a50; animation:pulse 1.4s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
+table.mon{ border-collapse:collapse; width:100%; font-size:12px; font-variant-numeric:tabular-nums; }
+table.mon th,table.mon td{ border-bottom:1px solid #1b211a; padding:7px 9px; text-align:right; color:#cfd6cd; white-space:nowrap; }
+table.mon th{ color:var(--accent); font-weight:600; font-size:11px; position:sticky; top:0; background:var(--panel); }
+table.mon td:first-child,table.mon th:first-child{ text-align:left; color:#8a9686; }
+.twrap{ max-height:340px; overflow:auto; border:1px solid var(--bd); border-radius:8px; }
+canvas{ width:100%; height:auto; display:block; }
+@media (max-width:900px){ .grid{ grid-template-columns:1fr } .grid-3{ grid-template-columns:1fr } }
+</style>
+</head>
+<body>
+<header>
+<div class="brand"><span class="logo"><i></i><b></b></span>AtomSpectra <span style="color:var(--accent)">&nbsp;Gateway</span></div>
+<div class="chips"><span class="chip ok" id="dev-chip"><span class="dot" id="dev-dot"></span><span id="dev-stat" data-i18n="device">Прибор</span></span><span class="chip" id="ip-chip">—</span><span class="chip lang" id="langBtn">EN</span></div>
+</header>
+<nav>
+<a href="/" data-i18n="nav.spectrum">Спектр</a>
+<a href="/waterfall" data-i18n="nav.waterfall">Водопад</a>
+<span class="on" data-i18n="nav.monitor">Мониторинг</span>
+<a href="/saved" data-i18n="nav.saved">Сохранённые</a>
+<a href="/system" data-i18n="nav.system">Система</a>
+<a href="/service" data-i18n="nav.service">Сервис</a>
+</nav>
+
+<div class="wrap">
+
+<section class="panel">
+<div class="ctl">
+<label><span data-i18n="ctl.interval">Интервал усреднения, с</span>
+<input type="number" id="interval" min="1" max="86400" step="1" value="10"></label>
+<button class="btn green" id="startBtn" onclick="toggleRun()" data-i18n="ctl.start">Старт</button>
+<button class="btn" id="clearBtn" onclick="clearData()" data-i18n="ctl.clear">Очистить</button>
+<button class="btn" id="csvBtn" onclick="exportCsv()" data-i18n="ctl.csv">Выгрузить CSV</button>
+<span class="mut" id="run-stat" style="font-size:11.5px"></span>
+</div>
+</section>
+
+<div class="grid-3">
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9673;</span> <span data-i18n="live.title">Текущий CPS</span></div>
+<div class="big"><span id="live-cps">—</span> <small>cps</small></div>
+<div class="mut" style="font-size:11px;margin-top:6px" data-i18n="live.hint">мгновенное значение с прибора</div>
+<div class="kv" style="margin-top:8px"><span data-i18n="live.total">Всего импульсов</span><span id="live-total">—</span></div>
+<div class="kv"><span data-i18n="live.devtime">Время набора, с</span><span id="live-time">—</span></div>
+</section>
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#8721;</span> <span data-i18n="avg.title">Средний CPS (сессия)</span></div>
+<div class="big"><span id="grand-cps">—</span> <small>cps</small></div>
+<div class="mut" style="font-size:11px;margin-top:6px"><span data-i18n="avg.rel">отн. погрешность</span> <span id="grand-rel">—</span></div>
+<div class="kv" style="margin-top:8px"><span data-i18n="avg.samples">Отсчётов</span><span id="n-samples">0</span></div>
+<div class="kv"><span data-i18n="avg.counts">Импульсов в сессии</span><span id="sess-counts">0</span></div>
+<div class="kv"><span data-i18n="avg.dur">Длит. сессии, с</span><span id="sess-dur">0</span></div>
+</section>
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9202;</span> <span data-i18n="last.title">Последний интервал</span></div>
+<div class="big"><span id="last-cps">—</span> <small>cps</small></div>
+<div class="mut" style="font-size:11px;margin-top:6px"><span data-i18n="avg.rel">отн. погрешность</span> <span id="last-rel">—</span></div>
+<div class="kv" style="margin-top:8px"><span data-i18n="last.counts">Импульсов</span><span id="last-counts">—</span></div>
+<div class="kv"><span data-i18n="last.dur">Длит., с</span><span id="last-dur">—</span></div>
+</section>
+</div>
+
+<section class="panel">
+<div class="ttl" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+<span><span style="color:var(--accent)">&#8961;</span> <span data-i18n="chart.title">CPS по интервалам</span></span>
+<span class="mut" style="font-size:11px"><span style="color:var(--accent)">&#9644;</span> <span data-i18n="chart.raw">сырые</span>&nbsp;&nbsp;<span style="color:#ff8c1a">&#9644;</span> SMA</span>
+<label class="mut" style="font-size:11px;margin-left:auto;display:flex;align-items:center;gap:8px"><span data-i18n="chart.smaWin">Окно SMA, отсчётов</span>
+<input type="number" id="smaWin" min="2" max="200" step="1" value="10" oninput="drawChart()" style="width:64px;background:#0d110c;color:var(--txt);border:1px solid #2a322a;padding:4px 8px;border-radius:6px;font-family:inherit;font-size:12px"></label>
+</div>
+<canvas id="chart" width="1400" height="300"></canvas>
+</section>
+
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9776;</span> <span data-i18n="tbl.title">Отсчёты мониторинга</span></div>
+<div class="twrap">
+<table class="mon">
+<thead><tr>
+<th data-i18n="tbl.ts">Время</th>
+<th data-i18n="tbl.dur">Δt, с</th>
+<th data-i18n="tbl.counts">Импульсы</th>
+<th data-i18n="tbl.cps">CPS</th>
+<th data-i18n="tbl.rel">δ, %</th>
+</tr></thead>
+<tbody id="tbody"></tbody>
+</table>
+</div>
+</section>
+
+</div>
+
+<script>
+"use strict";
+var DICT={
+ ru:{
+  "page.title":"AtomSpectra · Мониторинг","device":"Прибор",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "dev.chipOk":"Прибор подключён","dev.chipOff":"Нет прибора",
+  "ctl.interval":"Интервал усреднения, с","ctl.start":"Старт","ctl.stop":"Стоп","ctl.clear":"Очистить","ctl.csv":"Выгрузить CSV",
+  "run.idle":"остановлено","run.rec":"идёт запись · собрано %1","run.wait":"ожидание набора прибором…","run.paused":"прибор не набирает (время не идёт)","run.cleared":"спектр очищен на приборе — якорь сброшен",
+  "live.title":"Текущий CPS","live.hint":"мгновенное значение с прибора","live.total":"Всего импульсов","live.devtime":"Время набора, с",
+  "avg.title":"Средний CPS (сессия)","avg.rel":"отн. погрешность","avg.samples":"Отсчётов","avg.counts":"Импульсов в сессии","avg.dur":"Длит. сессии, с",
+  "last.title":"Последний интервал","last.counts":"Импульсов","last.dur":"Длит., с",
+  "chart.title":"CPS по интервалам","chart.raw":"сырые","chart.smaWin":"Окно SMA, отсчётов",
+  "tbl.title":"Отсчёты мониторинга","tbl.ts":"Время","tbl.dur":"Δt, с","tbl.counts":"Импульсы","tbl.cps":"CPS","tbl.sig":"σ, cps","tbl.rel":"δ, %",
+  "csv.empty":"Нет данных для выгрузки",
+  "confirm.clear":"Очистить все накопленные отсчёты мониторинга?"
+ },
+ en:{
+  "page.title":"AtomSpectra · Monitoring","device":"Device",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "dev.chipOk":"Device connected","dev.chipOff":"No device",
+  "ctl.interval":"Averaging interval, s","ctl.start":"Start","ctl.stop":"Stop","ctl.clear":"Clear","ctl.csv":"Export CSV",
+  "run.idle":"stopped","run.rec":"recording · %1 collected","run.wait":"waiting for device acquisition…","run.paused":"device not acquiring (time frozen)","run.cleared":"spectrum cleared on device — anchor reset",
+  "live.title":"Current CPS","live.hint":"instantaneous value from device","live.total":"Total counts","live.devtime":"Acquisition time, s",
+  "avg.title":"Mean CPS (session)","avg.rel":"relative error","avg.samples":"Samples","avg.counts":"Counts in session","avg.dur":"Session duration, s",
+  "last.title":"Last interval","last.counts":"Counts","last.dur":"Duration, s",
+  "chart.title":"CPS per interval","chart.raw":"raw","chart.smaWin":"SMA window, samples",
+  "tbl.title":"Monitoring samples","tbl.ts":"Time","tbl.dur":"Δt, s","tbl.counts":"Counts","tbl.cps":"CPS","tbl.sig":"σ, cps","tbl.rel":"δ, %",
+  "csv.empty":"No data to export",
+  "confirm.clear":"Clear all accumulated monitoring samples?"
+ }
+};
+var LANG=(function(){try{return localStorage.getItem("aswf-lang")||"ru";}catch(e){return"ru";}})();
+function t(k){var d=DICT[LANG]||DICT.ru;return(d[k]!==undefined)?d[k]:(DICT.ru[k]||k);}
+function tfmt(k){var s=t(k);for(var i=1;i<arguments.length;i++)s=s.replace("%"+i,arguments[i]);return s;}
+function applyI18n(){
+ document.querySelectorAll("[data-i18n]").forEach(function(el){ el.textContent=t(el.getAttribute("data-i18n")); });
+ document.documentElement.lang=LANG;
+ var b=document.getElementById("langBtn"); if(b)b.textContent=(LANG==="ru")?"EN":"RU";
+}
+function setLang(l){ if(l!=="ru"&&l!=="en")l="ru"; LANG=l; try{localStorage.setItem("aswf-lang",l);}catch(e){} applyI18n(); renderStartBtn(); renderStatus(); }
+
+function ac(){return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';}
+
+// --- Форматирование чисел ---
+function fmtCps(v){ if(!isFinite(v))return "—"; if(v>=100)return v.toFixed(1); if(v>=1)return v.toFixed(3); return v.toFixed(4); }
+function pad2(n){return (n<10?"0":"")+n;}
+function hms(d){return pad2(d.getHours())+":"+pad2(d.getMinutes())+":"+pad2(d.getSeconds());}
+function isoLocal(d){ // локальное время ISO без TZ-сдвига (для CSV/Excel)
+ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())+" "+pad2(d.getHours())+":"+pad2(d.getMinutes())+":"+pad2(d.getSeconds());
+}
+
+// --- Состояние мониторинга ---
+var running=false;
+var samples=[];              // {ts:Date, devStart, devEnd, dur, counts, cps, sig, rel}
+var anchor=null;             // {total, time} на начале текущего интервала
+var lastPoll=null;           // последний {total, time}
+var sessCounts=0, sessDur=0; // накопители сессии
+var noteCleared=false;
+
+// --- Персист состояния (F5 не сбрасывает старт/накопление) ---
+var LS_KEY="aswf-mon-state";
+function saveState(){
+ try{
+  var arr=samples.map(function(s){return [s.ts.getTime(),s.devStart,s.devEnd,s.dur,s.counts,s.cps,s.sig,s.rel];});
+  localStorage.setItem(LS_KEY,JSON.stringify({r:running,iv:intervalSec(),sc:sessCounts,sd:sessDur,s:arr}));
+ }catch(e){}
+}
+function loadState(){
+ try{
+  var raw=localStorage.getItem(LS_KEY); if(!raw)return;
+  var o=JSON.parse(raw); if(!o||!o.s)return;
+  samples=o.s.map(function(a){return {ts:new Date(a[0]),devStart:a[1],devEnd:a[2],dur:a[3],counts:a[4],cps:a[5],sig:a[6],rel:a[7]};});
+  sessCounts=o.sc||0; sessDur=o.sd||0; running=!!o.r;
+  var ii=document.getElementById("interval"); if(ii&&o.iv)ii.value=o.iv;
+  anchor=null; // пересинхр по прибору на первом poll после F5 (текущий незавершённый интервал теряется, накопление — нет)
+  var tb=document.getElementById("tbody"); tb.innerHTML="";
+  for(var i=0;i<samples.length;i++)appendRow(samples[i]);
+ }catch(e){}
+}
+
+function toggleRun(){
+ running=!running;
+ if(running){ anchor=lastPoll?{total:lastPoll.total,time:lastPoll.time}:null; }
+ renderStartBtn(); renderStatus(); saveState();
+}
+function clearData(){
+ if(samples.length && !confirm(t("confirm.clear")))return;
+ samples=[]; sessCounts=0; sessDur=0; anchor=running&&lastPoll?{total:lastPoll.total,time:lastPoll.time}:null;
+ document.getElementById("tbody").innerHTML="";
+ renderAggregates(); drawChart(); renderStatus(); saveState();
+}
+function renderStartBtn(){
+ var b=document.getElementById("startBtn");
+ b.textContent=running?t("ctl.stop"):t("ctl.start");
+ b.classList.toggle("green",!running);
+ b.classList.toggle("red",running);
+ document.getElementById("interval").disabled=running;
+}
+function renderStatus(){
+ var s=document.getElementById("run-stat");
+ var dot='<span class="live-dot'+(running?' rec':'')+'"></span>';
+ if(!running){ s.innerHTML=dot+t("run.idle"); return; }
+ if(noteCleared){ s.innerHTML=dot+t("run.cleared"); return; }
+ s.innerHTML=dot+tfmt("run.rec",samples.length);
+}
+
+function intervalSec(){ var v=parseInt(document.getElementById("interval").value,10); return (isFinite(v)&&v>=1)?v:10; }
+
+// --- Опрос прибора: используем НАБОРНОЕ время прибора как часы (dead-time-корректно) ---
+async function poll(){
+ var r;
+ try{ r=await(await fetch("/api/spectrum.json",{cache:"no-store"})).json(); }
+ catch(e){
+  document.getElementById("dev-dot").classList.add("off");
+  document.getElementById("dev-stat").textContent=t("dev.chipOff");
+  return;
+ }
+ var total=(typeof r.total==="number")?r.total:null;
+ var time =(typeof r.time ==="number")?r.time :null;
+ var cps  =(typeof r.cps  ==="number")?r.cps  :null;
+
+ // Прибор
+ var devDot=document.getElementById("dev-dot"), devStat=document.getElementById("dev-stat");
+ if(total!==null){ devDot.classList.remove("off"); devStat.textContent=t("dev.chipOk"); }
+ else{ devDot.classList.add("off"); devStat.textContent=t("dev.chipOff"); }
+
+ // Живые значения
+ if(cps!==null)  document.getElementById("live-cps").textContent=fmtCps(cps);
+ if(total!==null)document.getElementById("live-total").textContent=total.toLocaleString("ru-RU");
+ if(time!==null) document.getElementById("live-time").textContent=time.toLocaleString("ru-RU");
+
+ if(total===null||time===null){ return; }
+ var cur={total:total,time:time};
+
+ // Детект очистки спектра на приборе (счётчики откатились) → сброс якоря
+ if(anchor && (cur.total<anchor.total || cur.time<anchor.time)){
+  anchor={total:cur.total,time:cur.time}; noteCleared=true; lastPoll=cur; renderStatus(); return;
+ }
+ lastPoll=cur;
+
+ if(!running){ return; }
+ if(!anchor){ anchor={total:cur.total,time:cur.time}; return; }
+ noteCleared=false;
+
+ var dt=cur.time-anchor.time;           // Δt по НАБОРНОМУ времени прибора
+ if(dt<intervalSec()){ return; }        // интервал ещё не набран
+ var dc=cur.total-anchor.total;         // Δ импульсов за интервал
+ if(dt<=0){ return; }
+
+ var meanCps=dc/dt;
+ var sig=Math.sqrt(Math.max(dc,0))/dt;  // Poisson: σ_N=√N → σ_cps=√N/Δt
+ var rel=(dc>0)?(100/Math.sqrt(dc)):NaN; // отн. погрешность 1/√N
+
+ var smp={ts:new Date(),devStart:anchor.time,devEnd:cur.time,dur:dt,counts:dc,cps:meanCps,sig:sig,rel:rel};
+ samples.push(smp);
+ sessCounts+=dc; sessDur+=dt;
+ anchor={total:cur.total,time:cur.time}; // новый якорь
+
+ appendRow(smp); renderAggregates(); drawChart(); renderStatus(); saveState();
+}
+
+function appendRow(s){
+ var tb=document.getElementById("tbody");
+ var tr=document.createElement("tr");
+ tr.innerHTML="<td>"+hms(s.ts)+"</td><td>"+s.dur+"</td><td>"+s.counts.toLocaleString("ru-RU")+"</td><td>"+fmtCps(s.cps)+"</td><td>"+(isFinite(s.rel)?s.rel.toFixed(2):"—")+"</td>";
+ tb.insertBefore(tr,tb.firstChild); // новые сверху
+ while(tb.children.length>500) tb.removeChild(tb.lastChild);
+}
+function renderAggregates(){
+ document.getElementById("n-samples").textContent=samples.length;
+ document.getElementById("sess-counts").textContent=sessCounts.toLocaleString("ru-RU");
+ document.getElementById("sess-dur").textContent=sessDur.toLocaleString("ru-RU");
+ if(sessDur>0){
+  var g=sessCounts/sessDur, gr=(sessCounts>0)?100/Math.sqrt(sessCounts):NaN;
+  document.getElementById("grand-cps").textContent=fmtCps(g);
+  document.getElementById("grand-rel").textContent=isFinite(gr)?gr.toFixed(2)+" %":"—";
+ }else{
+  document.getElementById("grand-cps").textContent="—";
+  document.getElementById("grand-rel").textContent="—";
+ }
+ if(samples.length){
+  var l=samples[samples.length-1];
+  document.getElementById("last-cps").textContent=fmtCps(l.cps);
+  document.getElementById("last-rel").textContent=isFinite(l.rel)?l.rel.toFixed(2)+" %":"—";
+  document.getElementById("last-counts").textContent=l.counts.toLocaleString("ru-RU");
+  document.getElementById("last-dur").textContent=l.dur;
+ }
+}
+
+var SMA_COL="#ff8c1a";
+var DEF_VIEW=200;
+// Состояние масштаба графика: cnt = сколько интервалов видно; end = индекс правого края (null → следовать за последними)
+var chartView={cnt:null, end:null};
+function clampNum(v,lo,hi){ return v<lo?lo:(v>hi?hi:v); }
+
+function drawChart(){
+ var cv=document.getElementById("chart"); if(!cv)return;
+ wireChartZoom(cv);
+ var ctx=cv.getContext("2d"), W=cv.width, H=cv.height;
+ ctx.clearRect(0,0,W,H);
+ var padL=64,padR=16,padT=14,padB=26;
+ var x0=padL,x1=W-padR,y0=padT,y1=H-padB;
+ // Сетка-рамка
+ ctx.strokeStyle="rgba(255,255,255,.06)"; ctx.lineWidth=1;
+ ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+ var N=samples.length, i;
+ if(N<1)return;
+ // SMA по всему массиву (trailing, окно = win интервалов) — считаем до вырезки окна, чтобы край окна был корректным
+ var win=parseInt(document.getElementById("smaWin")?document.getElementById("smaWin").value:10,10);
+ if(!(win>=2))win=2; if(win>200)win=200;
+ var smaAll=[],acc=0;
+ for(i=0;i<N;i++){ acc+=samples[i].cps; if(i>=win)acc-=samples[i-win].cps; smaAll.push(acc/Math.min(i+1,win)); }
+ // Окно просмотра
+ var cnt=chartView.cnt==null ? Math.min(DEF_VIEW,N) : clampNum(chartView.cnt,2,N);
+ var endIdx=chartView.end==null ? N : clampNum(chartView.end,cnt,N); // exclusive
+ var startIdx=Math.max(0,endIdx-cnt);
+ var data=samples.slice(startIdx,endIdx);
+ var sma=smaAll.slice(startIdx,endIdx);
+ chartView._start=startIdx; chartView._cnt=cnt; chartView._plotW=x1-x0; // для обработчиков
+ var mn=1e30,mx=-1e30;
+ for(i=0;i<data.length;i++){ var v=data[i].cps; if(v<mn)mn=v; if(v>mx)mx=v; }
+ for(i=0;i<sma.length;i++){ if(sma[i]<mn)mn=sma[i]; if(sma[i]>mx)mx=sma[i]; }
+ if(mx-mn<1e-9)mx=mn+1;
+ var padY=(mx-mn)*0.08; mn-=padY; mx+=padY;
+ var col=ac();
+ function px(idx){ return data.length>1 ? x0+(x1-x0)*idx/(data.length-1) : (x0+x1)/2; }
+ function py(v){ return y1-(y1-y0)*(v-mn)/(mx-mn); }
+ // Y-подписи
+ ctx.fillStyle="#6b756a"; ctx.font="11px ui-monospace,monospace"; ctx.textAlign="right"; ctx.textBaseline="middle";
+ for(var g=0;g<=4;g++){ var vv=mn+(mx-mn)*g/4, yy=py(vv);
+  ctx.strokeStyle="rgba(255,255,255,.04)"; ctx.beginPath(); ctx.moveTo(x0,yy); ctx.lineTo(x1,yy); ctx.stroke();
+  ctx.fillText(fmtCps(vv),x0-6,yy); }
+ // Сырая линия по интервалам (акцент)
+ ctx.strokeStyle=col; ctx.lineWidth=1.4; ctx.beginPath();
+ for(i=0;i<data.length;i++){ var xx=px(i), yv=py(data[i].cps); i?ctx.lineTo(xx,yv):ctx.moveTo(xx,yv); }
+ ctx.stroke();
+ // Точки
+ ctx.fillStyle=col;
+ for(i=0;i<data.length;i++){ ctx.beginPath(); ctx.arc(px(i),py(data[i].cps),2.2,0,6.2832); ctx.fill(); }
+ // SMA — оранжевым, поверх
+ ctx.strokeStyle=SMA_COL; ctx.lineWidth=2.4; ctx.beginPath();
+ for(i=0;i<sma.length;i++){ var sx=px(i), sy=py(sma[i]); i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy); }
+ ctx.stroke();
+ // Индикатор зума (когда не в авто-режиме)
+ if(chartView.cnt!=null || chartView.end!=null){
+  ctx.fillStyle="#6b756a"; ctx.font="10px ui-monospace,monospace"; ctx.textAlign="left"; ctx.textBaseline="top";
+  ctx.fillText("зум ×"+(N/cnt).toFixed(1)+" · 2× клик — сброс",x0+4,y0+3);
+ }
+}
+function wireChartZoom(cv){
+ if(cv.__zoomWired)return; cv.__zoomWired=true;
+ // Колесо — зум по X вокруг курсора
+ cv.addEventListener("wheel",function(e){
+  e.preventDefault();
+  var N=samples.length; if(N<2)return;
+  var cnt=chartView._cnt||Math.min(DEF_VIEW,N), start=chartView._start||0, pw=chartView._plotW||1;
+  var rect=cv.getBoundingClientRect();
+  var relX=(e.clientX-rect.left)*(cv.width/rect.width)-64; // px в области графика
+  var frac=clampNum(relX/pw,0,1);
+  var anchorIdx=start+frac*(cnt-1); // индекс под курсором
+  var factor=e.deltaY<0?0.8:1.25;
+  var ncnt=Math.round(cnt*factor);
+  ncnt=clampNum(ncnt,2,N);
+  if(ncnt>=N){ chartView.cnt=null; chartView.end=null; drawChart(); return; }
+  chartView.cnt=ncnt;
+  // держим точку под курсором на месте
+  var nEnd=Math.round(anchorIdx+ (1-frac)*(ncnt-1))+1;
+  chartView.end=clampNum(nEnd,ncnt,N);
+  if(chartView.end>=N)chartView.end=null;
+  drawChart();
+ },{passive:false});
+ // Перетаскивание — панорама по времени
+ var dragging=false,dragX=0,baseEnd=0;
+ cv.addEventListener("mousedown",function(e){
+  var N=samples.length; dragging=true; dragX=e.clientX;
+  baseEnd=chartView.end==null?N:chartView.end; cv.style.cursor="grabbing";
+ });
+ window.addEventListener("mousemove",function(e){
+  if(!dragging)return;
+  var N=samples.length, cnt=chartView._cnt||Math.min(DEF_VIEW,N), pw=chartView._plotW||1;
+  var rect=cv.getBoundingClientRect();
+  var dxPx=(e.clientX-dragX)*(cv.width/rect.width);
+  var dIdx=Math.round(-dxPx/pw*cnt); // тянем вправо → раньше по времени
+  var nEnd=clampNum(baseEnd+dIdx,cnt,N);
+  chartView.cnt=cnt; chartView.end=(nEnd>=N)?null:nEnd;
+  drawChart();
+ });
+ window.addEventListener("mouseup",function(){ if(dragging){dragging=false; cv.style.cursor="";} });
+ // Двойной клик — сброс к авто-режиму
+ cv.addEventListener("dblclick",function(){ chartView.cnt=null; chartView.end=null; drawChart(); });
+ cv.style.cursor="grab";
+}
+
+function exportCsv(){
+ if(!samples.length){ alert(t("csv.empty")); return; }
+ var sep=";"; // RU Excel list separator
+ var lines=[];
+ lines.push("# AtomSpectra Gateway — CPS monitoring");
+ lines.push("# exported "+isoLocal(new Date())+"  host "+location.hostname);
+ lines.push(["timestamp","dev_time_start_s","dev_time_end_s","duration_s","counts","mean_cps","sigma_cps","rel_err_pct"].join(sep));
+ for(var i=0;i<samples.length;i++){ var s=samples[i];
+  lines.push([isoLocal(s.ts),s.devStart,s.devEnd,s.dur,s.counts,
+   (isFinite(s.cps)?s.cps.toFixed(6):""),
+   (isFinite(s.sig)?s.sig.toFixed(6):""),
+   (isFinite(s.rel)?s.rel.toFixed(4):"")].join(sep)); }
+ // сводка сессии
+ if(sessDur>0){ var g=sessCounts/sessDur, gs=Math.sqrt(Math.max(sessCounts,0))/sessDur, gr=sessCounts>0?100/Math.sqrt(sessCounts):NaN;
+  lines.push("# session_mean_cps"+sep+g.toFixed(6)+sep+"sigma"+sep+gs.toFixed(6)+sep+"rel_pct"+sep+(isFinite(gr)?gr.toFixed(4):"")); }
+ var blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
+ var url=URL.createObjectURL(blob), a=document.createElement("a");
+ var d=new Date();
+ a.href=url; a.download="cps_monitor_"+d.getFullYear()+pad2(d.getMonth()+1)+pad2(d.getDate())+"_"+pad2(d.getHours())+pad2(d.getMinutes())+pad2(d.getSeconds())+".csv";
+ document.body.appendChild(a); a.click(); document.body.removeChild(a);
+ setTimeout(function(){URL.revokeObjectURL(url);},1500);
+}
+
+(function(){
+ applyI18n();
+ loadState();
+ renderStartBtn(); renderStatus(); renderAggregates(); drawChart();
+ document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
+ document.getElementById("ip-chip").textContent=location.hostname;
+ poll();
+ setInterval(poll,1000);
+ window.addEventListener("resize",drawChart);
+})();
+</script>
+</body>
+</html>

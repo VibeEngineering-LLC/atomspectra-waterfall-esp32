@@ -99,6 +99,18 @@ The Web UI opens in a browser at `http://<board-IP>/`:
 - **Export SPE** — download LSRM `.spe` (SpectraVibe format)
 - Delete saved spectra
 
+**"Monitoring" tab** — count-rate (CPS) logging with averaging over a chosen interval:
+current CPS, session mean CPS with statistical uncertainty, last interval, a "raw counts +
+simple moving average (SMA)" chart, a samples table and CSV export:
+
+![Board Web UI — "Monitoring" tab: CPS-per-interval chart (raw + SMA) and samples table](images/web-ui-monitor.png)
+
+**"Saved" tab** — spectra stored in flash: a list with date, counts and duration; view a
+selected one, overlay it on the live spectrum ("Overlay on Spectrum"), export XML/CSV and
+delete:
+
+![Board Web UI — "Saved" tab: saved-spectrum view and the list of records](images/web-ui-saved.png)
+
 **"System" tab** — heap/flash, WiFi (SSID, IP, RSSI), uptime, last reset reason,
 TCP bridge state:
 

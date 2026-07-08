@@ -88,6 +88,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <nav>
 <a href="/" data-i18n="nav.spectrum">Спектр</a>
 <span class="on" data-i18n="nav.waterfall">Водопад</span>
+<a href="/monitor" data-i18n="nav.monitor">Мониторинг</a>
 <a href="/saved" data-i18n="nav.saved">Сохранённые</a>
 <a href="/system" data-i18n="nav.system">Система</a>
 <a href="/service" data-i18n="nav.service">Сервис</a>
@@ -218,7 +219,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 var DICT={
  ru:{
   "title":"AtomSpectra · Водопад","device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
   "btn.start":"▶ Старт","btn.stop":"■ Стоп","btn.clear":"🗑 Очистить","btn.export_n42":"⬇ Экспорт .n42","btn.export_aswf":"⬇ Экспорт .aswf",
   "btn.disk":"💾 Стрим на диск…","btn.disk_stop":"■ Стрим на диск (стоп)",
   "btn.disk_title":"Сохранять входящий стрим в .aswf-файл на диске ПК",
@@ -250,8 +251,9 @@ var DICT={
   "log.disk_flush_err":"диск: flush err ","log.disk_done":"диск: запись завершена (%1 стр., %2 МБ) → %3",
   "log.disk_ckpt":"диск: контрольная точка #%1 — файл зафиксирован на диске (%2 стр., %3 МБ)",
   "log.disk_ckpt_err":"диск: ошибка контрольной точки ","log.disk_blob":"диск: blob скачан (%1 стр., %2 МБ) → %3","log.disk_close_err":"диск: close err ",
-  "log.cleared":"очищено","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)","log.export_aswf":"экспорт .aswf (ASWF v3)",
-  "confirm.clear":"Очистить накопленную спектрограмму?",
+  "log.cleared":"очищено","log.clear_err":"стереть не удалось","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)","log.export_aswf":"экспорт .aswf (ASWF v3)",
+  "confirm.clear":"Стереть спектрограмму и все записанные сегменты на flash платы?",
+  "confirm.clear_rec":"Идёт запись. Остановить запись и стереть всё записанное?",
   "unload.recording":"Идёт запись на диск. Закрыть страницу?",
   "flash.off":"выкл","flash.full":"⚠ Flash заполнен (стрим продолжается)",
   "state.rec":"● ЗАПИСЬ","state.stop":"○ стоп",
@@ -273,7 +275,7 @@ var DICT={
  },
  en:{
   "title":"AtomSpectra · Waterfall","device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
   "btn.start":"▶ Start","btn.stop":"■ Stop","btn.clear":"🗑 Clear","btn.export_n42":"⬇ Export .n42","btn.export_aswf":"⬇ Export .aswf",
   "btn.disk":"💾 Stream to disk…","btn.disk_stop":"■ Stream to disk (stop)",
   "btn.disk_title":"Save the incoming stream to an .aswf file on the PC disk",
@@ -305,8 +307,9 @@ var DICT={
   "log.disk_flush_err":"disk: flush err ","log.disk_done":"disk: recording finished (%1 rows, %2 MB) → %3",
   "log.disk_ckpt":"disk: checkpoint #%1 — file committed to disk (%2 rows, %3 MB)",
   "log.disk_ckpt_err":"disk: checkpoint error ","log.disk_blob":"disk: blob downloaded (%1 rows, %2 MB) → %3","log.disk_close_err":"disk: close err ",
-  "log.cleared":"cleared","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)","log.export_aswf":"export .aswf (ASWF v3)",
-  "confirm.clear":"Clear the accumulated spectrogram?",
+  "log.cleared":"cleared","log.clear_err":"erase failed","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)","log.export_aswf":"export .aswf (ASWF v3)",
+  "confirm.clear":"Erase the spectrogram and all recorded segments on the board flash?",
+  "confirm.clear_rec":"Recording is active. Stop recording and erase everything?",
   "unload.recording":"Disk recording in progress. Close the page?",
   "flash.off":"off","flash.full":"⚠ Flash full (stream continues)",
   "state.rec":"● REC","state.stop":"○ stop",
@@ -1179,9 +1182,20 @@ function saveOffload(){
 
 document.getElementById("bStart").onclick=async function(){await post("/api/waterfall/start");refreshStatus();};
 document.getElementById("bStop").onclick=async function(){await post("/api/waterfall/stop");refreshStatus();};
+function wfClearDone(){clearRows();draw();refreshStatus();lg(t("log.cleared"));}
 document.getElementById("bClear").onclick=async function(){
  if(!confirm(t("confirm.clear")))return;
- await post("/api/waterfall/clear");clearRows();draw();refreshStatus();lg(t("log.cleared"));};
+ var r=await(await post("/api/waterfall/clear")).json();
+ if(r.ok){wfClearDone();return;}
+ // #FW-25: сервер отклонил — запись активна. Предложить stop→clear.
+ if(r.err==="recording"){
+  if(!confirm(t("confirm.clear_rec")))return;
+  await post("/api/waterfall/stop");
+  var r2=await(await post("/api/waterfall/clear")).json();
+  if(r2.ok){wfClearDone();}else{lg(t("log.clear_err"));refreshStatus();}
+  return;
+ }
+ lg(t("log.clear_err"));refreshStatus();};
 async function applyInterval(){
  var el=document.getElementById("iv");
  var v=parseInt(el.value)||5;

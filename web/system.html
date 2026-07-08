@@ -53,6 +53,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <nav>
 <a href="/" data-i18n="nav.spectrum">Спектр</a>
 <a href="/waterfall" data-i18n="nav.waterfall">Водопад</a>
+<a href="/monitor" data-i18n="nav.monitor">Мониторинг</a>
 <a href="/saved" data-i18n="nav.saved">Сохранённые</a>
 <span class="on" data-i18n="nav.system">Система</span>
 <a href="/service" data-i18n="nav.service">Сервис</a>
@@ -86,6 +87,9 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="kv"><span data-i18n="esp.chip">Чип</span><span>ESP32-S3 N16R8</span></div>
 <div class="kv"><span data-i18n="esp.flashPsram">Flash / PSRAM</span><span data-i18n="esp.flashPsramVal">16 МБ / 8 МБ</span></div>
 <div class="kv"><span>ESP-IDF</span><span>v5.4</span></div>
+<div class="kv"><span data-i18n="esp.fw">Прошивка</span><span id="fw-ver">—</span></div>
+<div class="kv"><span data-i18n="esp.update">Обновление</span><span id="fw-upd" class="mut">—</span></div>
+<button class="btn" id="fw-upd-btn" onclick="checkUpdate()" data-i18n="esp.checkUpd">Проверить обновление</button>
 <div class="kv"><span data-i18n="esp.uptime">Uptime</span><span id="up">—</span></div>
 <div class="kv"><span data-i18n="esp.freeHeap">Free heap</span><span id="heap-kv">—</span></div>
 <div class="kv"><span data-i18n="esp.minHeap">Min free heap</span><span id="heap-min-kv">—</span></div>
@@ -193,12 +197,14 @@ var DICT={
  ru:{
   "page.title":"AtomSpectra · Система",
   "device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
   "heap.title":"Свободная память (heap)","heap.minSince":"мин. с момента старта:",
   "cpu.title":"CPU спектрометра","cpu.src":"из <code>/api/spectrum.json</code>: поле <code>cpu</code>",
   "flash.title":"Flash (LittleFS)","flash.used":"занято:",
   "unit.kb":"КБ","unit.mb":"МБ",
   "esp.chip":"Чип","esp.flashPsram":"Flash / PSRAM","esp.flashPsramVal":"16 МБ / 8 МБ",
+  "esp.fw":"Прошивка","esp.update":"Обновление","esp.checkUpd":"Проверить обновление",
+  "upd.checking":"проверка…","upd.latest":"актуальная версия","upd.available":"доступна %1","upd.dev":"версия новее релиза (dev)","upd.err":"нет связи с GitHub","upd.download":"скачать",
   "esp.uptime":"Uptime","esp.freeHeap":"Free heap","esp.minHeap":"Min free heap",
   "wifi.state":"Состояние","wifi.signal":"Уровень сигнала","wifi.reset":"Сбросить WiFi (режим настройки)",
   "wifi.connected":"подключено","wifi.disconnected":"не подключено",
@@ -231,12 +237,14 @@ var DICT={
  en:{
   "page.title":"AtomSpectra · System",
   "device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
   "heap.title":"Free memory (heap)","heap.minSince":"min since boot:",
   "cpu.title":"Spectrometer CPU","cpu.src":"from <code>/api/spectrum.json</code>: field <code>cpu</code>",
   "flash.title":"Flash (LittleFS)","flash.used":"used:",
   "unit.kb":"KB","unit.mb":"MB",
   "esp.chip":"Chip","esp.flashPsram":"Flash / PSRAM","esp.flashPsramVal":"16 MB / 8 MB",
+  "esp.fw":"Firmware","esp.update":"Update","esp.checkUpd":"Check for update",
+  "upd.checking":"checking…","upd.latest":"up to date","upd.available":"%1 available","upd.dev":"newer than release (dev)","upd.err":"no GitHub connection","upd.download":"download",
   "esp.uptime":"Uptime","esp.freeHeap":"Free heap","esp.minHeap":"Min free heap",
   "wifi.state":"State","wifi.signal":"Signal level","wifi.reset":"Reset WiFi (setup mode)",
   "wifi.connected":"connected","wifi.disconnected":"disconnected",
@@ -291,6 +299,25 @@ function setLang(l){
 
 var csrfToken="";
 var heap=[],cpu=[],flash=[];
+var curFwVer="";
+// #FW-28: репо прошивки — latest release сверяется через GitHub API (CORS-открыт, GET anonymous).
+var FW_REPO="VibeEngineering-LLC/atomspectra-waterfall-esp32";
+function verParts(v){return String(v||"").replace(/^v/i,"").split(".").map(function(x){return parseInt(x,10)||0;});}
+function verCmp(a,b){var A=verParts(a),B=verParts(b),n=Math.max(A.length,B.length);for(var i=0;i<n;i++){var d=(A[i]||0)-(B[i]||0);if(d)return d<0?-1:1;}return 0;}
+async function checkUpdate(){
+ var el=document.getElementById("fw-upd"),btn=document.getElementById("fw-upd-btn");
+ el.className="mut"; el.textContent=t("upd.checking"); if(btn)btn.disabled=true;
+ try{
+  var r=await fetch("https://api.github.com/repos/"+FW_REPO+"/releases/latest",{headers:{"Accept":"application/vnd.github+json"}});
+  if(!r.ok)throw 0;
+  var j=await r.json(), tag=j.tag_name||"", url=j.html_url||("https://github.com/"+FW_REPO+"/releases");
+  var c=verCmp(curFwVer,tag);
+  if(c<0){el.className="err";el.innerHTML=tfmt("upd.available",tag)+' · <a href="'+url+'" target="_blank" rel="noopener" style="color:var(--accent)">'+t("upd.download")+'</a>';}
+  else if(c>0){el.className="mut";el.textContent=tag+" — "+t("upd.dev");}
+  else{el.className="";el.style.color="var(--accent)";el.textContent=tag+" — "+t("upd.latest");}
+ }catch(e){el.className="err";el.textContent=t("upd.err");}
+ finally{if(btn)btn.disabled=false;}
+}
 function ac(){return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';}
 
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
@@ -329,6 +356,8 @@ async function refreshSystem(){
   document.getElementById("heap-min-kv").textContent=Math.round((r.min_free_heap||0)/1024)+" "+t("unit.kb");
   spark("heapc",heap,ac());
   document.getElementById("up").textContent=fmtUp(r.uptime_sec||0);
+  curFwVer=r.fw_version||"";
+  document.getElementById("fw-ver").textContent=curFwVer||"—";
   var ft=r.flash_total||0, fu=r.flash_used||0;
   var pct=ft>0?(fu/ft*100):0;
   var flashSub=fmtKB(fu)+" / "+fmtKB(ft)+" "+t("unit.kb")+" ("+pct.toFixed(1)+"%)";

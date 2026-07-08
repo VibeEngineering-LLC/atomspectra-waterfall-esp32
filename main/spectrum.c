@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <sys/stat.h>   // #FW-24: mkdir SPEC_DIR
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_heap_caps.h"
@@ -118,6 +119,7 @@ void spectrum_init(void)
         size_t total = 0, used = 0;
         esp_littlefs_info("storage", &total, &used);
         ESP_LOGI(TAG, "LittleFS: total=%zu used=%zu free=%zu", total, used, total - used);
+        mkdir(SPEC_DIR, 0777);   // #FW-24: подкаталог сохранённых спектров (отделение от calib/current/wf_state в корне)
     }
 }
 
@@ -442,9 +444,9 @@ bool spectrum_get_snapshot(spectrum_data_t *out)
 int spectrum_save_to_flash(void)
 {
     spectrum_data_t *snap = malloc(sizeof(*snap));
-    if (!snap) return -1;
+    if (!snap) return -3;
     SPEC_LOCK();
-    if (!s_spectrum.valid) { SPEC_UNLOCK(); free(snap); return -1; }
+    if (!s_spectrum.valid) { SPEC_UNLOCK(); free(snap); return -1; }  // #FW-24: нет валидного спектра
     s_spectrum.saved_at = time(NULL);
     memcpy(snap, &s_spectrum, sizeof(*snap));
     SPEC_UNLOCK();
@@ -460,21 +462,21 @@ int spectrum_save_to_flash(void)
     int idx = 0;
     FILE *f;
     while (idx < 9999) {
-        snprintf(path, sizeof(path), "%s/spec_%04d.bin", STORAGE_PATH, idx);
+        snprintf(path, sizeof(path), "%s/spec_%04d.bin", SPEC_DIR, idx);
         f = fopen(path, "r");
         if (!f) break;
         fclose(f);
         idx++;
     }
     f = fopen(path, "wb");
-    if (!f) { ESP_LOGE(TAG, "Cannot create %s", path); free(snap); return -1; }
+    if (!f) { ESP_LOGE(TAG, "Cannot create %s", path); free(snap); return -3; }
     size_t wr = fwrite(snap, sizeof(*snap), 1, f);
     int fc = fclose(f);
     if (wr != 1 || fc != 0) {
         ESP_LOGE(TAG, "Write to %s failed (wr=%zu fc=%d), removing", path, wr, fc);
         remove(path);
         free(snap);
-        return -1;
+        return -3;
     }
     ESP_LOGI(TAG, "Saved spectrum to %s (%" PRIu32 " counts)", path, snap->total_counts);
     free(snap);
@@ -484,7 +486,7 @@ int spectrum_save_to_flash(void)
 int spectrum_load_from_flash(int index, spectrum_data_t *out)
 {
     char path[64];
-    snprintf(path, sizeof(path), "%s/spec_%04d.bin", STORAGE_PATH, index);
+    snprintf(path, sizeof(path), "%s/spec_%04d.bin", SPEC_DIR, index);
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     size_t rd = fread(out, 1, sizeof(*out), f);
@@ -586,7 +588,7 @@ void spectrum_restore_autosave(void)
 int spectrum_delete_from_flash(int index)
 {
     char path[64];
-    snprintf(path, sizeof(path), "%s/spec_%04d.bin", STORAGE_PATH, index);
+    snprintf(path, sizeof(path), "%s/spec_%04d.bin", SPEC_DIR, index);
     if (remove(path) != 0) return -1;
     ESP_LOGI(TAG, "Deleted %s", path);
     return 0;
