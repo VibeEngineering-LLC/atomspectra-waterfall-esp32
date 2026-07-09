@@ -30,7 +30,10 @@ def parse_aswf(buf: bytes, name: str):
     stride = hdr.get("row_stride", row_bytes)
     if not (row_bytes <= stride <= row_bytes + 64):
         stride = row_bytes
-    payload = buf[8 + hlen:]
+    base = 0
+    if "baseline" in hdr:  # v4 baseline-блок (uint32×channels) между заголовком и строками — пропустить, иначе сдвиг строк
+        base = hdr["baseline"].get("channels", hdr["baseline"].get("count", 0)) * 4
+    payload = buf[8 + hlen + base:]
     n_rows = len(payload) // stride
     rem = len(payload) % stride
     rows = [struct.unpack_from(f"<{ch}H", payload, i * stride) for i in range(n_rows)]

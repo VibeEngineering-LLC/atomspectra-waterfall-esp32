@@ -1,6 +1,7 @@
 import sys, time, json, struct, zlib, urllib.request
 sys.stdout.reconfigure(encoding="utf-8")
 H = "http://" + (len(sys.argv) > 1 and sys.argv[1] or "atomspectra-gw.local")  # IP/host платы аргументом
+MIN_IDX = int(sys.argv[2]) if len(sys.argv) > 2 else 0  # минимальный idx finalized-сегмента (дефолт 0; было хардкод 18 из v3→v4 перехода)
 
 def segs():
     return json.loads(urllib.request.urlopen(H+"/api/waterfall/segments", timeout=6).read())
@@ -8,11 +9,11 @@ def segs():
 def fetch(name):
     return urllib.request.urlopen(H+"/api/waterfall/segment?name="+name, timeout=15).read()
 
-print("wait first v4 seg (idx>=18)...", flush=True)
+print("wait first v4 seg (idx>=%d)..." % MIN_IDX, flush=True)
 target = None
 for _ in range(160):
     try:
-        lst = [s for s in segs() if s.get("finalized") and int(s["idx"]) >= 18]
+        lst = [s for s in segs() if s.get("finalized") and int(s["idx"]) >= MIN_IDX]
     except Exception as e:
         print("poll err", e, flush=True); time.sleep(6); continue
     if lst:
