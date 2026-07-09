@@ -136,6 +136,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <label class="lbl"><span data-i18n="lbl.palette">Палитра</span> <span class="sw" id="palSw" data-i18n-title="lbl.palette_title" title="Сменить цветовую палитру" onclick="openPalette()"></span> <span id="palName" style="color:var(--accent);font-size:11.5px">Inferno</span></label>
 <label class="lbl"><span data-i18n="lbl.channels">Каналы</span> <input class="inp" type="number" id="chLo" min="0" max="8191" value="0"> – <input class="inp" type="number" id="chHi" min="1" max="8192" value="8192"></label>
 <button class="btn sm" id="bFit" data-i18n="btn.fit_reset">сброс зума</button>
+<button class="btn sm" id="bNuc" data-i18n-title="btn.lines_title" title="Показать/скрыть выбранные линии нуклидов — сам выбор не меняется"></button>
 </div>
 </section>
 
@@ -237,6 +238,7 @@ var DICT={
   "lbl.axis_x":"Ось X","opt.channels":"каналы","opt.kev":"кэВ","lbl.brightness":"Яркость",
   "opt.log":"лог","opt.lin":"лин","lbl.contrast":"Контраст","lbl.palette":"Палитра",
   "lbl.palette_title":"Сменить цветовую палитру","lbl.channels":"Каналы","btn.fit_reset":"сброс зума",
+  "btn.lines":"Линии","st.on":"вкл","st.off":"выкл","btn.lines_title":"Показать/скрыть выбранные линии нуклидов — сам выбор не меняется",
   "lbl.slice":"Срез спектра","slc.live":"live · последняя строка",
   "slc.no_data":"нет данных","slc.wait":"ожидание данных…",
   "slc.cursor_prefix":"под курсором · #","slc.live_prefix":"live · #",
@@ -293,6 +295,7 @@ var DICT={
   "lbl.axis_x":"Axis X","opt.channels":"channels","opt.kev":"keV","lbl.brightness":"Brightness",
   "opt.log":"log","opt.lin":"lin","lbl.contrast":"Contrast","lbl.palette":"Palette",
   "lbl.palette_title":"Change colour palette","lbl.channels":"Channels","btn.fit_reset":"reset zoom",
+  "btn.lines":"Lines","st.on":"on","st.off":"off","btn.lines_title":"Show/hide selected nuclide lines — selection itself unchanged",
   "lbl.slice":"Spectrum slice","slc.live":"live · last row",
   "slc.no_data":"no data","slc.wait":"waiting for data…",
   "slc.cursor_prefix":"under cursor · #","slc.live_prefix":"live · #",
@@ -348,6 +351,7 @@ function applyI18n(){
  });
  document.documentElement.lang=LANG;
  var btn=document.getElementById("langBtn"); if(btn)btn.textContent=(LANG==="ru")?"EN":"RU";
+ if(typeof syncNucBtn==="function")syncNucBtn();
 }
 function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
@@ -518,6 +522,10 @@ var nucShow=(function(){
  return {k40:true,cs137:true,co60:true};
 })();
 function nucAny(){for(var k in nucShow){if(nucShow[k])return true;}return false;}
+/* #UI-40: быстрый тумблер видимости выбранных линий — НЕ трогает сам выбор
+   (nucShow/aswf-nuc), только скрывает/показывает маркеры. Своё хранилище, F5-safe. */
+var nucVis=(function(){try{return localStorage.getItem("aswf-nuc-vis")!=="0";}catch(e){return true;}})();
+function syncNucBtn(){var b=document.getElementById("bNuc");if(!b)return;b.textContent=t("btn.lines")+": "+(nucVis?t("st.on"):t("st.off"));b.style.opacity=nucVis?"":"0.55";}
 
 var normMax=64;
 function rowMax(r){var m=0;for(var i=chLo;i<chHi&&i<r.length;i++){if(r[i]>m)m=r[i];}return m;}
@@ -571,7 +579,7 @@ function draw(){
    compose(wfEl,curEl), поэтому линии видны и в обычном виде, и в zoom-оверлее.
    Координата X канала c: (c-chLo)/span*WFW (та же, что у баров среза). */
 function drawNuclidesWF(){
- if(!calib||!nucAny())return;
+ if(!calib||!nucAny()||!nucVis)return;   // #UI-40: nucVis — быстрый on/off, выбор не меняется
  var span=chHi-chLo; if(span<1)span=1;
  curx.save();
  curx.textAlign="left"; curx.textBaseline="top"; curx.font="9px ui-monospace,monospace";
@@ -624,9 +632,15 @@ function drawCursor(){
  var lastIdx=baseIndex+rows.length-1;
  var bottom=(viewBottom<0)?lastIdx:viewBottom;
  var li=(bottom-y)-baseIndex;
- var v=(li>=0&&li<rows.length&&slcCursorCh<rows[li].length)?rows[li][slcCursorCh]:0;
+ var inRow=(li>=0&&li<rows.length);
+ var v=(inRow&&slcCursorCh<rows[li].length)?rows[li][slcCursorCh]:0;
  var ke=calib?(" / "+ch2kev(slcCursorCh).toFixed(1)+" "+t("opt.kev")):"";
  var lbl="ch "+slcCursorCh+ke+" : "+v;
+ if(inRow){   // #UI-39: +номер строки и смещение «от сейчас» — паритет с полноэкранным readout
+  var gIdx=li+baseIndex, behind=lastIdx-gIdx; if(behind<0)behind=0;
+  var agoStr=(behind<=0)?t("hud.live"):("−"+Math.floor(behind*intervalSec/60)+"m "+(behind*intervalSec%60)+"s");
+  lbl+="   #"+gIdx+" · "+agoStr;
+ }
  curx.font="11px ui-monospace,monospace";
  var tw=curx.measureText(lbl).width+10;
  var tx=x+8; if(tx+tw>WFW-4)tx=x-tw-8;
@@ -725,7 +739,7 @@ function drawSlice(){
   slcx.fillRect(k*bw, by, bwDraw>0?bwDraw:bw, h);
  }
  // #DEMO-12: вертикальные маркеры выбранных нуклидов на срезе (та же X-шкала каналов)
- if(calib&&nucAny()){
+ if(calib&&nucAny()&&nucVis){   // #UI-40: тот же тумблер видимости, что и на спектрограмме
   for(var ni=0;ni<NUCLIDES.length;ni++){
    var nn=NUCLIDES[ni]; if(!nucShow[nn.id])continue;
    for(var nj=0;nj<nn.lines.length;nj++){
@@ -1261,6 +1275,8 @@ wf.addEventListener("wheel",function(e){
  applyI18n();
  var lb=document.getElementById("langBtn");
  if(lb)lb.onclick=function(){setLang(LANG==="ru"?"en":"ru");};
+ syncNucBtn();
+ var bn=document.getElementById("bNuc"); if(bn)bn.onclick=function(){nucVis=!nucVis;try{localStorage.setItem("aswf-nuc-vis",nucVis?"1":"0");}catch(e){}syncNucBtn();draw();};
  document.getElementById("ip-chip").textContent=location.hostname;
  var sb=document.getElementById("wf-scroll");
  if(sb)sb.addEventListener("input",function(){

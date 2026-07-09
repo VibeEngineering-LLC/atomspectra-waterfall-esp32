@@ -82,9 +82,11 @@ static stat_stage_t s_stat_stage;
 // #FW-13 фикс №2: слушатели коммита свипа. Полный свип = конец USB-burst и начало
 // тихого окна (~0.5 с до следующего свипа) — единственная фаза, где flash-запись
 // (freeze кэша обоих ядер) не рвёт приём FTDI (FIFO 256 Б = 4.3 мс @600000 бод).
-// Потребители (wf_task — строка водопада, main loop — autosave) привязывают свои
-// записи к этому окну через binary-семафоры.
-#define COMMIT_LISTENERS_MAX 2
+// Потребители (wf_task — строка водопада, main loop — autosave, monitor_task —
+// серия CPS #MON-1) привязывают свои записи к этому окну через binary-семафоры.
+// #MON-1: было 2 (wf_task + autosave, оба слота заняты) — монитору нужен третий;
+// 4 = +1 запас (переполнение тихое: LOGW и потребитель живёт на fallback-тике).
+#define COMMIT_LISTENERS_MAX 4
 static SemaphoreHandle_t s_commit_listeners[COMMIT_LISTENERS_MAX];
 
 void spectrum_add_commit_listener(void *sem)
@@ -471,6 +473,18 @@ bool spectrum_get_snapshot(spectrum_data_t *out)
     memcpy(out, &s_spectrum, sizeof(*out));
     SPEC_UNLOCK();
     return out->valid;
+}
+
+// #MON-1: атомарная пара (total_counts, total_time_sec) под тем же SPEC_LOCK,
+// каким защищена публикация коммита свипа. Дешёвая альтернатива
+// spectrum_get_snapshot() для потребителей раз-в-секунду (монитор CPS):
+// не копирует 32 КБ bins на каждый тик.
+void spectrum_get_totals(uint32_t *counts, uint32_t *time_sec)
+{
+    SPEC_LOCK();
+    if (counts)   *counts   = s_spectrum.total_counts;
+    if (time_sec) *time_sec = s_spectrum.total_time_sec;
+    SPEC_UNLOCK();
 }
 
 int spectrum_save_to_flash(void)

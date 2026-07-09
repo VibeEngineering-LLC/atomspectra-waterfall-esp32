@@ -176,6 +176,9 @@ int spectrum_get_tcpot_raw(char *out, size_t outsz, uint32_t *out_seq);
 void spectrum_reset(void);
 const spectrum_data_t *spectrum_get_current(void);
 bool spectrum_get_snapshot(spectrum_data_t *out);
+// #MON-1: атомарная пара (total_counts, total_time_sec) под коммит-локом —
+// для монитора CPS; НЕ копирует 32 КБ bins (в отличие от spectrum_get_snapshot).
+void spectrum_get_totals(uint32_t *counts, uint32_t *time_sec);
 const device_info_t   *spectrum_get_device_info(void);
 int  spectrum_save_to_flash(void);  // >=0 idx; -1 нет валидного спектра; -2 мало места; -3 ошибка FS (#FW-24)
 int  spectrum_load_from_flash(int index, spectrum_data_t *out);

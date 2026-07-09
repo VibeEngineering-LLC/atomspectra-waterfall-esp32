@@ -211,43 +211,82 @@ function isoLocal(d){ // время в выбранном поясе, ISO без
 }
 
 // --- Состояние мониторинга ---
+// #MON-1: сбор серии перенесён на плату. Плата копит базовые 1с-сэмплы
+// (дельты по коммитам свипов) в кольце PSRAM (6 ч) с монотонным seq; клиент
+// раз в 2 с тянет хвост GET /api/monitor/series?since=<seq> и агрегирует
+// базовые сэмплы в вёдра по «интервалу усреднения». Фоновая/закрытая вкладка
+// больше не портит данные: после F5/фона клиент ДОТЯГИВАЕТ пропущенное по seq.
 var running=false;
-var samples=[];              // {ts:Date, devStart, devEnd, dur, counts, cps, sig, rel}
-var anchor=null;             // {total, time} на начале текущего интервала
-var lastPoll=null;           // последний {total, time}
-var sessCounts=0, sessDur=0; // накопители сессии
+var samples=[];              // вёдра-агрегаты: {ts:Date, devStart, devEnd, dur, counts, cps, sig, rel}
+var bucket=null;             // накапливаемое ведро из базовых сэмплов (Σdur < интервала)
+var sessCounts=0, sessDur=0; // накопители сессии (по закрытым вёдрам)
 var noteCleared=false;
 
-// --- Персист состояния (F5 не сбрасывает старт/накопление) ---
-var LS_KEY="aswf-mon-state";
+var boardEpoch=null;         // epoch серии платы (меняется при сбросе спектра/прибора и перезапуске платы)
+var lastSeq=0;               // последний обработанный seq базового сэмпла
+var lastNextSeq=1;           // next_seq платы из последнего ответа (кандидат старта сессии)
+var sessStart=0;             // seq первого сэмпла сессии (0 = сессии нет)
+var sessStopSeq=0;           // seq, на котором сессия заморожена Стопом (0 = не заморожена)
+var rebuildStop=0;           // >0: после F5 восстановить замороженную сессию до этого seq
+// Привязка наборного времени прибора к стене: сэмпл с end_sec=anchorEnd пришёл в anchorWall (мс).
+// ts ведра = anchorWall - (anchorEnd - devEnd)*1000 — при живом сборе это «сейчас»,
+// при догоне после F5/фона — честная ретро-дата.
+var anchorWall=0, anchorEnd=0;
+
+// --- Персист (#MON-1: localStorage — НЕ источник истории, только параметры
+// сессии; сама история восстанавливается с платы дотягиванием по seq) ---
+var LS_KEY="aswf-mon-sess";
 function saveState(){
  try{
-  var arr=samples.map(function(s){return [s.ts.getTime(),s.devStart,s.devEnd,s.dur,s.counts,s.cps,s.sig,s.rel];});
-  localStorage.setItem(LS_KEY,JSON.stringify({r:running,iv:intervalSec(),sc:sessCounts,sd:sessDur,s:arr}));
+  localStorage.setItem(LS_KEY,JSON.stringify({r:running,iv:intervalSec(),ss:sessStart,sp:sessStopSeq,ep:boardEpoch,aw:anchorWall,ae:anchorEnd}));
  }catch(e){}
 }
 function loadState(){
+ try{ localStorage.removeItem("aswf-mon-state"); }catch(e){} // ключ старой (клиентской) схемы сбора
  try{
   var raw=localStorage.getItem(LS_KEY); if(!raw)return;
-  var o=JSON.parse(raw); if(!o||!o.s)return;
-  samples=o.s.map(function(a){return {ts:new Date(a[0]),devStart:a[1],devEnd:a[2],dur:a[3],counts:a[4],cps:a[5],sig:a[6],rel:a[7]};});
-  sessCounts=o.sc||0; sessDur=o.sd||0; running=!!o.r;
+  var o=JSON.parse(raw)||{};
+  running=!!o.r; sessStart=o.ss||0; sessStopSeq=o.sp||0;
+  boardEpoch=(o.ep==null)?null:o.ep;
+  anchorWall=o.aw||0; anchorEnd=o.ae||0;
   var ii=document.getElementById("interval"); if(ii&&o.iv)ii.value=o.iv;
-  anchor=null; // пересинхр по прибору на первом poll после F5 (текущий незавершённый интервал теряется, накопление — нет)
-  var tb=document.getElementById("tbody"); tb.innerHTML="";
-  for(var i=0;i<samples.length;i++)appendRow(samples[i]);
+  if(running&&sessStart>0){
+   lastSeq=sessStart-1;                    // F5 при running: дотянуть ВСЮ сессию с платы
+  }else if(running){
+   running=false;                          // битый персист — не притворяемся, что пишем
+  }else if(sessStart>0&&sessStopSeq>=sessStart){
+   rebuildStop=sessStopSeq; lastSeq=sessStart-1; // замороженную Стопом сессию тоже восстановим
+  }
  }catch(e){}
 }
 
+function wipeView(){
+ samples=[]; bucket=null; sessCounts=0; sessDur=0;
+ var tb=document.getElementById("tbody"); if(tb)tb.innerHTML="";
+}
+
 function toggleRun(){
- running=!running;
- if(running){ anchor=lastPoll?{total:lastPoll.total,time:lastPoll.time}:null; }
+ if(!running){
+  // Старт: сессия = сэмплы платы начиная с текущего next_seq. Локальный вид
+  // очищается — после F5 сессия восстановится с платы ровно в этом же объёме.
+  running=true;
+  sessStart=Math.max(lastNextSeq,lastSeq+1); sessStopSeq=0; rebuildStop=0;
+  lastSeq=sessStart-1;
+  wipeView(); noteCleared=false;
+  renderAggregates(); drawChart();
+ }else{
+  // Стоп замораживает: диапазон сессии фиксируется (для восстановления после F5),
+  // недобранное ведро отбрасывается (как раньше незавершённый интервал).
+  running=false;
+  sessStopSeq=lastSeq; bucket=null;
+ }
  renderStartBtn(); renderStatus(); saveState();
 }
 function clearData(){
  if(samples.length && !confirm(t("confirm.clear")))return;
- samples=[]; sessCounts=0; sessDur=0; anchor=running&&lastPoll?{total:lastPoll.total,time:lastPoll.time}:null;
- document.getElementById("tbody").innerHTML="";
+ wipeView(); noteCleared=false;
+ if(running){ sessStart=Math.max(lastNextSeq,lastSeq+1); lastSeq=sessStart-1; sessStopSeq=0; }
+ else{ sessStart=0; sessStopSeq=0; rebuildStop=0; }
  renderAggregates(); drawChart(); renderStatus(); saveState();
 }
 function renderStartBtn(){
@@ -267,8 +306,10 @@ function renderStatus(){
 
 function intervalSec(){ var v=parseInt(document.getElementById("interval").value,10); return (isFinite(v)&&v>=1)?v:10; }
 
-// --- Опрос прибора: используем НАБОРНОЕ время прибора как часы (dead-time-корректно) ---
-async function poll(){
+// --- Живая панель (#MON-1): лёгкий опрос /api/spectrum.json ТОЛЬКО для плиток
+// «Текущий CPS / Всего импульсов / Время набора» и чипа прибора. Сбор серии
+// идёт отдельно (syncSeries) — троттлинг фоновой вкладки этому не вредит. ---
+async function livePoll(){
  var r;
  try{ r=await(await fetch("/api/spectrum.json",{cache:"no-store"})).json(); }
  catch(e){
@@ -279,45 +320,99 @@ async function poll(){
  var total=(typeof r.total==="number")?r.total:null;
  var time =(typeof r.time ==="number")?r.time :null;
  var cps  =(typeof r.cps  ==="number")?r.cps  :null;
-
- // Прибор
  var devDot=document.getElementById("dev-dot"), devStat=document.getElementById("dev-stat");
  if(total!==null){ devDot.classList.remove("off"); devStat.textContent=t("dev.chipOk"); }
  else{ devDot.classList.add("off"); devStat.textContent=t("dev.chipOff"); }
-
- // Живые значения
  if(cps!==null)  document.getElementById("live-cps").textContent=fmtCps(cps);
  if(total!==null)document.getElementById("live-total").textContent=total.toLocaleString("ru-RU");
  if(time!==null) document.getElementById("live-time").textContent=time.toLocaleString("ru-RU");
+}
 
- if(total===null||time===null){ return; }
- var cur={total:total,time:time};
-
- // Детект очистки спектра на приборе (счётчики откатились) → сброс якоря
- if(anchor && (cur.total<anchor.total || cur.time<anchor.time)){
-  anchor={total:cur.total,time:cur.time}; noteCleared=true; lastPoll=cur; renderStatus(); return;
+// --- Сбор серии с платы (#MON-1) ---
+// Смена epoch: плата объявила новую эпоху данных (сброс спектра/прибора или
+// перезапуск платы — кольцо потеряно). Локальная история недействительна —
+// аналог прежнего noteCleared («якорь сброшен»), запись продолжается с нового места.
+function handleEpoch(r){
+ if(boardEpoch===null){ boardEpoch=r.epoch; saveState(); return false; }
+ if(r.epoch===boardEpoch)return false;
+ boardEpoch=r.epoch;
+ wipeView(); noteCleared=true;
+ if(running){
+  sessStart=(r.samples&&r.samples.length)?r.first_seq:r.next_seq;
+  lastSeq=sessStart-1; sessStopSeq=0;
+ }else{
+  sessStart=0; sessStopSeq=0; rebuildStop=0; lastSeq=r.next_seq-1;
  }
- lastPoll=cur;
+ renderAggregates(); drawChart(); renderStatus(); saveState();
+ return true;
+}
 
- if(!running){ return; }
- if(!anchor){ anchor={total:cur.total,time:cur.time}; return; }
- noteCleared=false;
-
- var dt=cur.time-anchor.time;           // Δt по НАБОРНОМУ времени прибора
- if(dt<intervalSec()){ return; }        // интервал ещё не набран
- var dc=cur.total-anchor.total;         // Δ импульсов за интервал
- if(dt<=0){ return; }
-
- var meanCps=dc/dt;
- var sig=Math.sqrt(Math.max(dc,0))/dt;  // Poisson: σ_N=√N → σ_cps=√N/Δt
- var rel=(dc>0)?(100/Math.sqrt(dc)):NaN; // отн. погрешность 1/√N
-
- var smp={ts:new Date(),devStart:anchor.time,devEnd:cur.time,dur:dt,counts:dc,cps:meanCps,sig:sig,rel:rel};
+// Базовый сэмпл → ведро. Вёдра по НАКОПЛЕННОМУ наборному времени прибора
+// (dead-time-корректно): копим подряд идущие сэмплы, пока Σdur < интервала
+// усреднения, затем закрываем. Формулы прежние: cps=ΣN/Σt, σ=√ΣN/Σt (Poisson),
+// δ%=100/√ΣN.
+function pushBase(end,dur,cnt){
+ if(!bucket)bucket={devStart:end-dur,devEnd:end,dur:0,counts:0};
+ bucket.dur+=dur; bucket.counts+=cnt; bucket.devEnd=end;
+ if(bucket.dur>=intervalSec())closeBucket();
+}
+function closeBucket(){
+ var b=bucket; bucket=null;
+ if(!b||b.dur<=0)return;
+ var cps=b.counts/b.dur;
+ var sig=Math.sqrt(Math.max(b.counts,0))/b.dur;
+ var rel=(b.counts>0)?(100/Math.sqrt(b.counts)):NaN;
+ var ts=new Date(anchorWall>0?(anchorWall-(anchorEnd-b.devEnd)*1000):Date.now());
+ var smp={ts:ts,devStart:b.devStart,devEnd:b.devEnd,dur:b.dur,counts:b.counts,cps:cps,sig:sig,rel:rel};
  samples.push(smp);
- sessCounts+=dc; sessDur+=dt;
- anchor={total:cur.total,time:cur.time}; // новый якорь
+ sessCounts+=b.counts; sessDur+=b.dur;
+ noteCleared=false;
+ appendRow(smp);
+}
 
- appendRow(smp); renderAggregates(); drawChart(); renderStatus(); saveState();
+var syncBusy=false;
+async function syncSeries(){
+ if(syncBusy)return; syncBusy=true;
+ var frozen=(!running&&rebuildStop>0);   // восстановление замороженной Стопом сессии после F5
+ var collecting=running||frozen;
+ var pend=[];                            // базовые сэмплы [end,dur,counts] до постановки в вёдра
+ try{
+  for(var hop=0;hop<400;hop++){          // догоняем плату циклом: чанк платы <= 2000 сэмплов
+   // Не собираем → только зондируем курсоры платы: since за пределом серии
+   // даёт пустой samples + актуальные next_seq/epoch (дёшево).
+   var since=collecting?lastSeq:4294967294;
+   var r=await(await fetch("/api/monitor/series?since="+since,{cache:"no-store"})).json();
+   if(!r||typeof r.next_seq!=="number")break;
+   if(handleEpoch(r)){ pend=[]; frozen=false; collecting=running; if(!collecting)break; }
+   lastNextSeq=r.next_seq;
+   var arr=r.samples||[], f=r.first_seq;
+   if(collecting){
+    for(var i=0;i<arr.length;i++){
+     var seq=f+i;
+     if(seq<=lastSeq)continue;                 // дубль/перекрытие запросов
+     if(frozen&&seq>rebuildStop)break;         // хвост за границей замороженной сессии — не наш
+     lastSeq=seq;
+     pend.push(arr[i]);
+    }
+   }
+   if(!collecting)break;
+   if(frozen&&lastSeq>=rebuildStop){ rebuildStop=0; break; }   // сессия восстановлена целиком
+   if(frozen&&f>rebuildStop){ rebuildStop=0; break; }          // кольцо уже вытеснило сессию — берём что есть
+   if(lastSeq+1>=r.next_seq)break;                             // догнали хвост серии
+  }
+ }catch(e){ /* сеть/плата недоступна — дотянем следующим тиком */ }
+ if(pend.length){
+  if(!(frozen&&anchorWall>0)){
+   // Якорь: последний полученный сэмпл считаем «сейчас». После полного догона
+   // это точно; при оборванном догоне — лучшая доступная оценка. Для замороженной
+   // сессии якорь сохранён на Стопе (aw/ae в localStorage) — не трогаем.
+   anchorEnd=pend[pend.length-1][0]; anchorWall=Date.now();
+  }
+  for(var k=0;k<pend.length;k++)pushBase(pend[k][0],pend[k][1],pend[k][2]);
+  if(frozen)bucket=null;   // как Стоп: недобранное ведро отбрасываем
+  renderAggregates(); drawChart(); renderStatus(); saveState();
+ }
+ syncBusy=false;
 }
 
 function appendRow(s){
@@ -521,8 +616,10 @@ function exportCsv(){
  renderStartBtn(); renderStatus(); renderAggregates(); renderXUnit(); drawChart();
  document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
  document.getElementById("ip-chip").textContent=location.hostname;
- poll();
- setInterval(poll,1000);
+ // #MON-1: живая панель + синк серии с платы раз в 2 с; серия дотягивается
+ // циклом внутри syncSeries — пропуски фона/F5/закрытой вкладки закрываются сами.
+ livePoll(); syncSeries();
+ setInterval(function(){ livePoll(); syncSeries(); },2000);
  window.addEventListener("resize",drawChart);
 })();
 </script>

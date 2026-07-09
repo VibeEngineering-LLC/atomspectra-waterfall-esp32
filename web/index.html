@@ -111,6 +111,7 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <!-- #UI-3: оверлей энергетических линий нуклидов -->
 <div style="display:flex;align-items:center;gap:8px;position:relative">
  <button class="btn sm" id="btn-nuc" onclick="toggleNucPanel()" data-i18n-html="nuc.toggle" title="" disabled style="opacity:.5">&#9883; Линии</button>
+ <button class="btn sm" id="btn-nuc-vis" onclick="toggleNucVis()" title=""></button><!-- #UI-40 mirror: быстрый on/off видимости, выбор не меняется -->
  <div id="nuc-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:10;background:#0e120d;border:1px solid #2a322a;border-radius:8px;padding:10px 12px;min-width:260px;box-shadow:0 6px 18px rgba(0,0,0,.5)"></div>
 </div>
 <div class="ml" style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#6b756a"><span style="width:18px;height:3px;border-radius:2px;background:var(--accent);display:inline-block"></span><span data-i18n="legend.live">живой</span></div>
@@ -188,6 +189,7 @@ var DICT={
   "nuc.toggle":"&#9883; Линии","nuc.title":"Линии нуклидов",
   "nuc.all":"Все","nuc.none":"Снять",
   "nuc.need_cal":"Нужна калибровка энергии",
+  "btn.lines":"Линии","st.on":"вкл","st.off":"выкл","btn.lines_title":"Показать/скрыть выбранные линии нуклидов — сам выбор не меняется",
   "legend.live":"живой",
   "cursor.hint":"наведите курсор",
   "cal.title":"Калибровка энергии",
@@ -230,6 +232,7 @@ var DICT={
   "nuc.toggle":"&#9883; Lines","nuc.title":"Nuclide lines",
   "nuc.all":"All","nuc.none":"None",
   "nuc.need_cal":"Energy calibration required",
+  "btn.lines":"Lines","st.on":"on","st.off":"off","btn.lines_title":"Show/hide selected nuclide lines — selection itself unchanged",
   "legend.live":"live",
   "cursor.hint":"hover the chart",
   "cal.title":"Energy calibration",
@@ -272,6 +275,7 @@ function applyI18n(){
  document.documentElement.lang=LANG;
  var b=document.getElementById("langBtn"); if(b)b.textContent=(LANG==="ru")?"EN":"RU";
  document.title="AtomSpectra · "+tr("nav.spectrum");
+ if(typeof syncNucVisBtn==="function")syncNucVisBtn();   // #UI-40 mirror: подпись кнопки on/off при старте и смене языка
 }
 function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
@@ -577,6 +581,10 @@ var nucShow=(function(){
  return {k40:true,cs137:true,co60:true};
 })();
 function nucSave(){try{localStorage.setItem("aswf-nuc",JSON.stringify(nucShow));}catch(e){}}
+var nucVis=(function(){try{return localStorage.getItem("aswf-nuc-vis")!=="0";}catch(e){return true;}})();   /* #UI-40 mirror: быстрый on/off видимости линий, отдельно от выбора aswf-nuc (общий ключ с водопадом) */
+function syncNucVisBtn(){var b=document.getElementById("btn-nuc-vis");if(!b)return;b.textContent=tr("btn.lines")+": "+(nucVis?tr("st.on"):tr("st.off"));b.title=tr("btn.lines_title");b.style.opacity=nucVis?"":"0.6";}
+function toggleNucVis(){nucVis=!nucVis;try{localStorage.setItem("aswf-nuc-vis",nucVis?"1":"0");}catch(e){}syncNucVisBtn();if(lastD)draw(lastD);}
+syncNucVisBtn();   /* #UI-41: nucVis присваивается здесь (ниже applyI18n@557, где nucVis ещё undefined) — синхр. подпись кнопки на старте */
 function setNuc(id,v){nucShow[id]=!!v;nucSave();if(lastD)draw(lastD);}
 function nucAll(v){for(var i=0;i<NUCLIDES.length;i++){nucShow[NUCLIDES[i].id]=!!v;var cb=document.getElementById("nuc-cb-"+NUCLIDES[i].id);if(cb)cb.checked=!!v;}nucSave();if(lastD)draw(lastD);}
 function populateNucPanel(){
@@ -606,7 +614,7 @@ function nucBtnEnable(on){
  if(!on){var p=document.getElementById("nuc-panel");if(p)p.style.display="none";}
 }
 function drawNuclides(N){
- if(!calib||!lastD)return;
+ if(!calib||!lastD||!nucVis)return;   // #UI-40 mirror: быстрый on/off, выбор (aswf-nuc) не меняется
  var any=false;for(var k in nucShow){if(nucShow[k]){any=true;break;}}
  if(!any)return;
  X.save();X.beginPath();X.rect(PL,PT,PW,PH);X.clip();

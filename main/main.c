@@ -2,6 +2,7 @@
 #include "spectrogram.h"
 #include "boot_config.h"
 #include "wf_offload.h"   // #REC-11-A2: автономная выгрузка сегментов водопада
+#include "monitor.h"      // #MON-1: серия CPS-мониторинга на плате
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include <inttypes.h>
@@ -67,6 +68,7 @@ void app_main(void)
     usb_host_cdc_init();
     web_server_init();
     wf_offload_init();   // #REC-11-A2: поднять задачу-аплоадер (конфиг из NVS, по умолчанию выкл.)
+    monitor_init();      // #MON-1: кольцо серии CPS (6 ч в PSRAM) + задача-подписчик коммитов
     tcp_bridge_init();
     init_sntp();
 
