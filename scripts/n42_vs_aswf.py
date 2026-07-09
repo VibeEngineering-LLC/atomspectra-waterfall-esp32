@@ -21,8 +21,20 @@ def parse_n42(path):
     for m in meas:
         sd = re.search(r"<StartDateTime>(.*?)</StartDateTime>", m)
         rt = re.search(r"<RealTimeDuration>PT([\d.]+)S", m)
-        cd = re.search(r"<ChannelData[^>]*>(.*?)</ChannelData>", m, re.S)
-        tot = sum(int(v) for v in cd.group(1).split()) if cd else 0
+        cd = re.search(r"<ChannelData([^>]*)>(.*?)</ChannelData>", m, re.S)
+        tot = 0
+        if cd:
+            toks = cd.group(2).split()
+            if "CountedZeroes" in cd.group(1):  # 0 <runlen> — runlen НЕ счёт, декодировать
+                i = 0
+                while i < len(toks):
+                    v = int(toks[i])
+                    if v == 0:
+                        i += 2  # пропустить длину нулевого прогона
+                    else:
+                        tot += v; i += 1
+            else:
+                tot = sum(int(v) for v in toks)
         rows.append((sd.group(1) if sd else "?",
                      float(rt.group(1)) if rt else None, tot))
     return rows
@@ -44,7 +56,10 @@ def parse_aswf(path):
     hdr = json.loads(buf[8:8 + hlen].decode("utf-8"))
     ch = hdr["channels"]
     stride = hdr.get("row_stride", ch * 2)
-    payload = buf[8 + hlen:]
+    base = 0
+    if "baseline" in hdr:  # v4 baseline-блок (uint32×channels) — пропустить, иначе сдвиг строк → CRC-fail
+        base = hdr["baseline"].get("channels", hdr["baseline"].get("count", 0)) * 4
+    payload = buf[8 + hlen + base:]
     n_full = len(payload) // stride
     rem = len(payload) % stride
     crc_fld = _crc_field(hdr)
@@ -90,9 +105,10 @@ def main(n42_path, aswf_path):
         got_ch = rem // 2
         print(f"  ⚠ ОБРЫВ последней строки: {rem}/{stride} байт "
               f"(={got_ch}/{ch} каналов, хвост-поля dur/ts/gps/dose потеряны)")
-    if saved is not None and saved != len(a):
-        print(f"  ⚠ saved_rows={saved} ≠ полных строк={len(a)} "
-              f"(разница {saved-len(a)} = недописанная строка)")
+    if saved:  # #FW-14: saved_rows=0 = штатная конвенция «строк — из размера файла», не ошибка
+        if saved != len(a):
+            print(f"  ⚠ saved_rows={saved} ≠ полных строк={len(a)} "
+                  f"(разница {saved-len(a)} = недописанная строка)")
     durs_a = [d for _, d, _ in a]
     print(f"  длительности: min={min(durs_a)} max={max(durs_a)} уник={sorted(set(durs_a))[:12]}")
     print(f"  суммы: первая={a[0][0]} последняя(полн.)={a[-1][0]} "

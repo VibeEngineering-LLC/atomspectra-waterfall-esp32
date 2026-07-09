@@ -163,11 +163,13 @@ class N42Writer:
         return self.idx
 
 
-def rows_from_payload(blob, channels):
-    rb = channels * 2
-    n = len(blob) // rb
+def rows_from_payload(blob, channels, stride=None):
+    rb = channels * 2               # байт спектра (первые rb каждой строки)
+    step = stride if stride else rb  # v4: row_stride с хвост-полями; window/stream: rb
+    n = len(blob) // step
     for i in range(n):
-        yield struct.unpack("<%dH" % channels, blob[i * rb:(i + 1) * rb])
+        off = i * step
+        yield struct.unpack("<%dH" % channels, blob[off:off + rb])
 
 
 def mode_window(host, out, detector):
@@ -196,8 +198,12 @@ def mode_convert(infile, out, host, detector):
         sys.exit("bad magic: %r (expected ASWF)" % blob[:4])
     (hlen,) = struct.unpack("<I", blob[4:8])
     hdr = json.loads(blob[8:8 + hlen].decode("utf-8"))
-    payload = blob[8 + hlen:]
     ch = int(hdr.get("channels", 8192))
+    stride = int(hdr.get("row_stride", ch * 2))  # v4: строка = спектр + хвост-поля
+    base = 0
+    if "baseline" in hdr:  # v4 baseline-блок (uint32×channels) между заголовком и строками — пропустить
+        base = hdr["baseline"].get("channels", hdr["baseline"].get("count", 0)) * 4
+    payload = blob[8 + hlen + base:]
     iv = int(hdr.get("interval_sec", 5))
     started = int(hdr.get("started_at", 0)) or int(time.time())
     serial = str(hdr.get("serial", "") or "")
@@ -209,7 +215,7 @@ def mode_convert(infile, out, host, detector):
         coeffs, s2 = best_calib(host)
         serial = serial or s2
     w = N42Writer(out, ch, iv, started, coeffs, serial, detector)
-    for row in rows_from_payload(payload, ch):
+    for row in rows_from_payload(payload, ch, stride):
         w.add_row(row)
     n = w.close()
     print("wrote %s : %d measurements, %d channels, interval %ds, ecal=%s"
