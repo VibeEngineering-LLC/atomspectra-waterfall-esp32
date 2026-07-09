@@ -593,7 +593,10 @@ static esp_err_t h_segments(httpd_req_t *req)
         struct stat st;
         if (stat(path, &st) != 0) continue;
         long bytes = (long)st.st_size;
-        long rows  = (bytes > WF_SEG_HEADER) ? (bytes - WF_SEG_HEADER) / WF_ROW_BYTES : 0;
+        // payload = bytes − (8+hdr) − baseline; строк = payload / stride (v4=16406).
+        // Прежняя формула делила на WF_ROW_BYTES без вычета baseline — давала rows+2.
+        long payload = bytes - WF_SEG_HEADER - WF_BASELINE_BYTES;
+        long rows  = (payload > 0) ? payload / WF_ROW_STRIDE : 0;
         uint32_t idx = (uint32_t)strtoul(e->d_name + 4, NULL, 10);
         bool finalized = (idx != open_idx);
         int n = snprintf(line, sizeof(line),

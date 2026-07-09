@@ -89,7 +89,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="kv"><span>ESP-IDF</span><span>v5.4</span></div>
 <div class="kv"><span data-i18n="esp.fw">Прошивка</span><span id="fw-ver">—</span></div>
 <div class="kv"><span data-i18n="esp.update">Обновление</span><span id="fw-upd" class="mut">—</span></div>
-<button class="btn" id="fw-upd-btn" onclick="checkUpdate()" data-i18n="esp.checkUpd">Проверить обновление</button>
+<button class="btn" id="fw-upd-btn" onclick="checkUpdate()" data-i18n="esp.checkUpd" style="width:fit-content;margin-left:auto;padding:9px 16px">Проверить обновление</button>
 <div class="kv"><span data-i18n="esp.uptime">Uptime</span><span id="up">—</span></div>
 <div class="kv"><span data-i18n="esp.freeHeap">Free heap</span><span id="heap-kv">—</span></div>
 <div class="kv"><span data-i18n="esp.minHeap">Min free heap</span><span id="heap-min-kv">—</span></div>
@@ -188,6 +188,15 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 </section>
 
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9202;</span> <span data-i18n="tz.title">Часовой пояс</span></div>
+<div class="kv"><span data-i18n="tz.label">Пояс отображения</span>
+<select id="tz-sel" onchange="saveTz()" style="background:var(--panel);color:var(--txt);border:1px solid #444;padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px"></select>
+</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="tz.hint">Влияет на ось времени, таблицу и CSV-экспорт вкладки «Мониторинг». Хранится в браузере.</div>
+<div class="mut" id="tz-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</section>
+
 </div>
 </div>
 
@@ -230,6 +239,7 @@ var DICT={
   "dose.title":"Мощность дозы","dose.label":"Коэффициент k (µSv·h⁻¹/cps)","dose.hint":"0 — мощность дозы не записывается (NaN в файле). Сохраняется в NVS.","dose.save":"Сохранить","dose.saved":"Сохранено","dose.saveErr":"Ошибка",
   "dose.curveLabel":"Кривая мощности дозы","dose.curveNone":"Кривая не загружена (scalar k)","dose.curveHint":"CSV: channel,k_factor (до 512 точек, без заголовка). Приоритет над scalar k.","dose.curveLoad":"Загрузить CSV","dose.curveClear":"Сбросить кривую","dose.curveLoaded":"Кривая загружена (%1 точек)","dose.curveOk":"Загружено: %1 точек","dose.curveClearOk":"Кривая сброшена","dose.curveErr":"Ошибка загрузки","dose.curveNoFile":"Выберите CSV файл",
   "cal.set":"задана (%1 коэфф., порядок %2)","cal.unset":"не задана",
+  "tz.title":"Часовой пояс","tz.label":"Пояс отображения","tz.hint":"Влияет на ось времени, таблицу и CSV-экспорт вкладки «Мониторинг». Хранится в браузере.","tz.auto":"Авто (браузер, %1)","tz.saved":"Сохранено: %1",
   "confirm.rebootDev":"Перезагрузить прибор?","confirm.rebootEsp":"Перезагрузить ESP32?","confirm.resetWifi":"Сбросить WiFi и войти в режим настройки?",
   "up.d":"д","up.h":"ч","up.m":"м","up.s":"с",
   "tc":"TC"
@@ -270,6 +280,7 @@ var DICT={
   "dose.title":"Dose rate","dose.label":"Coefficient k (µSv·h⁻¹/cps)","dose.hint":"0 — dose rate not recorded (NaN in file). Stored in NVS.","dose.save":"Save","dose.saved":"Saved","dose.saveErr":"Error",
   "dose.curveLabel":"Dose rate curve","dose.curveNone":"No curve loaded (scalar k)","dose.curveHint":"CSV: channel,k_factor (up to 512 points, no header). Priority over scalar k.","dose.curveLoad":"Load CSV","dose.curveClear":"Clear curve","dose.curveLoaded":"Curve loaded (%1 points)","dose.curveOk":"Loaded: %1 points","dose.curveClearOk":"Curve cleared","dose.curveErr":"Load error","dose.curveNoFile":"Select a CSV file",
   "cal.set":"set (%1 coef., order %2)","cal.unset":"not set",
+  "tz.title":"Time zone","tz.label":"Display zone","tz.hint":"Affects the time axis, table and CSV export of the Monitoring tab. Stored in the browser.","tz.auto":"Auto (browser, %1)","tz.saved":"Saved: %1",
   "confirm.rebootDev":"Reboot device?","confirm.rebootEsp":"Reboot ESP32?","confirm.resetWifi":"Reset WiFi and enter setup mode?",
   "up.d":"d","up.h":"h","up.m":"m","up.s":"s",
   "tc":"TC"
@@ -294,7 +305,7 @@ function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
  LANG=l; try{localStorage.setItem("aswf-lang",l);}catch(e){}
  applyI18n();
- try{refreshSystem();refreshDevice();refreshSpectrum();}catch(e){}
+ try{refreshSystem();refreshDevice();refreshSpectrum();initTz();}catch(e){}
 }
 
 var csrfToken="";
@@ -461,6 +472,26 @@ async function saveBootConfig(statusId){
  }catch(e){ s.textContent=t("boot.saveErr"); s.style.color="#ff8a82"; }
  setTimeout(function(){s.textContent="";},2500);
 }
+// #UI-38: часовой пояс отображения (localStorage aswf-tz: "auto" | смещение от UTC в минутах).
+// Читается вкладкой «Мониторинг» (ось X, таблица, CSV). На плату не уходит — чисто клиентская настройка.
+function pad2(n){return (n<10?"0":"")+n;}
+function tzOffLabel(min){var s=min<0?"-":"+",a=Math.abs(min);return "UTC"+s+pad2(Math.floor(a/60))+":"+pad2(a%60);}
+function initTz(){
+ var sel=document.getElementById("tz-sel"); if(!sel)return;
+ var cur="auto"; try{cur=localStorage.getItem("aswf-tz")||"auto";}catch(e){}
+ var browserOff=-new Date().getTimezoneOffset();
+ var html='<option value="auto">'+tfmt("tz.auto",tzOffLabel(browserOff))+'</option>';
+ for(var h=-12;h<=14;h++){var m=h*60;html+='<option value="'+m+'">'+tzOffLabel(m)+'</option>';}
+ sel.innerHTML=html; sel.value=cur;
+ if(sel.value!==cur)sel.value="auto"; // сохранённое значение вне списка — показать авто, localStorage не трогать
+}
+function saveTz(){
+ var sel=document.getElementById("tz-sel"),s=document.getElementById("tz-status");
+ var v=sel.value; try{localStorage.setItem("aswf-tz",v);}catch(e){}
+ var off=(v==="auto")?-new Date().getTimezoneOffset():parseInt(v,10);
+ if(s){s.textContent=tfmt("tz.saved",tzOffLabel(off));s.style.color="var(--accent)";setTimeout(function(){s.textContent="";},2500);}
+}
+
 async function rebootDevice(){if(!confirm(t("confirm.rebootDev")))return;await post("/api/reboot-device");}
 async function rebootEsp(){if(!confirm(t("confirm.rebootEsp")))return;await post("/api/reboot-esp");}
 async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post("/api/wifi/reset");}
@@ -534,6 +565,7 @@ async function clearDoseCurve(statusId){
 
 (async function(){
  applyI18n();
+ initTz();
  document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
  document.getElementById("ip-chip").textContent=location.hostname;
  await loadCsrf();
