@@ -3,6 +3,8 @@
 #include "web_waterfall.h"
 #include "web_util.h"
 #include "boot_config.h"
+#include "monitor.h"        // #MON-1: серия CPS-мониторинга (/api/monitor/series)
+#include "esp_heap_caps.h"  // #MON-1: PSRAM-буфер чанка серии
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "cJSON.h"
@@ -257,6 +259,54 @@ static esp_err_t handle_devlog(httpd_req_t *req)
     usb_host_cdc_devlog_json(since, buf, 9000);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
+    free(buf);
+    return ESP_OK;
+}
+
+// #MON-1: серия CPS-мониторинга с платы. GET /api/monitor/series?since=<seq>
+// Read-only (CSRF не нужен, как /api/devlog). Ответ:
+//   {"epoch":E,"next_seq":N,"first_seq":F,"interval_base":1,
+//    "samples":[[end_sec,dur,counts],...]}
+// samples — от max(since+1, старейший в кольце), чанк <= 2000 шт; клиент
+// дотягивает циклом, пока не догонит next_seq. Стрим httpd_resp_send_chunk
+// (паттерн h_export_aswf) — без гигантского JSON-дерева в куче.
+#define MON_SERIES_CHUNK 2000   // 2000 × 10 Б = ~20 КБ PSRAM на время запроса
+
+static esp_err_t handle_monitor_series(httpd_req_t *req)
+{
+    uint32_t since = 0;
+    char q[48], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK)
+        since = strtoul(v, NULL, 10);
+
+    size_t cap = MON_SERIES_CHUNK;
+    monitor_sample_t *smp = heap_caps_malloc(cap * sizeof(*smp), MALLOC_CAP_SPIRAM);
+    if (!smp) { cap = 400; smp = malloc(cap * sizeof(*smp)); }  // fallback: internal, чанк меньше
+    char *buf = malloc(2048);
+    if (!smp || !buf) {
+        free(smp);
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    uint32_t first = 0, next = 0, epoch = 0;
+    size_t n = monitor_copy_since(since, smp, cap, &first, &next, &epoch);
+
+    httpd_resp_set_type(req, "application/json");
+    int pos = snprintf(buf, 2048,
+        "{\"epoch\":%" PRIu32 ",\"next_seq\":%" PRIu32 ",\"first_seq\":%" PRIu32
+        ",\"interval_base\":1,\"samples\":[", epoch, next, first);
+    for (size_t i = 0; i < n; i++) {
+        pos += snprintf(buf + pos, 2048 - pos, "%s[%" PRIu32 ",%u,%" PRIu32 "]",
+                        i ? "," : "", smp[i].end_sec, (unsigned)smp[i].dur, smp[i].counts);
+        if (pos > 1900) { httpd_resp_send_chunk(req, buf, pos); pos = 0; }
+    }
+    pos += snprintf(buf + pos, 2048 - pos, "]}");
+    httpd_resp_send_chunk(req, buf, pos);
+    httpd_resp_send_chunk(req, NULL, 0);   // терминатор чанк-стрима
+    free(smp);
     free(buf);
     return ESP_OK;
 }
@@ -1349,7 +1399,7 @@ void web_server_init(void)
     // tskNO_AFFINITY позволял httpd (prio 5) исполняться на core 0 рядом с
     // USB-приёмом — уводим целиком.
     config.core_id = 1;
-    config.max_uri_handlers = 60;        // #WF-2: 30 базовых + 21 waterfall (было 13; +dose_k×2, +dose_curve×3, +export.aswf, +segment/delete) = 51. Лимит 45 переполнялся → /ws/waterfall и 4 др. не регистрировались → 404 → цикл reconnect. 60 = +9 запас.
+    config.max_uri_handlers = 64;        // #WF-2/#MON-1: 32 базовых (uris[], +/api/monitor/series) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 52. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. 64 = +12 запас.
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1375,6 +1425,7 @@ void web_server_init(void)
         {"/api/spectrum.json",           HTTP_GET,  handle_spectrum_json,    NULL},
         {"/api/command",                 HTTP_POST, handle_command,          NULL},
         {"/api/devlog",                  HTTP_GET,  handle_devlog,           NULL},
+        {"/api/monitor/series",          HTTP_GET,  handle_monitor_series,   NULL},  // #MON-1
         {"/api/reset",                   HTTP_POST, handle_reset,            NULL},
         {"/api/boot-config",             HTTP_GET,  handle_boot_config_get,  NULL},
         {"/api/boot-config",             HTTP_POST, handle_boot_config_set,  NULL},

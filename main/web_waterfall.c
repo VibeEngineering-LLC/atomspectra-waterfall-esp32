@@ -337,7 +337,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
         ",\"compressed\":false"
         ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
         (uint32_t)s.ring_count, (long)now,
-        WF_CHANNELS, WF_ROW_STRIDE,
+        WF_CHANNELS, WF_ROW_PRECRC,   // #FW-39: v3 export без crc32 → stride=16402 (не 16406)
         WF_CHANNELS,
         WF_ROW_BYTES,
         WF_ROW_BYTES + WF_DUR_BYTES,
