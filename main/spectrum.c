@@ -268,12 +268,15 @@ static void store_raw_trimmed(const char *text, char *buf, size_t bufsz, int *ou
 void spectrum_process_info_response(const char *text)
 {
     SPEC_LOCK();
-    // #DEV-6: сырой текст -inf для бэкапа настроек — независимо от того, что
-    // структурный парсер ниже хранит лишь подмножество полей (POT2/Tco[]/
-    // PileUp[]/PileUpThr/Prise/Pfall/TCpot он молча пропускает).
-    store_raw_trimmed(text, s_info_raw, sizeof(s_info_raw), &s_info_raw_len, &s_info_raw_seq);
-    device_info_t *d = &s_device_info;
-    memset(d, 0, sizeof(*d));
+    // #BRIDGE-3: этот вход обслуживает ДВА разных ответа прибора — роутер
+    // (usb_host_cdc.c) шлёт сюда и -inf (параметры+температура), и -cal (дамп
+    // 40 hex-регистров: калибровка+CRC+серийник). Различаем по содержимому:
+    // -inf несёт ключ "VERSION ", -cal ключей не содержит. РАНЬШЕ -cal шёл в ту
+    // же ветку memset(device_info)+key-парсер → ключей нет → температура и версия
+    // обнулялись (симптом «t=0»); серийник брался из lbuf[39] безусловно и при
+    // сдвиге строк (склейка под нагрузкой bridge) вставал в FFFFFFFF — в дампе
+    // 28 строк FFFFFFFF («пустые» слоты калибровки), любой сдвиг индекса туда попадал.
+    bool is_inf = (strstr(text, "VERSION ") != NULL);
     // static: 3 КБ парс-буфера не на стеке CDC-таска (P1-1). Функция целиком
     // выполняется под SPEC_LOCK, единственный путь вызова — безопасно.
     static char lbuf[48][64];
@@ -287,17 +290,11 @@ void spectrum_process_info_response(const char *text)
         while (*lp == '\n' || *lp == '\r') lp++;
         lcount++;
     }
-    if (lcount >= 40) {
-        strncpy(s_spectrum.serial_number, lbuf[39], sizeof(s_spectrum.serial_number) - 1);
-        ESP_LOGI(TAG, "Serial: %s", s_spectrum.serial_number);
-    }
-    // #FW-13: LOGD, не LOGI — функция выполняется в CDC-таске, а консоль UART0
-    // 115200 блокирующая: ~15 строк на каждый -inf (раз в 30 с) = 60-80 мс простоя
-    // приёма. FTDI FT232R держит 256 Б FIFO = 4.3 мс при 600000 бод → overflow,
-    // gap в chunk-ах, свип дропался (30-секундная сетка hist_drop).
-    ESP_LOGD(TAG, "Info response: %d lines", lcount);
-    for (int i = 0; i < lcount && i < 12; i++)
-        ESP_LOGD(TAG, "  L[%d]: \"%s\"", i, lbuf[i]);
+    // #FW-13: LOGD, не LOGI — функция в CDC-таске, консоль UART0 115200 блокирующая
+    // (FTDI FT232R 256 Б FIFO = 4.3 мс при 600000 бод → overflow, gap в chunk-ах).
+    ESP_LOGD(TAG, "Info response: %d lines (%s)", lcount, is_inf ? "inf" : "cal");
+    // Калибровка: только у -cal (CRC L[0..9]==L[10], ≥40 строк). Для -inf это
+    // одна строка (lcount<11) → блок штатно пропускается, калибровку не трогает.
     if (lcount >= 11) {
         char hcat[256] = {0};
         for (int i = 0; i < 10; i++)
@@ -337,6 +334,41 @@ void spectrum_process_info_response(const char *text)
             ESP_LOGD(TAG, "Calibration CRC mismatch: computed=%08x expected=%08x", (unsigned)cc, (unsigned)ce);
         }
     }
+
+    if (!is_inf) {
+        // #BRIDGE-3: -cal обновляет ТОЛЬКО серийник (L39), device_info/температуру
+        // НЕ трогает и s_info_raw (сырой -inf для бэкапа) не перетирает. Серийник —
+        // с проверкой: ровно 8 hex-символов и не «FFFFFFFF» (пустой слот). При
+        // сдвиге строк lbuf[39] попадает в блок FFFFFFFF → отбрасываем, прежнее
+        // валидное значение сохраняется (серийник больше не «портится» под bridge).
+        if (lcount >= 40) {
+            const char *sn = lbuf[39];
+            size_t sl = strlen(sn);
+            bool ok = (sl == 8);
+            int fcnt = 0;
+            for (size_t i = 0; ok && i < sl; i++) {
+                char c = sn[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) ok = false;
+                if (c == 'F' || c == 'f') fcnt++;
+            }
+            if (ok && fcnt != 8) {
+                strncpy(s_spectrum.serial_number, sn, sizeof(s_spectrum.serial_number) - 1);
+                ESP_LOGI(TAG, "Serial: %s", s_spectrum.serial_number);
+            } else {
+                ESP_LOGD(TAG, "Serial rejected (misaligned -cal): \"%s\"", sn);
+            }
+        }
+        SPEC_UNLOCK();
+        return;
+    }
+
+    // ===== -inf: параметры прибора + температура + версия (серийника не несёт) =====
+    // #DEV-6: сырой текст -inf для бэкапа настроек — структурный парсер ниже
+    // хранит лишь подмножество полей (POT2/Tco[]/PileUp[]/PileUpThr/Prise/Pfall/
+    // TCpot он молча пропускает), бэкап берёт полную строку.
+    store_raw_trimmed(text, s_info_raw, sizeof(s_info_raw), &s_info_raw_len, &s_info_raw_seq);
+    device_info_t *d = &s_device_info;
+    memset(d, 0, sizeof(*d));
     const char *p = text;
     while (*p) {
         while (*p == ' ' || *p == '\n' || *p == '\r') p++;
