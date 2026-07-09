@@ -373,12 +373,18 @@ function draw(d){
  if(mx<=0)mx=1;
  var yTicks=[],minExp=0,maxExp=0,yMap;
  if(isLog){
-  /* #FW-35: cps=counts/tt — чистый вертикальный сдвиг в лог-простр. Фикс 7 декад, top=пик (без ceil, без isCps-асимметрии) → форма cps и counts идентична при любом tt. #FW-26 (пик<1 не топим) сохранён: top всегда трекает пик. */
+  /* #UI-36: масштаб как в AtomSpectra-референсе — пол=ОДИН отсчёт, верх=пик, декады = реальный
+     диапазон данных (НЕ фикс 7 — 7 декад топили спектр до 1e-7, пустой шум снизу = «ужасно»).
+     Пол «один отсчёт»: counts→10^0=1; cps→1/tt (тот же отсчёт, поделённый на время). Разница
+     minExp = -log10(tt) — чистый вертикальный сдвиг → форма cps и counts идентична (#FW-35 цел).
+     #FW-26 (пик<1 не топим) сохранён: maxExp всегда трекает пик. */
   maxExp=Math.log10(mx)+0.15;   /* лёгкий отступ сверху, одинаков для cps/counts */
-  minExp=maxExp-7;
-  /* тики только целые декады; для counts не рисуем под-1 (10^-1..) — целочисл. отсчёты, декады <1 = «0 0 0» мусор. Кривая берёт yMap(minExp/maxExp), НЕ tick-массив → форма cps/counts остаётся идентичной. */
-  for(var p=Math.ceil(minExp);p<=Math.floor(maxExp);p++){if(!isCps&&p<0)continue;yTicks.push(Math.pow(10,p));}
-  yMap=function(v){if(v<=0)return PB;var lv=Math.log10(v);if(lv<minExp)return PB;return PB-((lv-minExp)/(maxExp-minExp))*PH};
+  minExp=isCps?-Math.log10(tt):0;   /* один отсчёт: cps=1/tt, counts=1 */
+  if(minExp>=maxExp-0.5)minExp=maxExp-1;   /* гарантия ≥~1 декады при крошечном пике */
+  /* тики — целые декады в окне [minExp..maxExp]; для counts под-1 не бывает (minExp=0). */
+  for(var p=Math.ceil(minExp);p<=Math.floor(maxExp);p++)yTicks.push(Math.pow(10,p));
+  /* простой лог-линейный map [minExp..maxExp]→[PB..PT]; #UI-35 half-split убран (при поле=1 суб-декад у counts нет, для cps сдвиг сохраняет identity). */
+  yMap=function(v){if(v<=0)return PB;var lv=Math.log10(v);if(lv<=minExp)return PB;if(lv>=maxExp)return PT;return PB-((lv-minExp)/(maxExp-minExp))*PH;};
  }else{
   yMap=function(v){return PB-(v/mx)*PH};
   var ys=niceStep(mx,6);for(var v=0;v<=mx*1.01;v+=ys)yTicks.push(v);
@@ -394,8 +400,13 @@ function draw(d){
  var bw=PW/N;
  var accent=getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';
  if(yO){X.fillStyle="rgba(110,168,255,0.28)";for(var i=0;i<yO.length;i++){var y=yMap(yO[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y)}}
- X.fillStyle=accent+"44";
+ /* #UI-36: лёгкая заливка (alpha 0x1e ≈ 0.12) + чёткая линия сверху — как в AtomSpectra-референсе.
+    Раньше accent+"44" (~0.27) сплошными столбцами = тяжёлая «плита», топила форму спектра. */
+ X.fillStyle=accent+"1e";
  for(var i=0;i<N;i++){var y=yMap(yV[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y)}
+ X.strokeStyle=accent;X.lineWidth=1;X.beginPath();
+ for(var i=0;i<N;i++){var px=PL+i*bw+bw/2,py=yMap(yV[i]);i===0?X.moveTo(px,py):X.lineTo(px,py)}
+ X.stroke();
  if(yO){X.strokeStyle="#6ea8ff";X.lineWidth=1.1;X.setLineDash([5,4]);X.beginPath();for(var i=0;i<yO.length;i++){var px=PL+i*bw+bw/2,py=yMap(yO[i]);i===0?X.moveTo(px,py):X.lineTo(px,py)}X.stroke();X.setLineDash([])}
  X.restore();
  drawNuclides(N);

@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"   /* #BRIDGE-1: RX-кольцо декаплинга data_cb */
 #include "esp_heap_caps.h"   /* #TCP-5: диагностика свободного DMA-блока перед open */
 #include "esp_timer.h"       /* #FW-22: timestamp для last_* полей */
 #include <string.h>
@@ -36,6 +37,24 @@ static SemaphoreHandle_t s_tx_mutex = NULL;
 
 static uint8_t s_rx_buf[4096];
 static shproto_struct s_rx_packet;
+
+// #BRIDGE-1: RX-кольцо (internal RAM) для декаплинга USB data_cb от разбора.
+// Корень бага (репро Аудитора 2026-07-08): handle_rx (cdc data_cb) делал ВЕСЬ разбор
+// синхронно — де-FTDI, s_raw_rx_cb (TCP), побайтный feed_shproto → handle_rx_packet →
+// spectrum_process_histogram_chunk (8192-сумма + 32КБ memcpy под SPEC_LOCK). Пока
+// data_cb висит, CDC-драйвер не переотправляет USB-IN transfer → FTDI FIFO 256Б
+// переполняется за 4.3мс @600000 бод → битый CRC свипа + "histogram sweep dropped".
+// Проявлялось ТОЛЬКО с TCP-клиентом: tcp_tx (#TCP-1) молотит 256КБ PSRAM-кольцо, и
+// контеншен octal-PSRAM-шины замедлял PSRAM-доступы разбора в data_cb (s_hist_staging
+// в PSRAM) → data_cb ещё дольше. Фикс: data_cb делает МИНИМУМ (де-FTDI → payload в это
+// кольцо, без блокировки), а usb_rx_worker разгребает. Кольцо в INTERNAL RAM (не PSRAM)
+// — иммунитет к контеншену PSRAM-шины на самом hot-path.
+#define RX_RING_BYTES     (16 * 1024)
+#define RX_RING_TRIGGER   1
+static StreamBufferHandle_t s_rx_ring = NULL;
+static StaticStreamBuffer_t s_rx_ring_struct;
+static uint8_t *s_rx_ring_storage = NULL;
+static volatile uint32_t s_rx_ring_drops = 0;  // payload-байт потеряно при переполнении кольца
 
 static uint8_t s_tx_buf[256];
 static shproto_struct s_tx_packet;
@@ -171,6 +190,25 @@ static void feed_shproto(const uint8_t *d, size_t n) {
         if (s_rx_packet.ready) { s_rx_packet.ready = false; handle_rx_packet(); }
     }
 }
+
+// #BRIDGE-1: consumer RX-кольца. ЕДИНСТВЕННЫЙ, кто зовёт feed_shproto/s_raw_rx_cb.
+// Держит весь тяжёлый разбор (shproto → spectrum, включая 32КБ memcpy под SPEC_LOCK)
+// и TCP-раздачу ВНЕ CDC data_cb, чтобы приём USB-IN не голодал. Приоритет 6: НИЖЕ
+// CDC-драйвера(8) и usb_lib(7) на core0 — не вытесняет USB-сервис; ВЫШЕ httpd(5) —
+// успевает разгребать кольцо. Стек 8192: тот же путь разбора (-inf парсер), что
+// раньше жил в CDC-таске с 8192 (P1-1 static-буферы уже вынесены).
+static void usb_rx_worker(void *arg)
+{
+    static uint8_t chunk[2048];
+    while (1) {
+        if (!s_rx_ring) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        size_t n = xStreamBufferReceive(s_rx_ring, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
+        if (n == 0) continue;                 // таймаут, данных нет
+        if (s_raw_rx_cb) s_raw_rx_cb(chunk, n);   // порядок как раньше: raw → parser
+        feed_shproto(chunk, n);
+    }
+}
+
 static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
     ++s_rx_cb_count;
     // #FW-22: снимок первых 16 байт + счётчики
@@ -189,14 +227,23 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
     if (s_rx_cb_count <= 10) {
         ESP_LOGI(TAG,"RX#%d len=%u: %s",s_rx_cb_count,(unsigned)data_len,h);
     }
+    // #BRIDGE-1: data_cb — МИНИМУМ. Де-FTDI (снять 2 status-байта с каждого 64-байтного
+    // USB-пакета — привязка к границам USB-кадра видна только здесь), проверить
+    // line-status, сложить payload в RX-кольцо без блокировки. Разбор — в usb_rx_worker.
     for (size_t off=0; off<data_len; ) {
         size_t ch=data_len-off; if(ch>64)ch=64; if(ch<=2)break;
         if (data[off+1] & 0x8E) {
             s_usb_rx_err++;  // #TCP-4: FTDI line-status byte = OE|PE|FE|FIFO
             DIAG_LOCK(); s_diag.line_status_errors = s_usb_rx_err; DIAG_UNLOCK();
         }
-        if(s_raw_rx_cb) s_raw_rx_cb(data+off+2,ch-2);
-        feed_shproto(data+off+2,ch-2);
+        if (s_rx_ring) {
+            size_t put = xStreamBufferSend(s_rx_ring, data+off+2, ch-2, 0);  // 0 = не блокировать
+            if (put < ch-2) s_rx_ring_drops += (uint32_t)((ch-2) - put);      // кольцо переполнено
+        } else {
+            // фоллбэк: кольцо не выделилось — старый синхронный путь прямо в data_cb
+            if(s_raw_rx_cb) s_raw_rx_cb(data+off+2,ch-2);
+            feed_shproto(data+off+2,ch-2);
+        }
         off+=ch;
     }
     return true;
@@ -437,6 +484,24 @@ void usb_host_cdc_init(void)
     }
     ESP_LOGI(TAG, "CDC-ACM driver installed");
 
+    // #BRIDGE-1: RX-кольцо в INTERNAL RAM (не PSRAM — иммунитет к контеншену шины
+    // PSRAM от tcp_tx 256КБ-кольца, тот контеншен = причина "только с TCP-клиентом").
+    // 16КБ+1: xStreamBuffer держит 1 байт служебный. Non-DMA internal ~220КБ есть.
+    s_rx_ring_storage = heap_caps_malloc(RX_RING_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (s_rx_ring_storage) {
+        s_rx_ring = xStreamBufferCreateStatic(RX_RING_BYTES, RX_RING_TRIGGER,
+                                              s_rx_ring_storage, &s_rx_ring_struct);
+    }
+    if (s_rx_ring) {
+        // usb_rxw prio 6 core0: ниже CDC(8)/usb_lib(7) — не вытесняет USB-сервис,
+        // выше httpd(5) — успевает разгребать кольцо в окне выгрузки сегмента.
+        xTaskCreatePinnedToCore(usb_rx_worker, "usb_rxw", 8192, NULL, 6, NULL, 0);
+        ESP_LOGI(TAG, "RX ring %d B (internal) + usb_rxw started", RX_RING_BYTES);
+    } else {
+        // фоллбэк: без кольца data_cb уходит в старый синхронный путь (s_rx_ring==NULL)
+        ESP_LOGW(TAG, "RX ring alloc FAILED -> synchronous data_cb fallback");
+    }
+
     xTaskCreatePinnedToCore(usb_connect_task, "usb_conn", 4096, NULL, 2, NULL, 0);
     ESP_LOGI(TAG, "USB Host CDC initialized, waiting for analyzer...");
 }
@@ -463,6 +528,14 @@ void usb_host_cdc_set_raw_rx_cb(usb_raw_rx_cb_t cb)
 uint32_t usb_host_cdc_rx_errors(void)
 {
     return s_usb_rx_err;
+}
+
+// #BRIDGE-1: payload-байт потеряно при переполнении RX-кольца (data_cb → ring).
+// >0 => usb_rx_worker не успевает разгребать => фикс развязки на пределе. Прямой
+// индикатор здоровья буфера под TCP-нагрузкой (валидация Андрея).
+uint32_t usb_host_cdc_rx_ring_drops(void)
+{
+    return s_rx_ring_drops;
 }
 
 // #UI-1: JSON-массив текстовых ответов прибора с seq>since:

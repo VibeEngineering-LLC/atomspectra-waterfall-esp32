@@ -72,6 +72,8 @@ static uint32_t  s_seg_next;               // следующий индекс д
 static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
 static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
 static uint32_t  s_seg_pinned = 0xFFFFFFFFu; // #REC-11-A2: сегмент в процессе выгрузки (claim) — кольцо его не трогает
+static uint32_t  s_seg_seq;                // #DATA-1b: глоб. монотонный номер сегмента (NVS-персист, переживает clear/ребут)
+static uint32_t  s_seg_total_at_open;      // #DATA-1c: device cumulative total на момент открытия текущего сегмента
 static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки (только под s_fs_lock)
 
 // #FW-6: расцепление acquisition↔flash. wf_task (producer) только набирает строки
@@ -140,6 +142,9 @@ static void settings_load(void)
     uint32_t dose_bits = 0;
     if (nvs_get_u32(h, "dose_k_bits", &dose_bits) == ESP_OK)
         memcpy(&s_dose_k, &dose_bits, 4);
+    uint32_t seq = 0;                       // #DATA-1b: глоб. номер сегмента переживает clear/ребут
+    if (nvs_get_u32(h, "seg_seq", &seq) == ESP_OK)
+        s_seg_seq = seq;
     nvs_close(h);
 }
 
@@ -241,6 +246,19 @@ static void seg_path(char *out, size_t cap, uint32_t idx)
     snprintf(out, cap, WF_SEG_DIR "/seg_%05" PRIu32 ".aswf", idx);
 }
 
+// #DATA-1a: стандартный CRC32 (init 0xFFFFFFFF, poly 0xEDB88320 рефлексия, финальный
+// XOR 0xFFFFFFFF) — zlib-совместим, тот же алгоритм, что #CMD-1 (spectrum.c). Аккумулятивный:
+// вызывающий стартует с 0xFFFFFFFF, применяет по чанкам, финализирует ^0xFFFFFFFF.
+static uint32_t crc32_upd(uint32_t crc, const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        crc ^= p[i];
+        for (int j = 0; j < 8; j++)
+            crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+    }
+    return crc;
+}
+
 // Разбор имени seg_NNNNN.aswf → индекс. false, если имя не подходит.
 static bool seg_name_index(const char *name, uint32_t *idx)
 {
@@ -262,7 +280,7 @@ static void seg_header_build(uint32_t rows, long saved_at, long started_at)
     int cap = (int)sizeof(s_hdr);
     int n = snprintf(s_hdr, sizeof(s_hdr),
         WF_F_PRE "%*" PRIu32 WF_F_MID "%*ld"
-        ",\"format\":\"atomspectra-waterfall\",\"version\":3"
+        ",\"format\":\"atomspectra-waterfall\",\"version\":4"
         ",\"channels\":%d,\"dtype\":\"uint16\",\"byte_order\":\"little\""
         ",\"row_stride\":%d"
         ",\"row_fields\":["
@@ -271,10 +289,12 @@ static void seg_header_build(uint32_t rows, long saved_at, long started_at)
         "{\"name\":\"timestamp\",\"dtype\":\"uint32\",\"unit\":\"unix_sec\",\"offset\":%d},"
         "{\"name\":\"latitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
         "{\"name\":\"longitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
-        "{\"name\":\"dose_rate\",\"dtype\":\"float32\",\"unit\":\"usv_h\",\"offset\":%d}"
+        "{\"name\":\"dose_rate\",\"dtype\":\"float32\",\"unit\":\"usv_h\",\"offset\":%d},"
+        "{\"name\":\"crc32\",\"dtype\":\"uint32\",\"algo\":\"crc32\",\"covers\":%d,\"offset\":%d}"
         "]"
         ",\"baseline\":{\"dtype\":\"uint32\",\"channels\":%d,\"byte_order\":\"little\"}"
         ",\"compressed\":false"
+        ",\"seg_seq\":%" PRIu32 ",\"total_at_open\":%" PRIu32
         ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
         WF_F_W, rows, WF_F_W, saved_at,
         WF_CHANNELS, WF_ROW_STRIDE,
@@ -284,7 +304,10 @@ static void seg_header_build(uint32_t rows, long saved_at, long started_at)
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES,              // latitude.offset=16390
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 4,         // longitude.offset=16394
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 8,         // dose_rate.offset=16398
+        WF_ROW_PRECRC,                                            // crc32.covers=16402
+        WF_ROW_PRECRC,                                            // crc32.offset=16402
         WF_CHANNELS,                                              // baseline.channels
+        s_seg_seq, s_seg_total_at_open,                          // #DATA-1b/1c
         s_status.interval_sec, started_at);
     if (n > 0 && n < cap && s_snap && s_snap->serial_number[0])
         n += snprintf(s_hdr + n, cap - n, ",\"serial\":\"%s\"", s_snap->serial_number);
@@ -365,6 +388,20 @@ static bool seg_open_new(void)
         if (!f) { ESP_LOGE(TAG, "cannot open %s", p); return false; }
     }
     long now = (long)time(NULL);
+    // #DATA-1b/1c: снимок метаданных сегмента ДО сборки шапки (оба идут в JSON).
+    // seg_seq — глоб. монотонный, переживает clear/ребут (NVS); total_at_open —
+    // накопительный total прибора сейчас (reconciliation на PC). Персист seq в NVS
+    // сразу: если ребут случится с открытым сегментом, следующий seq не повторится.
+    s_seg_seq++;
+    s_seg_total_at_open = spectrum_get_current()->total_counts;
+    {
+        nvs_handle_t nh;
+        if (nvs_open(WF_SETTINGS_NS, NVS_READWRITE, &nh) == ESP_OK) {
+            nvs_set_u32(nh, "seg_seq", s_seg_seq);
+            nvs_commit(nh);
+            nvs_close(nh);
+        }
+    }
     // #FW-14: saved_rows=0 / saved_at=0 = «выводить из размера файла» — шапка
     // никогда не патчится (патч offset 14/34 = LittleFS COW всего хвоста с
     // заморозкой flash-кэша, #FW-8). Время строк несут поля dur (v2) +
@@ -642,10 +679,22 @@ static void seg_write_row(const uint8_t *row, uint16_t dur)
             memcpy(v3tail + 8,  &lon_v, 4);
             memcpy(v3tail + 12, &dose_v, 4);
         }
+        // #DATA-1a: CRC32 по всем 16402 предшествующим байтам строки (spectrum+dur+v3tail),
+        // аккумулятивно, без доп. буфера. LE-запись 4 байтами следом. PC при pull сверяет.
+        uint32_t crc = 0xFFFFFFFFu;
+        crc = crc32_upd(crc, row,    WF_ROW_BYTES);
+        crc = crc32_upd(crc, durle,  WF_DUR_BYTES);
+        crc = crc32_upd(crc, v3tail, sizeof(v3tail));
+        crc ^= 0xFFFFFFFFu;
+        uint8_t crcle[WF_CRC_BYTES] = {
+            (uint8_t)(crc), (uint8_t)(crc >> 8), (uint8_t)(crc >> 16), (uint8_t)(crc >> 24)
+        };
         size_t wr  = fwrite(row,    1, WF_ROW_BYTES,    s_seg_fp);
         size_t wrd = (wr  == WF_ROW_BYTES)  ? fwrite(durle,  1, WF_DUR_BYTES,       s_seg_fp) : 0;
         size_t wrv = (wrd == WF_DUR_BYTES)  ? fwrite(v3tail, 1, sizeof(v3tail),     s_seg_fp) : 0;
-        if (wr != WF_ROW_BYTES || wrd != WF_DUR_BYTES || wrv != sizeof(v3tail) || fflush(s_seg_fp) != 0) {
+        size_t wrc = (wrv == sizeof(v3tail))? fwrite(crcle,  1, WF_CRC_BYTES,       s_seg_fp) : 0;
+        if (wr != WF_ROW_BYTES || wrd != WF_DUR_BYTES || wrv != sizeof(v3tail) ||
+            wrc != WF_CRC_BYTES || fflush(s_seg_fp) != 0) {
             ESP_LOGE(TAG, "seg row write failed (wr=%zu) — drop segment", wr);
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
         } else {

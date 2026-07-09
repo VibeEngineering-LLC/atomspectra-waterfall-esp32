@@ -93,6 +93,7 @@ void tcp_bridge_init(void);
 bool tcp_bridge_client_connected(void);
 uint32_t tcp_bridge_dropped_bytes(void);
 uint32_t usb_host_cdc_rx_errors(void);  // #TCP-4
+uint32_t usb_host_cdc_rx_ring_drops(void);  // #BRIDGE-1: RX-кольцо переполнение
 void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz);  // #UI-1
 
 // #FW-22: глубокая диагностика USB Host. Снапшот всех счётчиков/last_* полей

@@ -27,20 +27,34 @@
 #define WF_HDR_RESERVE        4096            // .aswf JSON-заголовок (добивается пробелами)
 #define WF_SEG_HEADER         (8 + WF_HDR_RESERVE)  // offset payload в сегменте (= 4104)
 
-// Формат сегмента v3 (ASWF v3):
+// Формат сегмента v4 (ASWF v4) — #DATA-1 целостность данных:
 // • После JSON-шапки (offset 8+hlen) идёт baseline-секция: 8192×uint32 LE (32768 Б) —
 //   накопительный спектр на момент старта записи.
 // • Payload (строки) начинается с offset 8+hlen+WF_BASELINE_BYTES.
 // • Каждая строка = спектр (uint16×8192) + duration (uint16) + timestamp (uint32) +
-//   latitude (float32) + longitude (float32) + dose_rate (float32).
-// • Шапка самоописываема: "version":3, "row_fields":[...], "baseline":{...}.
-// v1: stride=WF_ROW_BYTES (нет поля row_stride); v2: stride=16386; v3: stride=16402.
+//   latitude (float32) + longitude (float32) + dose_rate (float32) + crc32 (uint32).
+//   crc32 (#DATA-1a) = стандартный CRC32 (init 0xFFFFFFFF, рефлексия, финальный XOR,
+//   poly 0xEDB88320 — zlib-совместим, тот же #CMD-1) по 16402 предшествующим байтам
+//   строки. PC при pull пересчитывает и сверяет → детект тихой порчи строки.
+// • Шапка самоописываема: "version":4, "row_fields":[...crc32], "baseline":{...},
+//   "seg_seq":N (#DATA-1b глобальный монотонный номер сегмента, NVS-персист, переживает
+//   ребут/clear — PC детектит пропуск сегмента по разрыву seq), "total_at_open":T
+//   (#DATA-1c накопительный total прибора на момент открытия сегмента — reconciliation:
+//   события_прибор = seg[K+1].total_at_open − seg[K].total_at_open. Сверка ОДНОСТОРОННЯЯ:
+//   Σ bins seg[K] ≥ события_прибор ВСЕГДА, т.к. per-channel дельта строки клампится в 0
+//   при убыли канала (wf_task d<0→0), а total_counts держит истинный знаковый net.
+//   Значит Σbins < события_прибор ⟺ ПОТЕРЯ; Σbins ≥ события_прибор = норма (избыток —
+//   benign кламп при перекалибровке/дрейфе прибора, счёты мигрируют между каналами)).
+// v1: stride=WF_ROW_BYTES (нет поля row_stride); v2: stride=16386; v3: stride=16402;
+// v4: stride=16406. Потребители авто-детектят stride из шапки → v1..v3 читаются как прежде.
 #define WF_DUR_BYTES          2                              // uint16 LE, секунды
 #define WF_TS_BYTES           4                              // uint32 LE, unix timestamp
 #define WF_GPS_BYTES          8                              // float32 LE lat + lon (NaN без GPS)
 #define WF_DOSE_BYTES         4                              // float32 LE µSv/h (NaN если k=0)
-#define WF_ROW_STRIDE         (WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + WF_GPS_BYTES + WF_DOSE_BYTES)
-                                                             // = 16402, запись строки v3
+#define WF_CRC_BYTES          4                              // #DATA-1a: uint32 LE CRC32 строки (16402 Б до него)
+#define WF_ROW_PRECRC         (WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + WF_GPS_BYTES + WF_DOSE_BYTES)
+                                                             // = 16402, байты, покрытые CRC
+#define WF_ROW_STRIDE         (WF_ROW_PRECRC + WF_CRC_BYTES) // = 16406, запись строки v4
 #define WF_BASELINE_BYTES     (WF_CHANNELS * 4)             // = 32768, baseline секция (uint32 LE)
 
 typedef struct {

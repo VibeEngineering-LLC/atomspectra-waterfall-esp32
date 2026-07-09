@@ -134,7 +134,7 @@ def main():
         fails.append(f"4: seq_gap={diag['seq_gap']} (ждали 2)")
     print(f"[4] разрыв seq: seq_gap={diag['seq_gap']}")
 
-    # --- 5) недостача Σbins: recon d>0 = потеря событий ---
+    # --- 5) недостача Σbins: recon d>0 (#DATA-2: справочная метрика, не вердикт) ---
     st5, _ = approx_stitcher()
     # seg A: Σbins=4, total_at_open=0
     st5.append_segment("a", make_segment(make_header(seg_seq=1, total_at_open=0),
@@ -146,7 +146,7 @@ def main():
     rc = diag["recon"]
     if rc is None or rc[2] <= 0:
         fails.append(f"5: recon={rc} (ждали потерю d>0)")
-    print(f"[5] недостача Σbins: recon={rc} (d>0 = потеря событий)")
+    print(f"[5] недостача Σbins: recon={rc} (d>0; #DATA-2 — справочно, не вердикт)")
 
     print()
     if fails:

@@ -58,9 +58,8 @@ class RecorderCore:
         self.crc_checked = 0     # всего строк проверено CRC32 (#DATA-1a)
         self.crc_bad = 0         # строк с несовпавшим CRC32 = порча
         self.seg_gaps = 0        # пропущено сегментов по разрыву seg_seq (#DATA-1b)
-        self.recon_loss = 0      # сегментов с потерей событий по сверке (#DATA-1c)
-        self.recon_lost_events = 0  # суммарно недостающих событий
-        self.integrity_ok = True    # False при любой обнаруженной порче/потере
+        # #DATA-2: recon (#DATA-1c) — справочная метрика, в вердикт целостности не входит
+        self.integrity_ok = True    # False при порче CRC32 или разрыве seq
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -164,12 +163,12 @@ class RecorderCore:
 
         rc = diag["recon"]
         if rc is not None:
-            dev, sb, d = rc   # d = прибор_Δ − Σbins; d>0 = потеря событий
-            if d > 0:
-                self.recon_loss += 1
-                self.recon_lost_events += d
-                self.integrity_ok = False
-                self._log(f"  ✗ #DATA-1c: потеря {d} событий (прибор Δ={dev} > Σbins {sb})")
+            dev, sb, d = rc   # d = прибор_Δ − Σbins
+            # #DATA-2 (решение оператора 2026-07-09): recon — СПРАВОЧНО, не вердикт.
+            # Колебания d — граничное перетекание отсчётов между сегментами
+            # (< пуассон-шума). Вердикт целостности = CRC32 + seq + фикс-размер;
+            # входная потеря детектор→плата = счётчик hist_drop платы.
+            self._log(f"  recon (справочно): прибор Δ={dev}, Σbins={sb}, d={d:+d}")
 
 
 class RecorderUI:
@@ -314,13 +313,13 @@ class RecorderUI:
                      f"вытеснено {b.get('seg_dropped', '—')}") if b else "нет связи"
         lp = time.strftime("%H:%M:%S", time.localtime(c.last_pass)) if c.last_pass else "—"
         # --- строка целостности v4 (#REC-13) ---
-        if c.crc_checked or c.seg_gaps or c.recon_loss:
+        if c.crc_checked or c.seg_gaps:
             if c.integrity_ok:
                 integ = (f"Целостность: OK  (CRC32 {c.crc_checked}/{c.crc_checked}, "
-                         f"пропусков сегм. 0, потерь событий 0)")
+                         f"пропусков сегм. 0)")
             else:
                 integ = (f"⚠ ЦЕЛОСТНОСТЬ НАРУШЕНА: CRC-порча {c.crc_bad}/{c.crc_checked} строк, "
-                         f"пропущено сегм. {c.seg_gaps}, потеряно событий {c.recon_lost_events}")
+                         f"пропущено сегм. {c.seg_gaps}")
         else:
             integ = "Целостность: (ещё нет вшитых сегментов)"
         self.stats.config(text=(f"В файле: {rows} строк ({dur_h:.2f} ч)   "
