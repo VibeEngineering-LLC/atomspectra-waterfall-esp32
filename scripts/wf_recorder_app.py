@@ -54,6 +54,13 @@ class RecorderCore:
         self.last_temp = None
         self.board = {}          # последний /api/waterfall/status
         self.last_pass = None    # время последнего успешного прохода
+        # --- контроль целостности v4 (#REC-13) ---
+        self.crc_checked = 0     # всего строк проверено CRC32 (#DATA-1a)
+        self.crc_bad = 0         # строк с несовпавшим CRC32 = порча
+        self.seg_gaps = 0        # пропущено сегментов по разрыву seg_seq (#DATA-1b)
+        self.recon_loss = 0      # сегментов с потерей событий по сверке (#DATA-1c)
+        self.recon_lost_events = 0  # суммарно недостающих событий
+        self.integrity_ok = True    # False при любой обнаруженной порче/потере
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -112,7 +119,8 @@ class RecorderCore:
                 return
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):   # предупреждения клиента -> журнал
-                r, rows, gap = wpc.fetch_one_stitch(self.host, self.stitcher, seg, token)
+                r, rows, gap, diag = wpc.fetch_one_stitch(
+                    self.host, self.stitcher, seg, token)
             for line in buf.getvalue().splitlines():
                 self._log(line.strip())
             if r == "ok" and rows:
@@ -125,7 +133,43 @@ class RecorderCore:
                 self._log(f"✗ {seg['name']} {r}")
             if gap is not None:
                 self._log(f"⚠ пауза платы перед {seg['name']}: {gap:+.0f} с")
+            self._account_integrity(seg, diag)
         self.last_pass = time.time()
+
+    def _account_integrity(self, seg, diag):
+        """#REC-13: учесть и вывести v4-контроль целостности одного сегмента."""
+        if not diag:
+            return
+        cb, cc = diag["crc_bad"], diag["crc_checked"]
+        self.crc_checked += cc
+        self.crc_bad += cb
+        if cc:
+            if cb:
+                self.integrity_ok = False
+                self._log(f"  ✗ CRC32 ПОРЧА: {cb}/{cc} строк битые в {seg['name']}")
+            else:
+                self._log(f"  CRC32: {cc}/{cc} OK")
+        else:
+            # сегмент без поля crc32 = прошивка до v4 (#DATA-1a) — целостность не гарантируется
+            self._log(f"  ⚠ {seg['name']}: нет CRC32 (формат < v4) — целостность не проверена")
+
+        sg = diag["seq_gap"]
+        if sg is not None and sg > 0:
+            self.seg_gaps += sg
+            self.integrity_ok = False
+            self._log(f"  ✗ #DATA-1b: пропуск {sg} сегм. (кольцо стёрло до pull) — "
+                      f"данные потеряны безвозвратно")
+        elif sg is not None and sg < 0:
+            self._log(f"  ⚠ #DATA-1b: seg_seq откат {sg} (дубль/реордер)")
+
+        rc = diag["recon"]
+        if rc is not None:
+            dev, sb, d = rc   # d = прибор_Δ − Σbins; d>0 = потеря событий
+            if d > 0:
+                self.recon_loss += 1
+                self.recon_lost_events += d
+                self.integrity_ok = False
+                self._log(f"  ✗ #DATA-1c: потеря {d} событий (прибор Δ={dev} > Σbins {sb})")
 
 
 class RecorderUI:
@@ -269,10 +313,24 @@ class RecorderUI:
                      f"сегментов {b.get('seg_count', '—')}, "
                      f"вытеснено {b.get('seg_dropped', '—')}") if b else "нет связи"
         lp = time.strftime("%H:%M:%S", time.localtime(c.last_pass)) if c.last_pass else "—"
+        # --- строка целостности v4 (#REC-13) ---
+        if c.crc_checked or c.seg_gaps or c.recon_loss:
+            if c.integrity_ok:
+                integ = (f"Целостность: OK  (CRC32 {c.crc_checked}/{c.crc_checked}, "
+                         f"пропусков сегм. 0, потерь событий 0)")
+            else:
+                integ = (f"⚠ ЦЕЛОСТНОСТЬ НАРУШЕНА: CRC-порча {c.crc_bad}/{c.crc_checked} строк, "
+                         f"пропущено сегм. {c.seg_gaps}, потеряно событий {c.recon_lost_events}")
+        else:
+            integ = "Целостность: (ещё нет вшитых сегментов)"
         self.stats.config(text=(f"В файле: {rows} строк ({dur_h:.2f} ч)   "
                                 f"Температура: {temp}\n"
-                                f"Плата: {board_txt}   Последний проход: {lp}"))
-        if c.running:
+                                f"Плата: {board_txt}   Последний проход: {lp}\n"
+                                f"{integ}"))
+        # приоритет алярма целостности над состоянием записи
+        if not c.integrity_ok:
+            self.state_lbl.config(text="⚠ ПОРЧА ДАННЫХ", foreground="red")
+        elif c.running:
             self.state_lbl.config(text="ИДЁТ ЗАПИСЬ", foreground="green")
         else:
             self.state_lbl.config(text="остановлено", foreground="gray")

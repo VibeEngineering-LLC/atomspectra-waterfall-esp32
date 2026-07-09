@@ -45,6 +45,8 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import zlib
+from array import array
 
 if sys.stdout is not None:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -123,6 +125,40 @@ def payload_rows_durs(payload, stride, name, hdr=None):
     return payload[:n_rows * stride], n_rows, dur
 
 
+def verify_rows(whole, stride, n_rows, hdr, name):
+    """#DATA-1a: сверить per-row CRC32 и посчитать Σ bins (для reconciliation).
+
+    -> (crc_bad, crc_checked, sum_bins). crc_checked=0 для v1..v3 (нет поля crc32) —
+    целостность строк не проверяется, только Σ bins считается.
+    """
+    ch = hdr["channels"]
+    crc_off = covers = None
+    spec_off = 0
+    for f in hdr.get("row_fields", []):
+        nm = f.get("name")
+        if nm == "crc32":
+            crc_off = f["offset"]
+            covers = f.get("covers", crc_off)
+        elif nm == "spectrum":
+            spec_off = f.get("offset", 0)
+    crc_bad = crc_checked = 0
+    sum_bins = 0
+    for i in range(n_rows):
+        base = i * stride
+        a = array("H")
+        a.frombytes(whole[base + spec_off: base + spec_off + ch * 2])
+        if sys.byteorder != "little":
+            a.byteswap()
+        sum_bins += int(sum(a))
+        if crc_off is not None:
+            want = struct.unpack_from("<I", whole, base + crc_off)[0]
+            got = zlib.crc32(whole[base: base + covers]) & 0xFFFFFFFF
+            crc_checked += 1
+            if got != want:
+                crc_bad += 1
+    return crc_bad, crc_checked, sum_bins
+
+
 # ---------------------------------------------------------------- шов (#REC-12)
 
 class Stitcher:
@@ -158,11 +194,44 @@ class Stitcher:
         return self.state["ingested"].get(name) == want_bytes
 
     def append_segment(self, name, blob):
-        """Дозаписать строки сегмента в единый файл. -> (rows_added, gap_sec|None)."""
+        """Дозаписать строки сегмента в единый файл.
+        -> (rows_added, gap_sec|None, diag dict).
+
+        diag: {crc_bad, crc_checked, seq_gap|None, recon|None}
+          seq_gap: сколько сегментов пропущено по разрыву seg_seq (#DATA-1b),
+                   0 = цепочка непрерывна, None = seg_seq нет в шапке (v<4).
+          recon:   (#DATA-1c) для ПРЕДЫДУЩЕГО сегмента —
+                   (device_delta, sum_bins, device_delta−sum_bins) или None.
+                   Одностороннее: Σbins ≥ device_delta всегда (кламп d<0→0);
+                   diff>0 = потеря событий, diff≤0 = benign кламп-избыток.
+        """
         hdr, prefix, payload = parse_aswf(blob, name)
         ch = hdr["channels"]
         stride = hdr.get("row_stride", ch * 2)
         whole, n_rows, dur = payload_rows_durs(payload, stride, name, hdr)
+
+        crc_bad, crc_checked, sum_bins = verify_rows(whole, stride, n_rows, hdr, name)
+
+        # #DATA-1b: разрыв глобального seg_seq -> потеря сегмента (кольцо стёрло).
+        seq_gap = None
+        seq = hdr.get("seg_seq")
+        if seq is not None:
+            last_seq = self.state.get("last_seg_seq")
+            if last_seq is not None:
+                seq_gap = seq - last_seq - 1   # 0 = непрерывно, >0 = пропуск, <0 = дубль/реордер
+
+        # #DATA-1c: reconciliation ПРЕДЫДУЩЕГО сегмента. Прибор-дельта событий =
+        # total_at_open текущего − total_at_open предыдущего; сверяем с Σ bins пред.
+        recon = None
+        tao = hdr.get("total_at_open")
+        last_tao = self.state.get("last_total_at_open")
+        last_sum = self.state.get("last_sum_bins")
+        # только для непрерывной цепочки (seq_gap==0): при пропуске дельта охватывает
+        # и стёртые сегменты, сравнивать с одним Σ bins некорректно.
+        if tao is not None and last_tao is not None and last_sum is not None \
+                and (seq_gap == 0 or seq_gap is None):
+            device_delta = tao - last_tao
+            recon = (device_delta, last_sum, device_delta - last_sum)
 
         gap = None
         if not os.path.exists(self.path):
@@ -200,8 +269,16 @@ class Stitcher:
         self.state["dur_sum"] = self.state.get("dur_sum", 0) + dur
         if hdr.get("started_at"):
             self.state["last_end"] = hdr["started_at"] + dur
+        # #DATA-1b/1c: якорь для проверки следующего сегмента
+        if seq is not None:
+            self.state["last_seg_seq"] = seq
+        if tao is not None:
+            self.state["last_total_at_open"] = tao
+        self.state["last_sum_bins"] = sum_bins
+        self.state["crc_bad_total"] = self.state.get("crc_bad_total", 0) + crc_bad
         self._save_state()
-        return n_rows, gap
+        return n_rows, gap, {"crc_bad": crc_bad, "crc_checked": crc_checked,
+                             "seq_gap": seq_gap, "recon": recon}
 
     def _file_header(self):
         with open(self.path, "rb") as f:
@@ -274,7 +351,14 @@ def fetch_one_filemode(host, out_dir, seg, token):
 
 
 def fetch_one_stitch(host, stitcher, seg, token):
-    """Режим шва (#REC-12): строки в единый файл, потом delete на плате."""
+    """Режим шва (#REC-12): строки в единый файл, потом delete на плате.
+
+    ВСЕГДА возвращает 4-tuple (status, rows, gap, diag):
+      status: 'ok' | 'sizemismatch' | 'error:<...>'
+      rows:   строк дозаписано (0 если уже вшит/ошибка)
+      gap:    пауза платы в секундах или None
+      diag:   dict целостности v4 {crc_bad, crc_checked, seq_gap, recon} или None
+    """
     name = seg["name"]
     want = int(seg["bytes"])
 
@@ -282,21 +366,21 @@ def fetch_one_stitch(host, stitcher, seg, token):
         try:
             blob = http_get(host + "/api/waterfall/segment?name=" + name, binary=True)
         except (urllib.error.URLError, urllib.error.HTTPError) as e:
-            return f"error:get:{e}", 0, None
+            return f"error:get:{e}", 0, None, None
         if len(blob) != want:
-            return "sizemismatch", 0, None        # не удаляем — заберём в след. проходе
+            return "sizemismatch", 0, None, None   # не удаляем — заберём в след. проходе
         try:
-            rows, gap = stitcher.append_segment(name, blob)
+            rows, gap, diag = stitcher.append_segment(name, blob)
         except (ValueError, OSError) as e:
-            return f"error:stitch:{e}", 0, None
+            return f"error:stitch:{e}", 0, None, None
     else:
-        rows, gap = 0, None                       # уже вшит; остался только ack
+        rows, gap, diag = 0, None, None           # уже вшит; остался только ack
 
     try:
         ok = ack_delete(host, name, token)
     except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        return f"error:del:{e}", rows, gap
-    return ("ok" if ok else "error:del-status"), rows, gap
+        return f"error:del:{e}", rows, gap, diag
+    return ("ok" if ok else "error:del-status"), rows, gap, diag
 
 
 def one_pass(host, out_dir, stitcher):
@@ -310,10 +394,10 @@ def one_pass(host, out_dir, stitcher):
     got = skipped = failed = rows_total = 0
     for seg in pending:
         if stitcher:
-            r, rows, gap = fetch_one_stitch(host, stitcher, seg, token)
+            r, rows, gap, diag = fetch_one_stitch(host, stitcher, seg, token)
         else:
             r = fetch_one_filemode(host, out_dir, seg, token)
-            rows, gap = 0, None
+            rows, gap, diag = 0, None, None
         if r == "ok":
             got += 1
             rows_total += rows
@@ -322,6 +406,32 @@ def one_pass(host, out_dir, stitcher):
             if gap is not None:
                 print(f"  ⚠ разрыв времени перед {seg['name']}: {gap:+.0f} с "
                       f"(пауза платы; в файле шва не отражена)")
+            if diag:
+                cb, cc = diag["crc_bad"], diag["crc_checked"]
+                if cc:
+                    print(f"    CRC32: {cc - cb}/{cc} OK"
+                          + (f"  ✗ ПОРЧА {cb} строк!" if cb else ""))
+                sg = diag["seq_gap"]
+                if sg is not None and sg > 0:
+                    print(f"    ⚠ #DATA-1b пропуск {sg} сегм. (кольцо стёрло до pull) — "
+                          f"данные потеряны безвозвратно")
+                elif sg is not None and sg < 0:
+                    print(f"    ⚠ #DATA-1b seg_seq откат {sg} (дубль/реордер)")
+                rc = diag["recon"]
+                if rc is not None:
+                    dev, sb, d = rc  # d = device_delta − Σbins (одностороннее, см.ниже)
+                    # Σbins ≥ device_delta ВСЕГДА: per-channel дельта строки клампится
+                    # в 0 при убыли канала (spectrogram.c wf_task d<0→0), а прибор-
+                    # total_counts держит истинный знаковый net. Значит:
+                    #   d > 0  → прибор насчитал больше, чем записано → ПОТЕРЯ событий;
+                    #   d ≤ 0  → записано ≥ прибора → benign кламп (перекалибровка/дрейф,
+                    #            счёты мигрируют между каналами), НЕ потеря.
+                    if d > 0:
+                        print(f"    ✗ #DATA-1c ПОТЕРЯ пред.сегм: прибор Δ={dev} > Σbins {sb} "
+                              f"(недостаёт {d} событий)")
+                    else:
+                        print(f"    #DATA-1c сверка пред.сегм: прибор Δ={dev} ≤ Σbins {sb} ✓ "
+                              + ("(точно)" if d == 0 else f"(+{-d} кламп-избыток, benign)"))
         elif r == "sizemismatch":
             skipped += 1
             print(f"  ~ {seg['name']}  размер не сошёлся — повтор в след. проходе")
