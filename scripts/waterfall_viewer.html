@@ -151,7 +151,15 @@ function parseAswf(buf){
   const interval=+hdr.interval_sec||0;
   const startedAt=+hdr.started_at||0;          // epoch секунды
   const calib=Array.isArray(hdr.calibration)&&hdr.calibration.some(x=>Math.abs(x)>0)?hdr.calibration.map(Number):null;
-  const payloadOff=8+hdrLen;
+  // #VIEW-12: baseline-секция (ASWF v3+) — бинарный блок channels×dtype СРАЗУ после
+  // JSON-шапки и ПЕРЕД строками. Без её вычитания payload сдвинут → каша в водопаде.
+  let baselineBytes=0;
+  if(hdr.baseline && typeof hdr.baseline==="object"){
+    const bl=hdr.baseline, n=(bl.channels|0)||(bl.count|0)||0;
+    const w=(bl.dtype==="uint16")?2:4;   // uint32/float32=4, uint16=2
+    baselineBytes=n*w;
+  }
+  const payloadOff=8+hdrLen+baselineBytes;
   const payloadBytes=buf.byteLength-payloadOff;
   const rowBytes=channels*2;
   // v2: запись строки = counts + хвост (длительность); размер записи — row_stride из шапки.
@@ -162,6 +170,13 @@ function parseAswf(buf){
   const declared=hdr.saved_rows|0;
   if(declared>0&&declared<nRows) nRows=declared;  // шапка авторитетнее, если в файле есть «хвост»
   if(nRows<1) throw new Error("в файле нет ни одной строки (payload "+payloadBytes+" байт, строка "+stride+")");
+  // #VIEW-12: смещения полей строки — из самоописания row_fields (v3+); v1/v2 fallback.
+  let durOff = stride>=rowBytes+2 ? rowBytes : -1;   // legacy: duration сразу за counts
+  let tempOff = -1;                                   // temperature float32 °C (v5, #FW-41)
+  if(Array.isArray(hdr.row_fields)) for(const f of hdr.row_fields){
+    if(f.name==="duration") durOff=f.offset|0;
+    else if(f.name==="temperature") tempOff=f.offset|0;
+  }
   const rows=new Array(nRows);
   for(let i=0;i<nRows;i++){
     // конвертация Uint16 → Uint32, чтобы остальной код работал без изменений
@@ -175,10 +190,12 @@ function parseAswf(buf){
     }
     const t=startedAt>0?(startedAt+i*interval):0;
     const startStr=t>0?new Date(t*1000).toISOString():"строка #"+i;
-    // v2: фактическая длительность строки (uint16, сек) сразу после counts.
-    // Первые строки сегмента бывают 0..4 c (ролловер файла на плате) — см. #VIEW-9.
-    const dur=stride>=rowBytes+2?dv.getUint16(rowOff+rowBytes,true):undefined;
-    rows[i]={ comp:"", start:startStr, real:"PT"+interval+"S", counts:dst, dur };
+    // длительность (uint16 сек) и температура детектора (float32 °C, v5 #FW-41) по
+    // смещениям из row_fields. Первые строки сегмента бывают dur 0..4 c (#VIEW-9).
+    const dur=durOff>=0&&durOff+2<=stride?dv.getUint16(rowOff+durOff,true):undefined;
+    let temp=tempOff>=0&&tempOff+4<=stride?dv.getFloat32(rowOff+tempOff,true):undefined;
+    if(temp!==undefined&&!Number.isFinite(temp)) temp=undefined;   // NaN-guard (0x7FC00000 до -inf)
+    rows[i]={ comp:"", start:startStr, real:"PT"+interval+"S", counts:dst, dur, temp };
   }
   return { channels, rows, calib, _aswf:hdr };
 }
@@ -397,6 +414,7 @@ function loadBuf(buf, name){
       const h = ST._aswf||{};
       const t = h.started_at>0 ? new Date(h.started_at*1000).toLocaleString() : "?";
       extra = `  •  начало: ${t}  •  интервал: ${h.interval_sec||"?"} с`;
+      if(h.version) extra += `  •  ASWF v${h.version}`;
       if(h.serial) extra += `  •  S/N: ${h.serial}`;
     } else {
       ST = parseN42(new TextDecoder("utf-8").decode(buf));
@@ -447,7 +465,9 @@ cv.addEventListener("mousemove",e=>{
   const row=ST.rows[y];
   const e0=energy(ch0), e1=energy(ch1);
   const axis = e0!=null ? `энергия: ${e0.toFixed(1)}–${e1.toFixed(1)} keV` : `каналы: ${ch0}–${ch1}`;
-  tip.textContent = `строка #${y}  ${row.start}\n${axis}\nсчёты в бине: ${v}`;
+  let txt = `строка #${y}  ${row.start}\n${axis}\nсчёты в бине: ${v}`;
+  if(row.temp!==undefined) txt += `\nt детектора: ${row.temp.toFixed(1)} °C`;
+  tip.textContent = txt;
   tip.style.display="block";
   tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px";
 });
@@ -491,13 +511,14 @@ function metaLine(){
 // построить ST из накопленного COMBINED и перерисовать
 function applyCombined(){
   if(!COMBINED||!COMBINED.rows.length) return;
-  const {channels,interval_sec:interval,started_at:started,serial,calib,rows,durs}=COMBINED;
+  const {channels,interval_sec:interval,started_at:started,serial,calib,rows,durs,temps}=COMBINED;
   ST={ channels, calib, _aswf:{channels,started_at:started,interval_sec:interval,
                                saved_rows:rows.length,serial,calibration:calib},
        rows: rows.map((counts,i)=>{
          const t=started>0?(started+i*interval):0;
          return { comp:"", start:t>0?new Date(t*1000).toISOString():"строка #"+i,
-                  real:"PT"+interval+"S", counts, dur:durs?durs[i]:undefined };
+                  real:"PT"+interval+"S", counts, dur:durs?durs[i]:undefined,
+                  temp:temps?temps[i]:undefined };
        }) };
   $("chMax").value=channels-1;
   refresh();
@@ -519,12 +540,12 @@ async function ingestNewFinalized(base){
       const h=p._aswf||{};
       COMBINED={ channels:p.channels, interval_sec:+(h.interval_sec)||0,
                  started_at:+(h.started_at)||0, serial:h.serial||null,
-                 calib:p.calib||null, rows:[], durs:[] };
+                 calib:p.calib||null, rows:[], durs:[], temps:[] };
     } else if(p.channels!==COMBINED.channels){
       throw new Error(`${s.name}: channels ${p.channels}≠${COMBINED.channels}`);
     }
     if(!COMBINED.calib && p.calib) COMBINED.calib=p.calib;
-    for(const r of p.rows){ COMBINED.rows.push(r.counts); COMBINED.durs.push(r.dur); }
+    for(const r of p.rows){ COMBINED.rows.push(r.counts); COMBINED.durs.push(r.dur); COMBINED.temps.push(r.temp); }
     seen.add(s.name);
     if($("wipe").checked) pendingDelete.push(s.name);
     added++;
