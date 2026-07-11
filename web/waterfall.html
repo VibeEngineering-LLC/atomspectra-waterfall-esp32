@@ -11,7 +11,7 @@ html,body{ margin:0; padding:0; background:var(--bg); }
 body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; padding-bottom:28px; }
 a{ color:inherit; text-decoration:none; }
 button,input,select{ font-family:inherit; }
-.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+.wrap{ max-width:none; margin:0; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
 header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
 .brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
 .logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
@@ -109,6 +109,13 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
      Кнопка скрыта; JS оставлен спящим (срабатывает только по клику). -->
 <button class="btn" id="bDisk" data-i18n-title="btn.disk_title" title="Сохранять входящий стрим в .aswf-файл на диске ПК" style="display:none"><span id="bDiskTxt" data-i18n="btn.disk">&#128190; Стрим на диск&hellip;</span></button>
 </div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;font-size:12px;color:#8a9686">
+ <span>Префикс файлов:</span>
+ <input type="text" id="fx-prefix" maxlength="23" spellcheck="false" autocomplete="off" placeholder="MY1" title="Добавляется в начало имени всех выгрузок этой платы. Латиница, цифры, _ и -." style="width:110px;background:#11150f;color:#cfd6cd;border:1px solid #444;padding:4px 7px;border-radius:4px;font-family:inherit;font-size:12px">
+ <button type="button" onclick="savePrefix()" style="cursor:pointer;background:rgba(52,211,192,.12);border:1px solid rgba(52,211,192,.4);color:#34d3c0;border-radius:6px;padding:5px 12px;font-family:inherit;font-size:12px;font-weight:600">Сохранить</button>
+ <span id="fx-prefix-st" style="min-width:16px;font-size:14px"></span>
 </div>
 
 <div class="row">
@@ -1153,6 +1160,8 @@ function updDiskInd(){
 var csrfToken="";
 function post(url,body){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});}
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||"";}catch(e){}}
+async function loadPrefix(){try{var r=await(await fetch("/api/boot-config")).json();var e=document.getElementById("fx-prefix");if(e)e.value=r.name_prefix||"";}catch(_){}}
+async function savePrefix(){var e=document.getElementById("fx-prefix"),st=document.getElementById("fx-prefix-st");if(!e)return;st.textContent="…";try{var r=await post("/api/boot-config",{name_prefix:e.value});st.textContent=r.ok?"✓":"✗";}catch(_){st.textContent="✗";}}
 
 // === #REC-11-A2: автономная выгрузка сегментов (push HTTP POST на адрес оператора) ===
 // Народмон-бан (CLAUDE.md): URL c «narodmon» отвергается ещё в браузере — зеркало
@@ -1290,6 +1299,7 @@ wf.addEventListener("wheel",function(e){
  try{var lp=localStorage.getItem("aswf-pal");if(lp&&PALETTES[lp])savedPal=lp;}catch(e){}
  applyPalette(savedPal);
  await loadCsrf();
+ loadPrefix();
  try{var sp=await(await fetch("/api/spectrum.json")).json();
   if(sp.calib&&sp.calib.length)calib=sp.calib;
   if(sp.serial){serial=sp.serial;document.getElementById("device-chip").textContent=sp.serial;}

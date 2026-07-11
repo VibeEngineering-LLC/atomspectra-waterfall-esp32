@@ -121,6 +121,8 @@ static void handle_rx_packet(void)
 {
     // #FW-22: счётчик пакетов по типу
     DIAG_LOCK();
+    // #FW-43: любой дошедший сюда пакет уже прошёл CRC → прибор жив и отвечает.
+    s_diag.last_shproto_ts_ms = diag_now_ms();
     switch (s_rx_packet.cmd) {
     case CMD_HISTOGRAM:    s_diag.pkt_hist++; break;
     case CMD_TEXT:         s_diag.pkt_text++; break;
@@ -482,6 +484,7 @@ void usb_host_cdc_init(void)
         ESP_LOGE(TAG, "cdc_acm_host_install failed: %s", esp_err_to_name(err));
         return;
     }
+    DIAG_LOCK(); s_diag.cdc_driver_installed = true; DIAG_UNLOCK();  // #FW-22
     ESP_LOGI(TAG, "CDC-ACM driver installed");
 
     // #BRIDGE-1: RX-кольцо в INTERNAL RAM (не PSRAM — иммунитет к контеншену шины
@@ -536,6 +539,38 @@ uint32_t usb_host_cdc_rx_errors(void)
 uint32_t usb_host_cdc_rx_ring_drops(void)
 {
     return s_rx_ring_drops;
+}
+
+// #FW-22: снапшот всей USB-Host диагностики под тем же mutex, что и hot-path писатели.
+// uptime_ms проставляется в момент чтения (в s_diag не хранится) — по нему клиент судит
+// «свежесть» last_*_ts_ms относительно now. Используется endpoint /api/usb-diag (#FW-43).
+void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out)
+{
+    if (!out) return;
+    DIAG_LOCK();
+    *out = s_diag;
+    DIAG_UNLOCK();
+    out->uptime_ms = diag_now_ms();
+}
+
+// #FW-43: см. декларацию в atomspectra.h. true = «прибор определился, но не запитан».
+// CDC открыт (usb_host_cdc_is_connected) И FTDI-кадры свежие (rx_last_ts <4с — keep-alive
+// '01 60' идёт, значит это НЕ обычный физ. disconnect) И с момента открытия CDC прошло >6с
+// (дали окно на ответ -inf) И за это время НИ одного SHPROTO-пакета (last_shproto_ts_ms <
+// last_open_ts_ms). Здоровый прибор отвечает на -inf за 1-2с → last_shproto_ts_ms > last_open
+// → false навсегда. На реконнекте last_open_ts_ms обновляется → «молчащий» ловится снова.
+bool usb_host_cdc_spectrometer_dead(void)
+{
+    if (!usb_host_cdc_is_connected()) return false;   // ничего не открыто → не «мёртвый»
+    DIAG_LOCK();
+    uint32_t now      = diag_now_ms();
+    uint32_t rx_age   = now - s_diag.rx_last_ts_ms;
+    uint32_t open_age = now - s_diag.last_open_ts_ms;
+    bool silent_since_open = (s_diag.last_shproto_ts_ms < s_diag.last_open_ts_ms);
+    DIAG_UNLOCK();
+    if (rx_age >= 4000) return false;    // FTDI-кадры не идут → обычный disconnect, не наш случай
+    if (open_age < 6000) return false;   // окно на ответ -inf после (ре)открытия CDC
+    return silent_since_open;
 }
 
 // #UI-1: JSON-массив текстовых ответов прибора с seq>since:

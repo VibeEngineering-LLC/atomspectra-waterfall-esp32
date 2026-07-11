@@ -141,6 +141,7 @@ typedef struct {
     uint32_t pkt_stat;
     uint32_t pkt_osc;
     uint32_t pkt_unknown;
+    uint32_t last_shproto_ts_ms;    // #FW-43: ts последнего CRC-валид SHPROTO-пакета (любой тип). Детект «определился, но не запитан».
     // Tasks
     uint32_t drv_task_alive_ts_ms;  // hint через RX cb
     uint32_t conn_task_alive_ts_ms; // отметка из usb_connect_task
@@ -152,6 +153,13 @@ typedef struct {
 } usb_diag_snapshot_t;
 
 void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out);
+
+// #FW-43: детект «прибор определился (FTDI '01 60' идёт), но не запитан». Первопричина
+// (INC): hotplug в живой USB-хост не даёт физического фронта VBUS 0→5В на плате с жёстко
+// разведённым VBUS → осн. домен спектрометра не стартует (лампа off, pkt_hist заморожен),
+// а bus-powered FTDI всё равно энумерится и шлёт keep-alive. true = CDC открыт, FTDI-кадры
+// свежие, но с момента открытия НИ одного SHPROTO-пакета (прибор молчит даже на -inf).
+bool usb_host_cdc_spectrometer_dead(void);
 
 void spectrum_init(void);
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len);

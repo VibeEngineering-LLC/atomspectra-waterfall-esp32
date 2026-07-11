@@ -75,6 +75,138 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### #UI-43: X-axis scale toggle (s/m/h) on "Monitoring" had no visible effect
+
+**Status:** fixed, firmware [`firmware-v1.0.11`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/firmware-v1.0.11).
+
+On the "Monitoring" chart the time-axis unit switch (seconds / minutes / hours) did not
+change the visible label step — all three positions produced the same grid.
+
+**Cause:** the old `xTickStep` (`web/monitor.html`) computed the target step as
+`target = spanMs/6`, ignoring the selected unit — on a real span (e.g. 199 min) all units
+rounded to the same "nice" step (3,600,000 ms), producing an identical grid (`all_equal`).
+
+**Fix:** new density-based `xTickStep` — target tick density is set per unit
+(`k = 15 / 8 / 4` for s / m / h) over a single nice-list of steps; the rounding guard-wall
+was removed. Now s / m / h yield three different steps on any span.
+
+**Verified (2026-07-11):** on the live board (`/api/system` fw=v1.0.11) over spans
+1 min…12 h the units give `distinct=3` different steps; on a 199-min span s=900 s /
+m=1800 s / h=3600 s → 13 / 7 / 3 ticks (was: all identical).
+
+### #UI-42 + #FW-49: responsive-width Web UI and prefix field moved to export tabs
+
+**Status:** fixed, firmware `firmware-v1.0.11`.
+
+- **#UI-42:** all 6 Web UI pages (Spectrum / Waterfall / Saved / System / Service /
+  Monitoring) did not stretch on wide screens — content was capped by a fixed `max-width`
+  on the `.wrap` container. `max-width` removed, grids switched to `auto-fit` — the UI now
+  uses the full window width.
+- **#FW-49:** the "filename prefix" field lived on the "System" page, away from the export
+  itself. Moved onto each export tab (Spectrum / Waterfall / Monitoring) right after the
+  export buttons; "System" panels aligned.
+
+### #FW-41: detector temperature added to the waterfall format (ASWF v5)
+
+**Status:** implemented, firmware `firmware-v1.0.11` (internal format bump on bench build
+v1.0.7).
+
+The segmented waterfall format `.aswf` gained a detector-temperature field (`t1` from the
+device `-inf` reply). Format version bumped **v4 → v5**: header `version:5`,
+`row_stride:16406`, new `temperature` field at offset `16402` (float32, °C). When no valid
+temperature is available (`di->valid = false`) a NaN-guard (`0x7FC00000`) is written.
+
+**Compatibility:** ASWF v4 readers keep working (the field is appended to the row tail);
+v5 readers get per-frame temperature.
+
+### #FW-42 / #FW-43 / #FW-44 / #FW-46 / #FW-48: firmware-v1.0.11 batch
+
+**Status:** fixed, firmware `firmware-v1.0.11`.
+
+- **#FW-42:** the configurable filename prefix now applies to all exports (Spectrum /
+  Waterfall / Monitoring / n42 / CSV).
+- **#FW-43:** re-initialization of the USB spectrometer on hot re-plug (hotplug) failed —
+  fixed.
+- **#FW-44:** a fresh board with no configured WiFi produced no console diagnostics —
+  diagnostic output on a no-network boot added.
+- **#FW-46:** `sdkconfig` — USB-FIFO balance biased toward IN + hostname `atomspectra-gw`.
+- **#FW-48:** the experimental DTR/RTS line "kick" was removed (revert) — it had no effect.
+
+### #MON-1: monitoring moved from the browser to the board
+
+**Status:** fixed, firmware [`firmware-v1.0.6`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/firmware-v1.0.6).
+
+Previously "Monitoring" recording (interval-averaged CPS) ran in the browser — with the tab
+closed or minimized no data accumulated (gaps), and it duplicated the waterfall recording.
+
+**Fix:** monitoring collection moved onto the board (board-side) — accumulation runs
+independently of the browser-tab state.
+
+### #FW-39: stitch artifact at waterfall segment boundaries
+
+**Status:** fixed, firmware `firmware-v1.0.6`.
+
+When stitching `.aswf` segments into a single waterfall, stripes / time unevenness appeared
+at the boundaries.
+
+**Cause:** the segment header wrote `row_stride` as `16406` instead of the actual `16402` —
+a row-step desync during stitching (`main/web_waterfall.c`).
+
+**Fix:** header `row_stride` corrected to the actual `16402`. Files captured by the old
+firmware are repaired by recomputing the step (PC-side reconciliation utility).
+
+### #UI-39 / #UI-40 / #UI-41: waterfall crosshair and quick nuclide-line toggles
+
+**Status:** implemented, firmware `firmware-v1.0.6`.
+
+- **#UI-39:** the main waterfall screen gained a crosshair overlay — channel / energy /
+  counts + row number and time "from now" (`#N · −Mm Ss`, `live → LIVE`).
+- **#UI-40 / #UI-41:** a quick on/off button for nuclide lines on the "Waterfall" and
+  "Spectrum" pages (the nuclide-set selection itself is not reset; state survives F5).
+
+### #BRIDGE-3: `-inf`/`-cal` reply race in bridge mode corrupted serial and temperature
+
+**Status:** fixed, firmware [`firmware-v1.0.5`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/firmware-v1.0.5).
+
+In TCP-bridge mode (port 8234), polling the device concurrently with `-inf` and `-cal`
+mixed the replies: the serial number degenerated to `FFFFFFFF`, temperature read as `0`,
+and fields from different replies fused together.
+
+**Fix:** separation and serialization of the `-inf` and `-cal` reply streams in the bridge
+path.
+
+**Verified (#TEST-2 Block A, 2026-07-09):** 40 iterations of interleaved `-inf`/`-cal` over
+TCP :8234 — 0 corrupted `serial` / `t1` / `version`.
+
+### #BRIDGE-1 + #DATA-1: USB-receive decoupling and end-to-end integrity control (format v4)
+
+**Status:** implemented, firmware [`firmware-v1.0.4`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/firmware-v1.0.4).
+
+- **#BRIDGE-1:** under TCP-bridge load, receive from the spectrometer is decoupled through
+  an internal RX ring (`data_cb → RX ring → usb_rxw`); an `rx_ring_drops` metric was added
+  to the status JSON.
+- **#DATA-1 (a / b / c):** end-to-end stream-integrity control — per-row **CRC32** in the
+  `.aswf` row + a global segment **seq** (NVS-persisted, gap detection) + a reconciliation
+  counter "device-total vs written". The PC client verifies CRC/seq during assembly.
+
+**Verified (#TEST-2 Block A):** `rx_ring_drops` delta = 0; per-row CRC 64/64; n42 ↔ aswf
+192/192.
+
+### #UI-38: time X-axis on "Monitoring" + timezone
+
+**Status:** implemented, firmware `firmware-v1.0.4`.
+
+The "Monitoring" chart gained a time X-axis (seconds / minutes / hours + real time); the
+timezone is set on the "System" page.
+
+### #UI-36 / #UI-37: AtomSpectra-style spectrum scaling and update-check button
+
+**Status:** implemented, firmware `firmware-v1.0.4` (bench build v1.0.3).
+
+- **#UI-36:** the spectrum display was brought in line with AtomSpectra — a logarithmic Y
+  axis with auto-range and a light fill under the line.
+- **#UI-37:** the "Check for update" button was sized to its text and pushed to the right.
+
 ### #FW-23: n42 export — `StartDateTime` 1970 on every row when auto-starting after reboot
 
 **Status:** fixed in [`79eff24`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/commit/79eff24), in `main`. Firmware `firmware-v1.0.1`.

@@ -12,7 +12,13 @@ CONFIG_SPIRAM_SPEED_80M=y
 
 # USB Host
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
-CONFIG_USB_HOST_HW_BUFFER_BIAS_BALANCED=y
+# #FW-46: аппаратный FIFO USB Host — bias в сторону IN. Трафик спектрометра ~99% IN
+# (приём гистограмм/текста), TX мизерный (-inf/-sta/-cal редкими короткими командами).
+# BALANCED делит FIFO поровну → под нагрузкой RX голодает, рвутся SHPROTO-кадры.
+# Замер оператора: bridge-режим 10 мин, 0 битых shproto-пакетов. Choice взаимоисключающий
+# с BALANCED/PERIODIC_OUT — старый BALANCED закомментирован.
+# CONFIG_USB_HOST_HW_BUFFER_BIAS_BALANCED=y
+CONFIG_USB_HOST_HW_BUFFER_BIAS_IN=y
 CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK=y
 
 # WiFi
@@ -20,6 +26,8 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 
 # Network — больше сокетов для частого polling Web UI (иначе httpd accept errno 23)
 CONFIG_LWIP_MAX_SOCKETS=16
+# #FW-46: имя платы в DHCP (косметика) — atomspectra-gw вместо дефолтного "espressif".
+CONFIG_LWIP_LOCAL_HOSTNAME="atomspectra-gw"
 
 # #TCP-1: дефолтный TCP send-буфер/окно = 5760 Б (~100 мс потока спектры @ 58 КБ/с).
 # Любой джиттер WiFi 2.4 ГГц >100 мс переполнял его → потеря байт в TCP-мосте.

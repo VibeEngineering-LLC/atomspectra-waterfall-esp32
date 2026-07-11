@@ -9,3 +9,9 @@
 // места усекает на границе символа (запас 6 байт на самую длинную "&quot;").
 // in и out не должны перекрываться.
 void web_xml_escape(const char *in, char *out, size_t cap);
+
+// #FW-42: формирует имя файла экспорта с настраиваемым префиксом из boot_config
+// (NVS "boot"/"nprefix"). Пустой префикс → out == base (обратная совместимость).
+// Пишет "<prefix><base>" усечённо в out (cap байт, всегда 0-терминирует). Читает
+// NVS на каждый вызов — годится, экспорт не hot-path.
+void web_build_export_name(char *out, size_t cap, const char *base);

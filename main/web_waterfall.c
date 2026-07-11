@@ -252,8 +252,9 @@ static esp_err_t h_window(httpd_req_t *req)
 
 typedef struct {
     httpd_req_t    *req;
-    uint8_t        *tail;        /* 18-байт буфер: dur(2)+ts(4)+lat(4)+lon(4)+dose(4) */
+    uint8_t        *tail;        /* 22-байт буфер: dur(2)+ts(4)+lat(4)+lon(4)+dose(4)+temp(4) */
     const uint16_t *durs;
+    const float    *temps;       /* #FW-41: t1 детектора по строкам (NaN если нет -inf) */
     uint32_t        r0;
     uint32_t        r;
     uint32_t        interval_sec;
@@ -275,19 +276,22 @@ static bool aswf_row_emit(void *vctx, const uint16_t *row, size_t bytes)
 
     float dose = spectrogram_compute_dose_rate(row, dur);
     uint32_t nan_bits = 0x7FC00000u;
-    float lat_v, lon_v;
+    float lat_v, lon_v, temp_v;
     memcpy(&lat_v, &nan_bits, 4);
     memcpy(&lon_v, &nan_bits, 4);
+    if (c->temps) temp_v = c->temps[local];       // #FW-41: t1 строки (может быть NaN)
+    else          memcpy(&temp_v, &nan_bits, 4);
 
     uint32_t ts32 = (uint32_t)ts;
     uint8_t *t = c->tail;
     t[0] = dur & 0xFF;           t[1] = (dur >> 8) & 0xFF;
     t[2] = ts32 & 0xFF;          t[3] = (ts32 >> 8) & 0xFF;
     t[4] = (ts32 >> 16) & 0xFF;  t[5] = (ts32 >> 24) & 0xFF;
-    memcpy(t + 6,  &lat_v, 4);
-    memcpy(t + 10, &lon_v, 4);
-    memcpy(t + 14, &dose,  4);
-    return httpd_resp_send_chunk(c->req, (const char *)t, 18) == ESP_OK;
+    memcpy(t + 6,  &lat_v,  4);
+    memcpy(t + 10, &lon_v,  4);
+    memcpy(t + 14, &dose,   4);
+    memcpy(t + 18, &temp_v, 4);                    // #FW-41
+    return httpd_resp_send_chunk(c->req, (const char *)t, 22) == ESP_OK;
 }
 
 /* GET /api/waterfall/export.aswf -> ASWF v3 (кольцо PSRAM, без baseline-секции).
@@ -306,7 +310,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
 
     uint16_t *row  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
     char     *hbuf = malloc(WF_HDR_RESERVE);
-    uint8_t  *tail = malloc(18);
+    uint8_t  *tail = malloc(22);   // #FW-41: +temp(4)
     if (!row || !hbuf || !tail) {
         if (row)  heap_caps_free(row);
         if (hbuf) free(hbuf);
@@ -323,7 +327,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
     int cap = WF_HDR_RESERVE;
     int n = snprintf(hbuf, cap,
         "{\"saved_rows\":%" PRIu32 ",\"saved_at\":%ld"
-        ",\"format\":\"atomspectra-waterfall\",\"version\":3"
+        ",\"format\":\"atomspectra-waterfall\",\"version\":5"
         ",\"channels\":%d,\"dtype\":\"uint16\",\"byte_order\":\"little\""
         ",\"row_stride\":%d"
         ",\"row_fields\":["
@@ -332,18 +336,22 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
         "{\"name\":\"timestamp\",\"dtype\":\"uint32\",\"unit\":\"unix_sec\",\"offset\":%d},"
         "{\"name\":\"latitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
         "{\"name\":\"longitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
-        "{\"name\":\"dose_rate\",\"dtype\":\"float32\",\"unit\":\"usv_h\",\"offset\":%d}"
+        "{\"name\":\"dose_rate\",\"dtype\":\"float32\",\"unit\":\"usv_h\",\"offset\":%d},"
+        "{\"name\":\"temperature\",\"dtype\":\"float32\",\"unit\":\"celsius\",\"offset\":%d}"
         "]"
         ",\"compressed\":false"
         ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
         (uint32_t)s.ring_count, (long)now,
-        WF_CHANNELS, WF_ROW_PRECRC,   // #FW-39: v3 export без crc32 → stride=16402 (не 16406)
+        // #FW-41: v5 stream-export без crc32, +temperature → stride=WF_ROW_PRECRC=16406.
+        // (#FW-39 держал 16402 без temp; константа авто-выросла с добавлением TEMP в .h.)
+        WF_CHANNELS, WF_ROW_PRECRC,
         WF_CHANNELS,
         WF_ROW_BYTES,
         WF_ROW_BYTES + WF_DUR_BYTES,
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES,
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 4,
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 8,
+        WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 12,   // temperature.offset=16402
         s.interval_sec, (long)first_ts);
     if (n > 0 && n < cap && sp && sp->serial_number[0])
         n += snprintf(hbuf + n, cap - n, ",\"serial\":\"%s\"", sp->serial_number);
@@ -362,25 +370,32 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
     uint32_t hlen = (uint32_t)WF_HDR_RESERVE;
     memcpy(magic + 4, &hlen, 4);
 
+    char wf_name[48], wf_disp[80];                           // #FW-42: префикс
+    web_build_export_name(wf_name, sizeof(wf_name), "waterfall.aswf");
+    snprintf(wf_disp, sizeof(wf_disp), "attachment; filename=\"%s\"", wf_name);
     httpd_resp_set_type(req, "application/octet-stream");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"waterfall.aswf\"");
+    httpd_resp_set_hdr(req, "Content-Disposition", wf_disp);
 
     httpd_resp_send_chunk(req, (const char *)magic, 8);
     httpd_resp_send_chunk(req, hbuf, WF_HDR_RESERVE);
 
     uint16_t *durs = calloc(s.ring_count, sizeof(uint16_t));
     if (durs) spectrogram_copy_window_durations(durs, s.ring_count);
+    float *temps = calloc(s.ring_count, sizeof(float));   // #FW-41
+    if (temps) spectrogram_copy_window_temps(temps, s.ring_count);
     aswf_ctx_t ctx = {
         .req          = req,
         .tail         = tail,
         .durs         = durs,
+        .temps        = temps,
         .r0           = r0,
         .r            = r0,
         .interval_sec = s.interval_sec,
         .row_start    = first_ts,
     };
     spectrogram_stream_window(row, s.ring_count, NULL, aswf_row_emit, &ctx);
-    if (durs) free(durs);
+    if (durs)  free(durs);
+    if (temps) free(temps);
 
     httpd_resp_send_chunk(req, NULL, 0);
 
@@ -476,8 +491,11 @@ static esp_err_t h_export_n42(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    char wf_name[48], wf_disp[80];                           // #FW-42: префикс
+    web_build_export_name(wf_name, sizeof(wf_name), "waterfall.n42");
+    snprintf(wf_disp, sizeof(wf_disp), "attachment; filename=\"%s\"", wf_name);
     httpd_resp_set_type(req, "application/octet-stream");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"waterfall.n42\"");
+    httpd_resp_set_hdr(req, "Content-Disposition", wf_disp);
 
     int n;
     n = snprintf(acc, 8192,
