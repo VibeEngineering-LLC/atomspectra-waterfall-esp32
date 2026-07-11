@@ -474,6 +474,7 @@ EMBED_HTML_HANDLER(handle_saved_page,   saved_html)
 EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
 EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
+EMBED_HTML_HANDLER(handle_captive_page, captive_html)   // #FIELD-10/#FIELD-11: лёгкая captive-landing
 
 // #FIELD-5: общий JS авто-синхронизации времени (application/javascript, не text/html).
 static esp_err_t handle_common_time_js(httpd_req_t *req)
@@ -1598,11 +1599,13 @@ static esp_err_t handle_time_set(httpd_req_t *req)
 static esp_err_t handle_captive_probe(httpd_req_t *req)
 {
     if (wifi_manager_is_ap_mode()) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", FIELD_AP_URL);
-    } else {
-        httpd_resp_set_status(req, "204 No Content");
+        // #FIELD-10/#FIELD-11: вместо 302 на тяжёлый index отдаём лёгкую captive-landing
+        // прямо в мини-браузере ОС — крупный адрес 192.168.4.1 (виден сразу) + авто-редирект
+        // на страницу прибора + кнопка-fallback. 200+HTML вместо 204 → OS считает «captive
+        // portal», всплывает «Вход в сеть» и открывает нашу страницу.
+        return handle_captive_page(req);
     }
+    httpd_resp_set_status(req, "204 No Content");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -1760,6 +1763,7 @@ void web_server_init(void)
         {"/library/test/success.html",   HTTP_GET,  handle_captive_probe,    NULL},  // iOS/macOS
         {"/ncsi.txt",                    HTTP_GET,  handle_captive_probe,    NULL},  // Windows
         {"/connecttest.txt",             HTTP_GET,  handle_captive_probe,    NULL},  // Windows
+        {"/captive",                     HTTP_GET,  handle_captive_page,     NULL},  // #FIELD-10/11 landing
         {"/healthcheck",                 HTTP_GET,  handle_healthcheck,      NULL},
         {"/saved",                       HTTP_GET,  handle_saved_page,       NULL},
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
