@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $web  = Join-Path $root "web"
 $demo = Join-Path $root "demo"
-$pages = "index.html","waterfall.html","saved.html","system.html","service.html"
+$pages = "index.html","waterfall.html","monitor.html","saved.html","system.html","service.html"
 $enc = New-Object System.Text.UTF8Encoding($false)
 foreach ($p in $pages) {
   $src = Join-Path $web $p
@@ -22,6 +22,7 @@ foreach ($p in $pages) {
   # 2) rewrite absolute nav links to demo-relative files
   $html = $html.Replace('href="/"',          'href="index.html"')
   $html = $html.Replace('href="/waterfall"', 'href="waterfall.html"')
+  $html = $html.Replace('href="/monitor"',   'href="monitor.html"')
   $html = $html.Replace('href="/saved"',     'href="saved.html"')
   $html = $html.Replace('href="/system"',    'href="system.html"')
   $html = $html.Replace('href="/service"',   'href="service.html"')
