@@ -98,16 +98,21 @@ python wf_recorder_app.py --host http://<board-ip> --stitch out.aswf --interval 
 ### wf_recorder.exe — standalone Windows build (no Python required)
 
 For users without Python: download the prebuilt Windows exe from the
-[**wf-recorder-v0.1.0** Release](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0)
+[**wf-recorder-v0.2.1** Release](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.2.1)
 (~12 MB, self-contained, tkinter + `requests` + `wf_pull_client` bundled).
 Double-click to launch, no install. Default output path is `received/spectrogram.aswf`
 next to the exe (unlike the .py version, which defaults to `../received/`).
 
 Скачать готовый Windows exe (без установки Python): в
-[Release `wf-recorder-v0.1.0`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.1.0).
+[Release `wf-recorder-v0.2.1`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/wf-recorder-v0.2.1).
 Двойной клик — GUI откроется. По умолчанию файл записи — `received/spectrogram.aswf`
 рядом с exe.
 
+> **v0.2.1 (2026-07-11):** #REC-14 — сборщик авто-ротирует файл шва при смене формата строки
+> прошивки (ASWF v3→v5, `row_stride` 16402→16410): вместо потока `error:stitch` старый `.aswf`
+> замораживается, новый формат пишется в `<base>__s<stride>.aswf`. Устранён клинч без ack
+> (кольцо Flash больше не копится к потере данных). Commit `9d88146`.
+>
 > **Asset обновлён 2026-07-05:** исправлен `AttributeError: 'NoneType' object has no attribute
 > 'reconfigure'` при запуске exe — в режиме `--windowed` PyInstaller обнуляет `sys.stdout`/
 > `sys.stderr`; вызов `.reconfigure()` в `wf_recorder_app.py` и `wf_pull_client.py` теперь
