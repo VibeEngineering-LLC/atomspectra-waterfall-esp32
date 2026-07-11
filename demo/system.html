@@ -1,9 +1,9 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="demo-shim.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="demo-shim.js"></script>
 <title data-i18n="page.title">AtomSpectra · Система</title>
 <style>
 :root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
@@ -11,7 +11,7 @@
 html,body{ margin:0; padding:0; background:var(--bg); }
 body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; padding-bottom:28px; }
 a{ color:inherit; text-decoration:none; } button{ font-family:inherit; }
-.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+.wrap{ max-width:none; margin:0; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
 header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
 .brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
 .logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
@@ -29,7 +29,7 @@ nav a,nav span{ padding:12px 16px; font-size:13px; color:var(--dim); flex-shrink
 nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); }
 .panel{ background:var(--panel); border:1px solid var(--bd); border-radius:10px; padding:16px; }
 .mut{ color:#6b756a; }
-.grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
 .ttl{ font-size:14px; font-weight:600; color:#e8efe2; margin-bottom:13px; display:flex; align-items:center; gap:8px; }
 .kv{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid #161c15; font-size:12.5px; }
 .kv span:first-child{ color:#7c887c; } .kv span:last-child{ color:#dfe5dc; text-align:right; }
@@ -42,8 +42,9 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 .chip.lang:hover{ filter:brightness(1.15); }
 .boot-row{ display:flex; align-items:center; gap:9px; padding:8px 0; font-size:12.5px; cursor:pointer; border-bottom:1px solid #161c15; color:#dfe5dc; }
 .boot-row input{ width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
-.grid-3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
-@media (max-width:900px){ .grid{ grid-template-columns:1fr } .grid-3{ grid-template-columns:1fr } }
+.grid-3{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+/* #UI-32: 2 колонки, выровненные по высоте (grid stretch); телефон → 1 колонка */
+@media(max-width:760px){ .grid,.grid-3{ grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -54,6 +55,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <nav>
 <a href="index.html" data-i18n="nav.spectrum">Спектр</a>
 <a href="waterfall.html" data-i18n="nav.waterfall">Водопад</a>
+<a href="/monitor" data-i18n="nav.monitor">Мониторинг</a>
 <a href="saved.html" data-i18n="nav.saved">Сохранённые</a>
 <span class="on" data-i18n="nav.system">Система</span>
 <a href="service.html" data-i18n="nav.service">Сервис</a>
@@ -87,6 +89,9 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="kv"><span data-i18n="esp.chip">Чип</span><span>ESP32-S3 N16R8</span></div>
 <div class="kv"><span data-i18n="esp.flashPsram">Flash / PSRAM</span><span data-i18n="esp.flashPsramVal">16 МБ / 8 МБ</span></div>
 <div class="kv"><span>ESP-IDF</span><span>v5.4</span></div>
+<div class="kv"><span data-i18n="esp.fw">Прошивка</span><span id="fw-ver">—</span></div>
+<div class="kv"><span data-i18n="esp.update">Обновление</span><span id="fw-upd" class="mut">—</span></div>
+<button class="btn" id="fw-upd-btn" onclick="checkUpdate()" data-i18n="esp.checkUpd" style="width:fit-content;margin-left:auto;padding:9px 16px">Проверить обновление</button>
 <div class="kv"><span data-i18n="esp.uptime">Uptime</span><span id="up">—</span></div>
 <div class="kv"><span data-i18n="esp.freeHeap">Free heap</span><span id="heap-kv">—</span></div>
 <div class="kv"><span data-i18n="esp.minHeap">Min free heap</span><span id="heap-min-kv">—</span></div>
@@ -107,6 +112,23 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="bar"><i id="rssi-fi" style="width:0%;background:var(--accent)"></i></div>
 </div>
 <button class="btn" onclick="resetWifi()" data-i18n="wifi.reset">Сбросить WiFi (режим настройки)</button>
+</section>
+
+<section class="panel" id="field-panel">
+<div class="ttl"><span style="color:var(--accent)">&#9788;</span> <span data-i18n="field.title">Полевой режим · Время</span></div>
+<div class="kv"><span data-i18n="field.mode">Режим сети</span><span id="net-mode">—</span></div>
+<div class="kv" id="ap-ssid-row" style="display:none"><span data-i18n="field.apSsid">Точка доступа</span><span id="ap-ssid">—</span></div>
+<div class="kv" id="ap-clients-row" style="display:none"><span data-i18n="field.apClients">Подключено телефонов</span><span id="ap-clients">—</span></div>
+<div class="kv"><span data-i18n="field.timeSrc">Источник времени</span><span id="time-src">—</span></div>
+<input id="manual-time-inp" type="datetime-local" step="1" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px;margin-bottom:6px">
+<button class="btn" onclick="setManualTime()" data-i18n="field.setTime">Установить время платы</button>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="field.timeHint">В полевом режиме (без интернета) время берётся с телефона автоматически. Поле выше — ручная коррекция (пусто = текущее время телефона).</div>
+<div style="border-top:1px solid var(--bd);margin:12px 0 8px"></div>
+<div style="font-size:12px;color:#8a9686;margin-bottom:6px" data-i18n="field.apPassTitle">Пароль полевой точки доступа</div>
+<div id="ap-pass-warn" style="display:none;font-size:11px;color:#f0c45a;margin-bottom:6px" data-i18n="field.passDefaultWarn">Пароль AP — публичный по умолчанию; для людных мест смени пароль.</div>
+<input id="ap-pass-inp" type="text" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px">
+<button class="btn" onclick="changeApPass()" data-i18n="field.apPassSave">Сменить пароль AP (перезагрузка)</button>
+<div id="ap-pass-status" class="mut" style="font-size:11px;margin-top:5px"></div>
 </section>
 
 </div>
@@ -174,6 +196,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 </section>
 
+<div style="display:flex;flex-direction:column;gap:14px">
 <section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#8644;</span> <span data-i18n="tcp.title">TCP-мост (serial-over-WiFi)</span></div>
 <div class="kv"><span data-i18n="tcp.port">Порт</span><span>8234</span></div>
@@ -185,6 +208,16 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 </section>
 
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9202;</span> <span data-i18n="tz.title">Часовой пояс</span></div>
+<div class="kv"><span data-i18n="tz.label">Пояс отображения</span>
+<select id="tz-sel" onchange="saveTz()" style="background:var(--panel);color:var(--txt);border:1px solid #444;padding:4px 8px;border-radius:4px;font-family:inherit;font-size:12px"></select>
+</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="tz.hint">Влияет на ось времени, таблицу и CSV-экспорт вкладки «Мониторинг». Хранится в браузере.</div>
+<div class="mut" id="tz-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
+</section>
+</div>
+
 </div>
 </div>
 
@@ -194,12 +227,14 @@ var DICT={
  ru:{
   "page.title":"AtomSpectra · Система",
   "device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
   "heap.title":"Свободная память (heap)","heap.minSince":"мин. с момента старта:",
   "cpu.title":"CPU спектрометра","cpu.src":"из <code>/api/spectrum.json</code>: поле <code>cpu</code>",
   "flash.title":"Flash (LittleFS)","flash.used":"занято:",
   "unit.kb":"КБ","unit.mb":"МБ",
   "esp.chip":"Чип","esp.flashPsram":"Flash / PSRAM","esp.flashPsramVal":"16 МБ / 8 МБ",
+  "esp.fw":"Прошивка","esp.update":"Обновление","esp.checkUpd":"Проверить обновление",
+  "upd.checking":"проверка…","upd.latest":"актуальная версия","upd.available":"доступна %1","upd.dev":"версия новее релиза (dev)","upd.err":"нет связи с GitHub","upd.download":"скачать",
   "esp.uptime":"Uptime","esp.freeHeap":"Free heap","esp.minHeap":"Min free heap",
   "wifi.state":"Состояние","wifi.signal":"Уровень сигнала","wifi.reset":"Сбросить WiFi (режим настройки)",
   "wifi.connected":"подключено","wifi.disconnected":"не подключено",
@@ -222,22 +257,28 @@ var DICT={
   "boot.clrWf":"Очищать водопад при старте",
   "boot.hint":"Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.",
   "boot.save":"Сохранить","boot.saved":"Сохранено","boot.saveErr":"Ошибка сохранения",
+  "boot.exportTitle":"Экспорт файлов","boot.exportPrefix":"Префикс имени файлов",
+  "boot.exportHint":"Добавляется в начало имени всех выгрузок (спектр, водопад, backup). Пусто — обычные имена. Разрешены латиница, цифры, «_» и «-».",
   "dose.title":"Мощность дозы","dose.label":"Коэффициент k (µSv·h⁻¹/cps)","dose.hint":"0 — мощность дозы не записывается (NaN в файле). Сохраняется в NVS.","dose.save":"Сохранить","dose.saved":"Сохранено","dose.saveErr":"Ошибка",
   "dose.curveLabel":"Кривая мощности дозы","dose.curveNone":"Кривая не загружена (scalar k)","dose.curveHint":"CSV: channel,k_factor (до 512 точек, без заголовка). Приоритет над scalar k.","dose.curveLoad":"Загрузить CSV","dose.curveClear":"Сбросить кривую","dose.curveLoaded":"Кривая загружена (%1 точек)","dose.curveOk":"Загружено: %1 точек","dose.curveClearOk":"Кривая сброшена","dose.curveErr":"Ошибка загрузки","dose.curveNoFile":"Выберите CSV файл",
   "cal.set":"задана (%1 коэфф., порядок %2)","cal.unset":"не задана",
+  "tz.title":"Часовой пояс","tz.label":"Пояс отображения","tz.hint":"Влияет на ось времени, таблицу и CSV-экспорт вкладки «Мониторинг». Хранится в браузере.","tz.auto":"Авто (браузер, %1)","tz.saved":"Сохранено: %1",
   "confirm.rebootDev":"Перезагрузить прибор?","confirm.rebootEsp":"Перезагрузить ESP32?","confirm.resetWifi":"Сбросить WiFi и войти в режим настройки?",
+  "field.title":"Полевой режим · Время","field.mode":"Режим сети","field.apSsid":"Точка доступа","field.apClients":"Подключено телефонов","field.timeSrc":"Источник времени","field.setTime":"Установить время с телефона","field.timeHint":"В полевом режиме (без интернета) время берётся с телефона. Кнопка задаёт его вручную.","field.apPassTitle":"Пароль полевой точки доступа","field.apPassSave":"Сменить пароль AP (перезагрузка)","field.modeSta":"Домашняя сеть (Indoor)","field.modeAp":"Полевой AP (Outdoor)","field.modeSetup":"Настройка","field.modeApForced":"Outdoor (полевой AP, принудительно)","field.modeApFallback":"Outdoor (полевой AP, fallback)","field.passDefaultWarn":"Пароль AP — публичный по умолчанию; для людных мест смени пароль.","field.srcNone":"нет (1970)","field.srcBrowser":"браузер (авто)","field.srcManual":"ручной","field.passChanged":"Пароль сохранён, перезагрузка...","field.passShort":"Минимум 8 символов","field.confirmPass":"Сменить пароль точки доступа? Плата перезагрузится.",
   "up.d":"д","up.h":"ч","up.m":"м","up.s":"с",
   "tc":"TC"
  },
  en:{
   "page.title":"AtomSpectra · System",
   "device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
   "heap.title":"Free memory (heap)","heap.minSince":"min since boot:",
   "cpu.title":"Spectrometer CPU","cpu.src":"from <code>/api/spectrum.json</code>: field <code>cpu</code>",
   "flash.title":"Flash (LittleFS)","flash.used":"used:",
   "unit.kb":"KB","unit.mb":"MB",
   "esp.chip":"Chip","esp.flashPsram":"Flash / PSRAM","esp.flashPsramVal":"16 MB / 8 MB",
+  "esp.fw":"Firmware","esp.update":"Update","esp.checkUpd":"Check for update",
+  "upd.checking":"checking…","upd.latest":"up to date","upd.available":"%1 available","upd.dev":"newer than release (dev)","upd.err":"no GitHub connection","upd.download":"download",
   "esp.uptime":"Uptime","esp.freeHeap":"Free heap","esp.minHeap":"Min free heap",
   "wifi.state":"State","wifi.signal":"Signal level","wifi.reset":"Reset WiFi (setup mode)",
   "wifi.connected":"connected","wifi.disconnected":"disconnected",
@@ -260,10 +301,14 @@ var DICT={
   "boot.clrWf":"Clear waterfall on start",
   "boot.hint":"Applied once on power-up / board reboot. Everything is off by default.",
   "boot.save":"Save","boot.saved":"Saved","boot.saveErr":"Save error",
+  "boot.exportTitle":"File export","boot.exportPrefix":"Filename prefix",
+  "boot.exportHint":"Prepended to every export filename (spectrum, waterfall, backup). Empty — default names. Allowed: Latin letters, digits, «_» and «-».",
   "dose.title":"Dose rate","dose.label":"Coefficient k (µSv·h⁻¹/cps)","dose.hint":"0 — dose rate not recorded (NaN in file). Stored in NVS.","dose.save":"Save","dose.saved":"Saved","dose.saveErr":"Error",
   "dose.curveLabel":"Dose rate curve","dose.curveNone":"No curve loaded (scalar k)","dose.curveHint":"CSV: channel,k_factor (up to 512 points, no header). Priority over scalar k.","dose.curveLoad":"Load CSV","dose.curveClear":"Clear curve","dose.curveLoaded":"Curve loaded (%1 points)","dose.curveOk":"Loaded: %1 points","dose.curveClearOk":"Curve cleared","dose.curveErr":"Load error","dose.curveNoFile":"Select a CSV file",
   "cal.set":"set (%1 coef., order %2)","cal.unset":"not set",
+  "tz.title":"Time zone","tz.label":"Display zone","tz.hint":"Affects the time axis, table and CSV export of the Monitoring tab. Stored in the browser.","tz.auto":"Auto (browser, %1)","tz.saved":"Saved: %1",
   "confirm.rebootDev":"Reboot device?","confirm.rebootEsp":"Reboot ESP32?","confirm.resetWifi":"Reset WiFi and enter setup mode?",
+  "field.title":"Field mode · Time","field.mode":"Network mode","field.apSsid":"Access point","field.apClients":"Phones connected","field.timeSrc":"Time source","field.setTime":"Set time from phone","field.timeHint":"In field mode (no internet) the time comes from the phone. This button sets it manually.","field.apPassTitle":"Field access point password","field.apPassSave":"Change AP password (reboot)","field.modeSta":"Home network (Indoor)","field.modeAp":"Field AP (Outdoor)","field.modeSetup":"Setup","field.modeApForced":"Outdoor (field AP, forced)","field.modeApFallback":"Outdoor (field AP, fallback)","field.passDefaultWarn":"AP password is public by default; change it for crowded places.","field.srcNone":"none (1970)","field.srcBrowser":"browser (auto)","field.srcManual":"manual","field.passChanged":"Password saved, rebooting...","field.passShort":"Minimum 8 characters","field.confirmPass":"Change access point password? The board will reboot.",
   "up.d":"d","up.h":"h","up.m":"m","up.s":"s",
   "tc":"TC"
  }
@@ -287,11 +332,30 @@ function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
  LANG=l; try{localStorage.setItem("aswf-lang",l);}catch(e){}
  applyI18n();
- try{refreshSystem();refreshDevice();refreshSpectrum();}catch(e){}
+ try{refreshSystem();refreshDevice();refreshSpectrum();initTz();}catch(e){}
 }
 
 var csrfToken="";
 var heap=[],cpu=[],flash=[];
+var curFwVer="";
+// #FW-28: репо прошивки — latest release сверяется через GitHub API (CORS-открыт, GET anonymous).
+var FW_REPO="VibeEngineering-LLC/atomspectra-waterfall-esp32";
+function verParts(v){return String(v||"").replace(/^v/i,"").split(".").map(function(x){return parseInt(x,10)||0;});}
+function verCmp(a,b){var A=verParts(a),B=verParts(b),n=Math.max(A.length,B.length);for(var i=0;i<n;i++){var d=(A[i]||0)-(B[i]||0);if(d)return d<0?-1:1;}return 0;}
+async function checkUpdate(){
+ var el=document.getElementById("fw-upd"),btn=document.getElementById("fw-upd-btn");
+ el.className="mut"; el.textContent=t("upd.checking"); if(btn)btn.disabled=true;
+ try{
+  var r=await fetch("https://api.github.com/repos/"+FW_REPO+"/releases/latest",{headers:{"Accept":"application/vnd.github+json"}});
+  if(!r.ok)throw 0;
+  var j=await r.json(), tag=j.tag_name||"", url=j.html_url||("https://github.com/"+FW_REPO+"/releases");
+  var c=verCmp(curFwVer,tag);
+  if(c<0){el.className="err";el.innerHTML=tfmt("upd.available",tag)+' · <a href="'+url+'" target="_blank" rel="noopener" style="color:var(--accent)">'+t("upd.download")+'</a>';}
+  else if(c>0){el.className="mut";el.textContent=tag+" — "+t("upd.dev");}
+  else{el.className="";el.style.color="var(--accent)";el.textContent=tag+" — "+t("upd.latest");}
+ }catch(e){el.className="err";el.textContent=t("upd.err");}
+ finally{if(btn)btn.disabled=false;}
+}
 function ac(){return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';}
 
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
@@ -330,6 +394,8 @@ async function refreshSystem(){
   document.getElementById("heap-min-kv").textContent=Math.round((r.min_free_heap||0)/1024)+" "+t("unit.kb");
   spark("heapc",heap,ac());
   document.getElementById("up").textContent=fmtUp(r.uptime_sec||0);
+  curFwVer=r.fw_version||"";
+  document.getElementById("fw-ver").textContent=curFwVer||"—";
   var ft=r.flash_total||0, fu=r.flash_used||0;
   var pct=ft>0?(fu/ft*100):0;
   var flashSub=fmtKB(fu)+" / "+fmtKB(ft)+" "+t("unit.kb")+" ("+pct.toFixed(1)+"%)";
@@ -365,6 +431,20 @@ async function refreshSystem(){
    document.getElementById("wifi-ip").textContent=location.hostname;
    document.getElementById("wifi-rssi").textContent="—";
   }
+  // #FIELD-6: режим сети, статус полевого AP, источник времени
+  var nm=r.net_mode||"sta";
+  var isAp = (nm==="field_ap");
+  document.getElementById("net-mode").textContent = nm==="setup"?t("field.modeSetup"):isAp?(r.ap_forced?t("field.modeApForced"):t("field.modeApFallback")):t("field.modeSta");
+  document.getElementById("ap-ssid-row").style.display = isAp?"":"none";
+  document.getElementById("ap-clients-row").style.display = isAp?"":"none";
+  if(isAp){
+   document.getElementById("ap-ssid").textContent = r.ap_ssid||"—";
+   document.getElementById("ap-clients").textContent = (typeof r.ap_clients==="number"&&r.ap_clients>=0)?r.ap_clients:"—";
+  }
+  // #SEC-2 (A5): предупредить о публичном дефолт-пароле только когда AP реально поднят
+  document.getElementById("ap-pass-warn").style.display = (isAp && r.ap_pass_default)?"":"none";
+  var ts=r.time_source||"none";
+  document.getElementById("time-src").textContent = ts==="sntp"?"SNTP":ts==="browser"?t("field.srcBrowser"):ts==="manual"?t("field.srcManual"):t("field.srcNone");
   var devDot=document.getElementById("dev-dot"), devStat=document.getElementById("dev-stat"), devChip=document.getElementById("dev-chip");
   if(r.usb_connected){
    devDot.classList.remove("off"); devStat.textContent=t("dev.chipOk"); devChip.classList.remove("warn"); devChip.classList.add("ok");
@@ -433,9 +513,50 @@ async function saveBootConfig(statusId){
  }catch(e){ s.textContent=t("boot.saveErr"); s.style.color="#ff8a82"; }
  setTimeout(function(){s.textContent="";},2500);
 }
+// #UI-38: часовой пояс отображения (localStorage aswf-tz: "auto" | смещение от UTC в минутах).
+// Читается вкладкой «Мониторинг» (ось X, таблица, CSV). На плату не уходит — чисто клиентская настройка.
+function pad2(n){return (n<10?"0":"")+n;}
+function tzOffLabel(min){var s=min<0?"-":"+",a=Math.abs(min);return "UTC"+s+pad2(Math.floor(a/60))+":"+pad2(a%60);}
+function initTz(){
+ var sel=document.getElementById("tz-sel"); if(!sel)return;
+ var cur="auto"; try{cur=localStorage.getItem("aswf-tz")||"auto";}catch(e){}
+ var browserOff=-new Date().getTimezoneOffset();
+ var html='<option value="auto">'+tfmt("tz.auto",tzOffLabel(browserOff))+'</option>';
+ for(var h=-12;h<=14;h++){var m=h*60;html+='<option value="'+m+'">'+tzOffLabel(m)+'</option>';}
+ sel.innerHTML=html; sel.value=cur;
+ if(sel.value!==cur)sel.value="auto"; // сохранённое значение вне списка — показать авто, localStorage не трогать
+}
+function saveTz(){
+ var sel=document.getElementById("tz-sel"),s=document.getElementById("tz-status");
+ var v=sel.value; try{localStorage.setItem("aswf-tz",v);}catch(e){}
+ var off=(v==="auto")?-new Date().getTimezoneOffset():parseInt(v,10);
+ if(s){s.textContent=tfmt("tz.saved",tzOffLabel(off));s.style.color="var(--accent)";setTimeout(function(){s.textContent="";},2500);}
+}
+
 async function rebootDevice(){if(!confirm(t("confirm.rebootDev")))return;await post("/api/reboot-device");}
 async function rebootEsp(){if(!confirm(t("confirm.rebootEsp")))return;await post("/api/reboot-esp");}
 async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post("/api/wifi/reset");}
+// #FIELD-5 (T11): ручная установка времени платы с телефона. manual=true → прошивка
+// примет безусловно (если SNTP не активен). В Indoor с рабочим SNTP запрос отклонится.
+async function setManualTime(){
+ try{
+  var inp=document.getElementById("manual-time-inp").value;
+  var ms=inp?new Date(inp).getTime():Date.now();  // datetime-local трактуется как локальное → getTime() = UTC ms
+  if(!ms||isNaN(ms))ms=Date.now();
+  var res=await(await post("/api/time",{headers:{"Content-Type":"application/json"},body:JSON.stringify({epoch_ms:ms,manual:true})})).json();
+  if(res&&res.accepted)document.getElementById("time-src").textContent=t("field.srcManual");
+ }catch(e){}
+}
+// #FIELD-7 (#SEC-2): смена пароля полевого AP. Пусто → сброс к дефолту; иначе ≥8 (WPA2).
+// Применяется после ребута (плата пересоздаёт AP с новым паролем).
+async function changeApPass(){
+ var v=document.getElementById("ap-pass-inp").value;
+ var st=document.getElementById("ap-pass-status");
+ if(v.length>0&&v.length<8){st.style.color="#ff8a82";st.textContent=t("field.passShort");return;}
+ if(!confirm(t("field.confirmPass")))return;
+ st.style.color="var(--accent)";st.textContent=t("field.passChanged");
+ try{await post("/api/ap-pass",{headers:{"Content-Type":"application/json"},body:JSON.stringify({password:v})});}catch(e){}
+}
 
 async function loadDoseK(){
  try{
@@ -506,6 +627,7 @@ async function clearDoseCurve(statusId){
 
 (async function(){
  applyI18n();
+ initTz();
  document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
  document.getElementById("ip-chip").textContent=location.hostname;
  await loadCsrf();
@@ -520,5 +642,6 @@ async function clearDoseCurve(statusId){
  setInterval(refreshSpectrum,2000);
 })();
 </script>
+<script src="/common-time.js"></script>
 </body>
 </html>
