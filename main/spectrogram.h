@@ -27,16 +27,17 @@
 #define WF_HDR_RESERVE        4096            // .aswf JSON-заголовок (добивается пробелами)
 #define WF_SEG_HEADER         (8 + WF_HDR_RESERVE)  // offset payload в сегменте (= 4104)
 
-// Формат сегмента v4 (ASWF v4) — #DATA-1 целостность данных:
+// Формат сегмента v5 (ASWF v5) — #DATA-1 целостность данных, #FW-41 temperature:
 // • После JSON-шапки (offset 8+hlen) идёт baseline-секция: 8192×uint32 LE (32768 Б) —
 //   накопительный спектр на момент старта записи.
 // • Payload (строки) начинается с offset 8+hlen+WF_BASELINE_BYTES.
 // • Каждая строка = спектр (uint16×8192) + duration (uint16) + timestamp (uint32) +
-//   latitude (float32) + longitude (float32) + dose_rate (float32) + crc32 (uint32).
+//   latitude (float32) + longitude (float32) + dose_rate (float32) +
+//   temperature (float32, #FW-41 t1 детектора, NaN пока -inf не прочитан) + crc32 (uint32).
 //   crc32 (#DATA-1a) = стандартный CRC32 (init 0xFFFFFFFF, рефлексия, финальный XOR,
-//   poly 0xEDB88320 — zlib-совместим, тот же #CMD-1) по 16402 предшествующим байтам
+//   poly 0xEDB88320 — zlib-совместим, тот же #CMD-1) по 16406 предшествующим байтам
 //   строки. PC при pull пересчитывает и сверяет → детект тихой порчи строки.
-// • Шапка самоописываема: "version":4, "row_fields":[...crc32], "baseline":{...},
+// • Шапка самоописываема: "version":5, "row_fields":[...temperature,crc32], "baseline":{...},
 //   "seg_seq":N (#DATA-1b глобальный монотонный номер сегмента, NVS-персист, переживает
 //   ребут/clear — PC детектит пропуск сегмента по разрыву seq), "total_at_open":T
 //   (#DATA-1c накопительный total прибора на момент открытия сегмента — reconciliation:
@@ -46,15 +47,18 @@
 //   Значит Σbins < события_прибор ⟺ ПОТЕРЯ; Σbins ≥ события_прибор = норма (избыток —
 //   benign кламп при перекалибровке/дрейфе прибора, счёты мигрируют между каналами)).
 // v1: stride=WF_ROW_BYTES (нет поля row_stride); v2: stride=16386; v3: stride=16402;
-// v4: stride=16406. Потребители авто-детектят stride из шапки → v1..v3 читаются как прежде.
+// v4: stride=16406; v5 (#FW-41): +temperature float32 перед crc → segment stride=16410,
+// stream-export (без crc) stride=16406. Потребители авто-детектят stride и наличие
+// поля temperature из row_fields шапки → v1..v4 читаются как прежде (temp=нет).
 #define WF_DUR_BYTES          2                              // uint16 LE, секунды
 #define WF_TS_BYTES           4                              // uint32 LE, unix timestamp
 #define WF_GPS_BYTES          8                              // float32 LE lat + lon (NaN без GPS)
 #define WF_DOSE_BYTES         4                              // float32 LE µSv/h (NaN если k=0)
-#define WF_CRC_BYTES          4                              // #DATA-1a: uint32 LE CRC32 строки (16402 Б до него)
-#define WF_ROW_PRECRC         (WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + WF_GPS_BYTES + WF_DOSE_BYTES)
-                                                             // = 16402, байты, покрытые CRC
-#define WF_ROW_STRIDE         (WF_ROW_PRECRC + WF_CRC_BYTES) // = 16406, запись строки v4
+#define WF_TEMP_BYTES         4                              // #FW-41: float32 LE t1 детектора °C (NaN пока -inf не прочитан)
+#define WF_CRC_BYTES          4                              // #DATA-1a: uint32 LE CRC32 строки (16406 Б до него)
+#define WF_ROW_PRECRC         (WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + WF_GPS_BYTES + WF_DOSE_BYTES + WF_TEMP_BYTES)
+                                                             // = 16406, байты до CRC (= stride stream-экспорта без crc)
+#define WF_ROW_STRIDE         (WF_ROW_PRECRC + WF_CRC_BYTES) // = 16410, запись строки v5 (segment с crc)
 #define WF_BASELINE_BYTES     (WF_CHANNELS * 4)             // = 32768, baseline секция (uint32 LE)
 
 typedef struct {
@@ -113,6 +117,12 @@ size_t spectrogram_copy_window(uint16_t *dst, size_t max_rows, uint32_t *first_t
 // Возвращает число элементов. Элемент 0 = device-время не продвинулось за тик
 // (потребитель N42 подставляет номинальный interval_sec при делении на длительность).
 size_t spectrogram_copy_window_durations(uint16_t *dst, size_t max_rows);
+
+// #FW-41: температуры детектора (t1, °C) до max_rows новейших строк кольца,
+// выровненные с spectrogram_copy_window/stream_window (старейшая из окна первой).
+// NaN в элементе = на момент строки прибор ещё не прислал -inf (T неизвестна).
+// Возвращает число записанных элементов.
+size_t spectrogram_copy_window_temps(float *dst, size_t max_rows);
 
 // Колбэк отдачи одной строки окна (возврат false прерывает стрим).
 typedef bool (*wf_emit_cb_t)(void *ctx, const uint16_t *row, size_t bytes);

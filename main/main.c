@@ -35,12 +35,12 @@ void app_main(void)
 
     wifi_manager_init();
 
-    if (wifi_manager_is_ap_mode()) {
-        ESP_LOGI(TAG, "Captive portal active, waiting for WiFi config");
-        while (1) { vTaskDelay(pdMS_TO_TICKS(10000)); }
-    }
-
     // #FW-2/#FW-3: настройки поведения при старте платы (NVS, по умолчанию всё OFF).
+    // #FW-44: весь USB-стек (boot_config → spectrum → spectrogram → usb_host_cdc)
+    // поднят ДО AP-проверки. Раньше свежая плата (wifi не настроен) уходила в
+    // немой while(1){vTaskDelay} ещё до usb_host_cdc_init() → USB Host не стартовал,
+    // консоль давала лишь 3 boot-строки и молчала навсегда. Теперь USB работает
+    // независимо от WiFi — спектрометр определяется и диагностируется в AP-режиме.
     boot_config_t bc;
     boot_config_load(&bc);
     ESP_LOGI(TAG, "boot-config: as_spec=%d as_wf=%d clr_spec=%d clr_wf=%d",
@@ -66,6 +66,25 @@ void app_main(void)
     // #FW-2: передать флаги автозапуска в USB-модуль ДО его инициализации.
     usb_host_cdc_set_autostart(bc.autostart_spectrum, bc.autostart_waterfall, bc.clear_spectrum);
     usb_host_cdc_init();
+
+    // #FW-44: свежая плата без wifi-конфига — AP-режим. USB Host уже поднят выше,
+    // поэтому в captive-цикле логируем реальную диагностику (USB/спектрометр/counts)
+    // вместо прежней немоты. Сеть-зависимые подсистемы (web/tcp/offload/sntp) в
+    // AP-режиме не поднимаем — captive-портал держит свой setup-httpd внутри
+    // wifi_manager. Выход из цикла — только перезагрузка после сохранения wifi.
+    if (wifi_manager_is_ap_mode()) {
+        ESP_LOGI(TAG, "Captive portal active, waiting for WiFi config");
+        while (1) {
+            const spectrum_data_t *sp = spectrum_get_current();
+            ESP_LOGI(TAG, "AP mode: connect SSID=AtomSpectra-Setup -> http://192.168.4.1 | USB:%s spectrometer:%s counts:%" PRIu32,
+                usb_host_cdc_is_connected() ? "OK" : "--",
+                usb_host_cdc_spectrometer_dead() ? "DEAD"
+                    : (usb_host_cdc_is_connected() ? "streaming" : "--"),
+                sp->total_counts);
+            vTaskDelay(pdMS_TO_TICKS(10000));
+        }
+    }
+
     web_server_init();
     wf_offload_init();   // #REC-11-A2: поднять задачу-аплоадер (конфиг из NVS, по умолчанию выкл.)
     monitor_init();      // #MON-1: кольцо серии CPS (6 ч в PSRAM) + задача-подписчик коммитов

@@ -11,7 +11,7 @@ html,body{ margin:0; padding:0; background:var(--bg); }
 body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; -webkit-text-size-adjust:100%; padding-bottom:28px; }
 a{ color:inherit; text-decoration:none; }
 button,input{ font-family:inherit; }
-.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+.wrap{ max-width:none; margin:0; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
 header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
 .brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
 .logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
@@ -81,6 +81,7 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 
 <div class="wrap">
 <div class="status" id="status" data-i18n="status.connecting">Подключение...</div>
+<div id="dead-banner" style="display:none;margin-bottom:10px;padding:11px 14px;border:1px solid #d9634e;border-radius:8px;background:rgba(217,99,78,.12);color:#f0a08e;font-size:13px;line-height:1.5"></div>
 
 <section class="panel pad">
 <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;color:#aeb6a8">
@@ -136,6 +137,13 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <span id="overlay-label"></span>
 </div>
 
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;font-size:12px;color:#8a9686">
+ <span>Префикс файлов:</span>
+ <input type="text" id="fx-prefix" maxlength="23" spellcheck="false" autocomplete="off" placeholder="MY1" title="Добавляется в начало имени всех выгрузок этой платы. Латиница, цифры, _ и -." style="width:110px;background:#11150f;color:#cfd6cd;border:1px solid #444;padding:4px 7px;border-radius:4px;font-family:inherit;font-size:12px">
+ <button type="button" onclick="savePrefix()" style="cursor:pointer;background:rgba(52,211,192,.12);border:1px solid rgba(52,211,192,.4);color:#34d3c0;border-radius:6px;padding:5px 12px;font-family:inherit;font-size:12px;font-weight:600">Сохранить</button>
+ <span id="fx-prefix-st" style="min-width:16px;font-size:14px"></span>
+</div>
+
 <section class="panel">
 <div class="row" id="cal-head" style="cursor:pointer;border:none">
 <span id="cal-arrow" style="color:var(--accent)">&#9654;</span>
@@ -178,6 +186,7 @@ var DICT={
   "status.rebooting":"Перезагрузка...",
   "status.wifiSetup":"Настройка WiFi...",
   "status.nodata":"Нет данных",
+  "dead.warn":"⚠ Спектрометр определился, но не отвечает — нет данных. Скорее всего подключён без питания. Выключите питание платы на ~5 секунд и включите снова, уже с подключённым спектрометром.",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 КБ (%3%) &middot; свободно %4 КБ",
   "btn.start":"&#9654; Старт","btn.stop":"&#9632; Стоп","btn.reset":"&#8634; Сброс",
@@ -221,6 +230,7 @@ var DICT={
   "status.rebooting":"Rebooting...",
   "status.wifiSetup":"WiFi setup...",
   "status.nodata":"No data",
+  "dead.warn":"⚠ Spectrometer detected but not responding — no data. It is likely connected without power. Switch the board power off for ~5 seconds, then on again with the spectrometer already connected.",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 KB (%3%) &middot; free %4 KB",
   "btn.start":"&#9654; Start","btn.stop":"&#9632; Stop","btn.reset":"&#8634; Reset",
@@ -305,6 +315,8 @@ var doseK=0;
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
 async function loadDoseK(){try{var r=await(await fetch("/api/waterfall/dose_k")).json();doseK=(typeof r.dose_k==="number"&&r.dose_k>0)?r.dose_k:0;}catch(e){}}
 function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
+async function loadPrefix(){try{var r=await(await fetch("/api/boot-config")).json();var e=document.getElementById("fx-prefix");if(e)e.value=r.name_prefix||"";}catch(_){}}
+async function savePrefix(){var e=document.getElementById("fx-prefix"),st=document.getElementById("fx-prefix-st");if(!e)return;st.textContent="…";try{var r=await post("/api/boot-config",{headers:{"Content-Type":"application/json"},body:JSON.stringify({name_prefix:e.value})});st.textContent=r.ok?"✓":"✗";}catch(_){st.textContent="✗";}}
 
 function lg(m){if(!logEl)return;logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight}
 /* #UI-1: подтянуть текстовые ответы прибора из /api/devlog и показать их в логе команд («← ...») */
@@ -330,16 +342,18 @@ function clearCanvas(){
  X.save();X.translate(12,PT+PH/2);X.rotate(-Math.PI/2);X.textAlign="center";X.fillText(isCps?tr("ax.cps"):tr("ax.cnt"),0,0);X.restore();
 }
 
+function setDeadBanner(on){var b=document.getElementById("dead-banner");if(!b)return;if(on){b.innerHTML=tr("dead.warn");b.style.display="";}else{b.style.display="none";}}  /* #FW-43: баннер «определился, но не запитан» */
 async function update(){
  try{
   var r=await fetch("/api/spectrum.json");
-  if(!r.ok){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд */
+  if(!r.ok){setDeadBanner(r.headers.get("X-Spectrometer-Dead")==="1");if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд. #FW-43: дед-флаг из заголовка X-Spectrometer-Dead — баннер работает даже когда спектра нет (404) */
   var d=await r.json();
   failStreak=0;  /* #UI-2: успешный кадр — сброс счётчика подряд-неудач */
   if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib);nucBtnEnable(true);} else if(!calib){nucBtnEnable(false);}
   if(d.serial)document.getElementById("device-chip").textContent=d.serial;
   document.getElementById("ip-chip").textContent=location.hostname;
   lastD=d;
+  setDeadBanner(!!d.dead);  /* #FW-43 */
   var stEl=document.getElementById("status");
   var lv=(typeof d.live==="number")?d.live:d.time;
   var dpct=(d.time>0)?((d.time-lv)/d.time*100):0;
@@ -360,7 +374,7 @@ async function update(){
   document.getElementById("big-total").textContent=d.total.toLocaleString(lcl());
   if(doseK>0){var bigDr=(d.cps*doseK).toFixed(3);document.getElementById("big-dose").textContent=bigDr;document.getElementById("big-dose-sep").style.display="";document.getElementById("big-dose-wrap").style.display="";}else{document.getElementById("big-dose-sep").style.display="none";document.getElementById("big-dose-wrap").style.display="none";}
   draw(d);
- }catch(e){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
+ }catch(e){if(++failStreak>=3||!lastD){clearCanvas();setDeadBanner(false);document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
  finally{pollDevLog();}   /* #UI-2: devlog (#UI-1) теперь ПОСЛЕ спектра, не конкурентно — устраняет лишний сокет → меньше 503 */
 }
 
@@ -644,6 +658,7 @@ function drawNuclides(N){
  document.getElementById("ip-chip").textContent=location.hostname;
  await loadCsrf();
  await loadDoseK();
+ loadPrefix();
  populateNucPanel();
  setInterval(update,2000);   /* #UI-15: 1000→2000ms — chunked /api/spectrum.json ел сокеты при F5; макс. uri_handlers=11 */
  setInterval(loadFlashInfo,10000);

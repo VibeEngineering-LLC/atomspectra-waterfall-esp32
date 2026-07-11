@@ -178,17 +178,18 @@ static esp_err_t render_spectrum_json(httpd_req_t *req, const spectrum_data_t *s
     if (pos > 0) httpd_resp_send_chunk(req, buf, pos);
     uint32_t hist_ok = 0, hist_drop = 0;
     spectrum_get_hist_stats(&hist_ok, &hist_drop);
+    int dead = usb_host_cdc_spectrometer_dead() ? 1 : 0;   // #FW-43: «определился, но не запитан»
     int n = snprintf(buf, 4096,
         "],\"total\":%" PRIu32 ",\"cpu\":%u,\"cps\":%" PRIu32 ",\"lost\":%" PRIu32 ",\"time\":%" PRIu32 ",\"live\":%.1f,"
         "\"bridge_drop\":%" PRIu32 ",\"usb_rx_err\":%" PRIu32 ",\"rx_ring_drops\":%" PRIu32 ","
         "\"hist_ok\":%" PRIu32 ",\"hist_drop\":%" PRIu32 ","
-        "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\"",
+        "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\",\"dead\":%d",
         sp->total_counts, sp->cpu_load, sp->cps, sp->lost_impulses,
         sp->total_time_sec, compute_live_time(sp),
         tcp_bridge_dropped_bytes(), usb_host_cdc_rx_errors(), usb_host_cdc_rx_ring_drops(),
         hist_ok, hist_drop,
         sp->temperature[0], sp->temperature[1], sp->temperature[2],
-        sp->serial_number[0] ? sp->serial_number : "");
+        sp->serial_number[0] ? sp->serial_number : "", dead);
     httpd_resp_send_chunk(req, buf, n);
     if (sp->calib_valid) {
         int p = snprintf(buf, 4096, ",\"calib\":[");
@@ -212,6 +213,11 @@ static esp_err_t handle_spectrum_json(httpd_req_t *req)
     }
     if (!spectrum_get_snapshot(sp)) {
         free(sp);
+        // #FW-43: дед-флаг доступен даже без валидного снапшота спектра. Дед-состояние
+        // (прибор определился, но не запитан) часто = НЕТ данных спектра → снапшот
+        // невалиден → сюда. Без заголовка баннер бы не показался (dead:N живёт только в
+        // render_spectrum_json на валидном пути). Фронт читает заголовок на каждом 404.
+        httpd_resp_set_hdr(req, "X-Spectrometer-Dead", usb_host_cdc_spectrometer_dead() ? "1" : "0");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data yet");
         return ESP_FAIL;
     }
@@ -333,14 +339,16 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
 {
     boot_config_t bc;
     boot_config_load(&bc);
-    char resp[200];
+    char resp[256];
+    // #FW-42: name_prefix санитизирован в NVS ([A-Za-z0-9_-]) → JSON-escape не нужен.
     snprintf(resp, sizeof(resp),
         "{\"autostart_spectrum\":%s,\"autostart_waterfall\":%s,"
-        "\"clear_spectrum\":%s,\"clear_waterfall\":%s}",
+        "\"clear_spectrum\":%s,\"clear_waterfall\":%s,\"name_prefix\":\"%s\"}",
         bc.autostart_spectrum  ? "true" : "false",
         bc.autostart_waterfall ? "true" : "false",
         bc.clear_spectrum      ? "true" : "false",
-        bc.clear_waterfall     ? "true" : "false");
+        bc.clear_waterfall     ? "true" : "false",
+        bc.name_prefix);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;
@@ -369,6 +377,11 @@ static esp_err_t handle_boot_config_set(httpd_req_t *req)
     if ((it = cJSON_GetObjectItem(root, "autostart_waterfall"))) bc.autostart_waterfall = cJSON_IsTrue(it);
     if ((it = cJSON_GetObjectItem(root, "clear_spectrum")))      bc.clear_spectrum      = cJSON_IsTrue(it);
     if ((it = cJSON_GetObjectItem(root, "clear_waterfall")))     bc.clear_waterfall     = cJSON_IsTrue(it);
+    // #FW-42: префикс имён экспортов. boot_config_save() санитизирует ([A-Za-z0-9_-], усечение).
+    if ((it = cJSON_GetObjectItem(root, "name_prefix")) && cJSON_IsString(it)) {
+        strncpy(bc.name_prefix, it->valuestring, sizeof(bc.name_prefix) - 1);
+        bc.name_prefix[sizeof(bc.name_prefix) - 1] = '\0';
+    }
     cJSON_Delete(root);
     int rc = boot_config_save(&bc);
     httpd_resp_set_type(req, "application/json");
@@ -460,8 +473,10 @@ static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "application/xml");
+    char named[48];
+    web_build_export_name(named, sizeof(named), filename);   // #FW-42: префикс
     char disp[80];
-    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", named);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
 
     httpd_resp_sendstr_chunk(req,
@@ -575,8 +590,10 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/csv");
+    char named[48];
+    web_build_export_name(named, sizeof(named), filename);   // #FW-42: префикс
     char disp[80];
-    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", named);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
 
     // #CSV-1 (2026-06-28): нативный формат Atom Spectra. Эталон оператора —
@@ -613,8 +630,10 @@ static esp_err_t render_spectrum_n42(httpd_req_t *req, const spectrum_data_t *sp
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "application/octet-stream");
+    char named[48];
+    web_build_export_name(named, sizeof(named), filename);   // #FW-42: префикс
     char disp[80];
-    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", named);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
     uint32_t r0 = esp_random(), r1 = esp_random(), r2 = esp_random(), r3 = esp_random();
     char uuid[40];
@@ -718,8 +737,10 @@ static esp_err_t render_spectrum_spe(httpd_req_t *req, const spectrum_data_t *sp
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "application/octet-stream");
+    char named[48];
+    web_build_export_name(named, sizeof(named), filename);   // #FW-42: префикс
     char disp[80];
-    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", filename);
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", named);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
     time_t end_time = (sp->saved_at > 0) ? sp->saved_at : time(NULL);
     struct tm ts;
@@ -1030,6 +1051,65 @@ static esp_err_t handle_system(httpd_req_t *req)
     return ESP_OK;
 }
 
+// #FW-22: глубокая USB-Host диагностика (read-only JSON снапшота usb_diag_snapshot_t).
+// Инструментация для #FW-43 (hot-plug re-init): enum_cb_count/open_attempts/cdc_open/
+// last_open_errno/rx_cb_count/pkt_hist позволяют увидеть, где рвётся реконнект прибора.
+static esp_err_t handle_usb_diag(httpd_req_t *req)
+{
+    usb_diag_snapshot_t d;
+    usb_host_cdc_diag_snapshot(&d);
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
+    cJSON_AddBoolToObject(root,   "host_installed",        d.host_installed);
+    cJSON_AddBoolToObject(root,   "cdc_driver_installed",  d.cdc_driver_installed);
+    cJSON_AddNumberToObject(root, "last_host_event_flags", d.last_host_event_flags);
+    cJSON_AddNumberToObject(root, "host_event_ts_ms",      d.host_event_ts_ms);
+    cJSON_AddNumberToObject(root, "enum_cb_count",         d.enum_cb_count);
+    cJSON_AddNumberToObject(root, "last_seen_vid",         d.last_seen_vid);
+    cJSON_AddNumberToObject(root, "last_seen_pid",         d.last_seen_pid);
+    cJSON_AddNumberToObject(root, "last_seen_class",       d.last_seen_class);
+    cJSON_AddNumberToObject(root, "last_seen_subclass",    d.last_seen_subclass);
+    cJSON_AddNumberToObject(root, "last_seen_ts_ms",       d.last_seen_ts_ms);
+    cJSON_AddNumberToObject(root, "bus_devs_now",          d.bus_devs_now);
+    cJSON_AddNumberToObject(root, "open_attempts",         d.open_attempts);
+    cJSON_AddNumberToObject(root, "last_open_errno",       d.last_open_errno);
+    cJSON_AddStringToObject(root, "last_open_errstr",      esp_err_to_name(d.last_open_errno));
+    cJSON_AddNumberToObject(root, "last_open_ts_ms",       d.last_open_ts_ms);
+    cJSON_AddBoolToObject(root,   "cdc_open",              d.cdc_open);
+    cJSON_AddNumberToObject(root, "ftdi_step_ok_mask",     d.ftdi_step_ok_mask);
+    cJSON_AddNumberToObject(root, "ftdi_last_errno",       d.ftdi_last_errno);
+    cJSON_AddNumberToObject(root, "tx_packets",            d.tx_packets);
+    cJSON_AddNumberToObject(root, "tx_bytes",              d.tx_bytes);
+    cJSON_AddNumberToObject(root, "last_tx_ts_ms",         d.last_tx_ts_ms);
+    cJSON_AddNumberToObject(root, "last_tx_errno",         d.last_tx_errno);
+    cJSON_AddStringToObject(root, "last_tx_cmd",           d.last_tx_cmd);
+    cJSON_AddNumberToObject(root, "rx_cb_count",           d.rx_cb_count);
+    cJSON_AddNumberToObject(root, "rx_bytes",              d.rx_bytes);
+    cJSON_AddNumberToObject(root, "rx_last_ts_ms",         d.rx_last_ts_ms);
+    cJSON_AddNumberToObject(root, "rx_last_len",           d.rx_last_len);
+    cJSON_AddStringToObject(root, "rx_last_first16_hex",   d.rx_last_first16_hex);
+    cJSON_AddNumberToObject(root, "line_status_errors",    d.line_status_errors);
+    cJSON_AddNumberToObject(root, "pkt_hist",              d.pkt_hist);
+    cJSON_AddNumberToObject(root, "pkt_text",              d.pkt_text);
+    cJSON_AddNumberToObject(root, "pkt_stat",              d.pkt_stat);
+    cJSON_AddNumberToObject(root, "pkt_osc",               d.pkt_osc);
+    cJSON_AddNumberToObject(root, "pkt_unknown",           d.pkt_unknown);
+    cJSON_AddNumberToObject(root, "drv_task_alive_ts_ms",  d.drv_task_alive_ts_ms);
+    cJSON_AddNumberToObject(root, "conn_task_alive_ts_ms", d.conn_task_alive_ts_ms);
+    cJSON_AddNumberToObject(root, "dma_free_largest",      d.dma_free_largest);
+    cJSON_AddNumberToObject(root, "dma_free_total",        d.dma_free_total);
+    cJSON_AddNumberToObject(root, "uptime_ms",             d.uptime_ms);
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 static esp_err_t handle_set_calibration(httpd_req_t *req)
 {
     if (!csrf_check(req)) return ESP_FAIL;
@@ -1208,8 +1288,11 @@ static esp_err_t handle_settings_backup(httpd_req_t *req)
     char tcpot_line[700];
     spectrum_get_tcpot_raw(tcpot_line, sizeof(tcpot_line), NULL);
 
+    char bkp_name[48], bkp_disp[80];                         // #FW-42: префикс
+    web_build_export_name(bkp_name, sizeof(bkp_name), "atomspectra_backup.txt");
+    snprintf(bkp_disp, sizeof(bkp_disp), "attachment; filename=\"%s\"", bkp_name);
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"atomspectra_backup.txt\"");
+    httpd_resp_set_hdr(req, "Content-Disposition", bkp_disp);
     httpd_resp_sendstr_chunk(req, info_line);
     httpd_resp_sendstr_chunk(req, "\r\n");
     httpd_resp_sendstr_chunk(req, tcpot_line);
@@ -1439,6 +1522,7 @@ void web_server_init(void)
         {"/api/saved/*",                 HTTP_POST, handle_saved_delete,     NULL},
         {"/api/device",                  HTTP_GET,  handle_device,           NULL},
         {"/api/system",                  HTTP_GET,  handle_system,           NULL},
+        {"/api/usb-diag",                HTTP_GET,  handle_usb_diag,         NULL},  // #FW-22
         {"/api/reboot-device",           HTTP_POST, handle_reboot_device,    NULL},
         {"/api/wifi/reset",              HTTP_POST, handle_wifi_reset,       NULL},
         {"/api/reboot-esp",              HTTP_POST, handle_reboot_esp,       NULL},
