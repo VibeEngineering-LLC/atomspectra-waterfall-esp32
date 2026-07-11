@@ -169,9 +169,16 @@ class Stitcher:
     """
 
     def __init__(self, path):
+        self._set_paths(path)
+        self._load_state()
+
+    def _set_paths(self, path):
         self.path = path
         self.state_path = path + ".state.json"
         self.temps_path = path + ".temps.csv"
+
+    def _load_state(self):
+        path = self.path
         file_ok = os.path.exists(path) and os.path.getsize(path) >= 8
         if file_ok and os.path.exists(self.state_path):
             with open(self.state_path, "r", encoding="utf-8") as f:
@@ -181,6 +188,28 @@ class Stitcher:
                 print(f"  ⚠ {path} отсутствует/пуст, а {self.state_path} есть — "
                       f"файл шва перемещён/удалён вручную, начинаю новый (state сброшен)")
             self.state = {"ingested": {}, "rows": 0, "dur_sum": 0, "started_at": None}
+
+    def _rotated_path(self, stride):
+        """#REC-14: путь нового файла шва при смене формата прошивки —
+        <base>__s<stride><ext>. Существующий суффикс __s… снимается (не наслаивается
+        при второй смене формата)."""
+        d = os.path.dirname(self.path)
+        root, ext = os.path.splitext(os.path.basename(self.path))
+        i = root.rfind("__s")
+        if i != -1 and root[i + 3:].isdigit():
+            root = root[:i]
+        return os.path.join(d, f"{root}__s{stride}{ext}")
+
+    def _rotate_for_format(self, new_ch, new_stride, old_ch, old_stride):
+        """Заморозить текущий файл шва и переключиться на новый (под новый формат).
+        Старый .aswf/.state.json/.temps.csv остаются на диске нетронутыми."""
+        old_path = self.path
+        self._set_paths(self._rotated_path(new_stride))
+        self._load_state()
+        ch_note = "" if old_ch == new_ch else f", ch {old_ch}→{new_ch}"
+        print(f"  ⟳ #REC-14 смена формата прошивки платы: stride {old_stride}→{new_stride}"
+              f"{ch_note}; файл шва заморожен ({os.path.basename(old_path)}), "
+              f"новые строки → {os.path.basename(self.path)}")
 
     def _save_state(self):
         tmp = self.state_path + ".part"
@@ -234,6 +263,20 @@ class Stitcher:
             device_delta = tao - last_tao
             recon = (device_delta, last_sum, device_delta - last_sum)
 
+        # #REC-14: смена формата строки в прошивке платы (напр. v3 stride 16402 →
+        # v5 16410) больше НЕ роняет запись. Активный файл шва замораживается, а
+        # новый формат пишется в отдельный <base>__s<stride>.aswf. Мешать строки
+        # разной длины в один файл нельзя — читатель раскладывает водопад по stride
+        # из шапки, и весь хвост после шва стал бы кашей.
+        if os.path.exists(self.path):
+            _, fstride, fch = self._file_header()
+            if fch != ch or fstride != stride:
+                self._rotate_for_format(ch, stride, fch, fstride)
+                if self.already_ingested(name, len(blob)):
+                    # уже вшит в новый файл (рестарт после ротации, ack платы не
+                    # прошёл) — строки не дублируем, снаружи останется только ack
+                    return 0, None, None
+
         gap = None
         if not os.path.exists(self.path):
             # первый сегмент задаёт шапку файла (saved_rows=0 -> derive-from-size)
@@ -244,10 +287,7 @@ class Stitcher:
                 os.fsync(f.fileno())
             self.state["started_at"] = hdr.get("started_at")
         else:
-            fhdr, fstride, fch = self._file_header()
-            if fch != ch or fstride != stride:
-                raise ValueError(f"{name}: формат не совпал с файлом шва "
-                                 f"(ch {ch}≠{fch} или stride {stride}≠{fstride})")
+            fhdr = self._file_header()[0]
             if hdr.get("calibration") != fhdr.get("calibration"):
                 print(f"  ⚠ {name}: калибровка сегмента ≠ калибровке файла шва "
                       f"(в шапке остаётся первая)")
