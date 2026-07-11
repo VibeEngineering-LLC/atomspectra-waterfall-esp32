@@ -67,7 +67,7 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <div class="chips">
 <span class="chip ok"><span class="dot"></span><span id="device-chip" data-i18n="device">Прибор</span></span>
 <span class="chip" id="ip-chip">—</span>
-<span class="chip" id="mode-chip" onclick="toggleMode()" title="Indoor/Outdoor" style="cursor:pointer;display:none">—</span>
+<span class="chip" id="mode-chip" onclick="toggleMode()" title="Переключить Indoor/Outdoor" style="cursor:pointer;border-color:var(--accent);color:var(--accent)">⇄ Indoor</span>
 <span class="chip lang" id="langBtn">EN</span>
 </div>
 </header>
@@ -523,9 +523,9 @@ async function loadFlashInfo(){
   var mc=document.getElementById("mode-chip");
   if(mc){
    mc.style.display="";
-   mc.textContent=(nm==="field_ap")?tr("mode.outdoor"):tr("mode.indoor");
-   mc.style.borderColor=(nm==="field_ap")?"#f0c45a":"";
-   mc.style.color=(nm==="field_ap")?"#f0c45a":"";
+   mc.textContent="⇄ "+((nm==="field_ap")?tr("mode.outdoor"):tr("mode.indoor"));
+   mc.style.borderColor=(nm==="field_ap")?"#f0c45a":"var(--accent)";
+   mc.style.color=(nm==="field_ap")?"#f0c45a":"var(--accent)";
   }
  }catch(e){}
 }

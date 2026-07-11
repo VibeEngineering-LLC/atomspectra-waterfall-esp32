@@ -1,9 +1,9 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="demo-shim.js"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="demo-shim.js"></script>
 <title>AtomSpectra · Спектр</title>
 <style>
 :root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
@@ -12,7 +12,7 @@ html,body{ margin:0; padding:0; background:var(--bg); }
 body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; -webkit-text-size-adjust:100%; padding-bottom:28px; }
 a{ color:inherit; text-decoration:none; }
 button,input{ font-family:inherit; }
-.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+.wrap{ max-width:none; margin:0; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
 header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
 .brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
 .logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
@@ -68,12 +68,14 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <div class="chips">
 <span class="chip ok"><span class="dot"></span><span id="device-chip" data-i18n="device">Прибор</span></span>
 <span class="chip" id="ip-chip">—</span>
+<span class="chip" id="mode-chip" onclick="toggleMode()" title="Переключить Indoor/Outdoor" style="cursor:pointer;border-color:var(--accent);color:var(--accent)">⇄ Indoor</span>
 <span class="chip lang" id="langBtn">EN</span>
 </div>
 </header>
 <nav>
 <span class="on" data-i18n="nav.spectrum">Спектр</span>
 <a href="waterfall.html" data-i18n="nav.waterfall">Водопад</a>
+<a href="/monitor" data-i18n="nav.monitor">Мониторинг</a>
 <a href="saved.html" data-i18n="nav.saved">Сохранённые</a>
 <a href="system.html" data-i18n="nav.system">Система</a>
 <a href="service.html" data-i18n="nav.service">Сервис</a>
@@ -81,6 +83,7 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 
 <div class="wrap">
 <div class="status" id="status" data-i18n="status.connecting">Подключение...</div>
+<div id="dead-banner" style="display:none;margin-bottom:10px;padding:11px 14px;border:1px solid #d9634e;border-radius:8px;background:rgba(217,99,78,.12);color:#f0a08e;font-size:13px;line-height:1.5"></div>
 
 <section class="panel pad">
 <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;color:#aeb6a8">
@@ -111,6 +114,7 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <!-- #UI-3: оверлей энергетических линий нуклидов -->
 <div style="display:flex;align-items:center;gap:8px;position:relative">
  <button class="btn sm" id="btn-nuc" onclick="toggleNucPanel()" data-i18n-html="nuc.toggle" title="" disabled style="opacity:.5">&#9883; Линии</button>
+ <button class="btn sm" id="btn-nuc-vis" onclick="toggleNucVis()" title=""></button><!-- #UI-40 mirror: быстрый on/off видимости, выбор не меняется -->
  <div id="nuc-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:10;background:#0e120d;border:1px solid #2a322a;border-radius:8px;padding:10px 12px;min-width:260px;box-shadow:0 6px 18px rgba(0,0,0,.5)"></div>
 </div>
 <div class="ml" style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#6b756a"><span style="width:18px;height:3px;border-radius:2px;background:var(--accent);display:inline-block"></span><span data-i18n="legend.live">живой</span></div>
@@ -133,6 +137,13 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <button class="btn sm" onclick="location.href='/api/export.spe'" data-i18n="btn.expSpe">Export SPE</button>
 <button class="btn sm" onclick="clearOverlay()" id="btn-clear-ovl" style="display:none" data-i18n="btn.clearOvl">Снять overlay</button>
 <span id="overlay-label"></span>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;font-size:12px;color:#8a9686">
+ <span>Префикс файлов:</span>
+ <input type="text" id="fx-prefix" maxlength="23" spellcheck="false" autocomplete="off" placeholder="MY1" title="Добавляется в начало имени всех выгрузок этой платы. Латиница, цифры, _ и -." style="width:110px;background:#11150f;color:#cfd6cd;border:1px solid #444;padding:4px 7px;border-radius:4px;font-family:inherit;font-size:12px">
+ <button type="button" onclick="savePrefix()" style="cursor:pointer;background:rgba(52,211,192,.12);border:1px solid rgba(52,211,192,.4);color:#34d3c0;border-radius:6px;padding:5px 12px;font-family:inherit;font-size:12px;font-weight:600">Сохранить</button>
+ <span id="fx-prefix-st" style="min-width:16px;font-size:14px"></span>
 </div>
 
 <section class="panel">
@@ -172,11 +183,13 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 var DICT={
  ru:{
   "device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor","mode.confirmOut":"Переключить в полевой режим (Outdoor)? Плата перезагрузится, поднимет точку доступа AtomSpectra-Outdoor, текущее подключение прервётся.","mode.confirmIn":"Вернуться в домашний режим (Indoor)? Плата перезагрузится и подключится к домашней сети.",
   "status.connecting":"Подключение...",
   "status.rebooting":"Перезагрузка...",
   "status.wifiSetup":"Настройка WiFi...",
   "status.nodata":"Нет данных",
+  "dead.warn":"⚠ Спектрометр определился, но не отвечает — нет данных. Скорее всего подключён без питания. Выключите питание платы на ~5 секунд и включите снова, уже с подключённым спектрометром.",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 КБ (%3%) &middot; свободно %4 КБ",
   "btn.start":"&#9654; Старт","btn.stop":"&#9632; Стоп","btn.reset":"&#8634; Сброс",
@@ -188,6 +201,7 @@ var DICT={
   "nuc.toggle":"&#9883; Линии","nuc.title":"Линии нуклидов",
   "nuc.all":"Все","nuc.none":"Снять",
   "nuc.need_cal":"Нужна калибровка энергии",
+  "btn.lines":"Линии","st.on":"вкл","st.off":"выкл","btn.lines_title":"Показать/скрыть выбранные линии нуклидов — сам выбор не меняется",
   "legend.live":"живой",
   "cursor.hint":"наведите курсор",
   "cal.title":"Калибровка энергии",
@@ -203,7 +217,8 @@ var DICT={
   "confirm.rebootDev":"Перезагрузить спектрометр?",
   "confirm.rebootEsp":"Перезагрузить ESP32?",
   "confirm.wifiReset":"Сбросить WiFi?",
-  "saved.savedAs":"Сохранён #%1","saved.saveErr":"Save error",
+  "saved.savedAs":"Сохранён #%1","saved.saveErr":"Ошибка сохранения",
+  "saved.saveErrNoData":"Нет данных спектра (прибор не подключён/не выдаёт спектр)","saved.saveErrNoSpace":"Мало места на flash — удалите старые снимки",
   "log.start":"Start sent","log.stop":"Stop sent","log.reset":"Reset sent","log.info":"Info requested",
   "log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
@@ -213,11 +228,13 @@ var DICT={
  },
  en:{
   "device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor","mode.confirmOut":"Switch to field mode (Outdoor)? The board will reboot, bring up the AtomSpectra-Outdoor access point, and the current connection will drop.","mode.confirmIn":"Return to home mode (Indoor)? The board will reboot and connect to the home network.",
   "status.connecting":"Connecting...",
   "status.rebooting":"Rebooting...",
   "status.wifiSetup":"WiFi setup...",
   "status.nodata":"No data",
+  "dead.warn":"⚠ Spectrometer detected but not responding — no data. It is likely connected without power. Switch the board power off for ~5 seconds, then on again with the spectrometer already connected.",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 KB (%3%) &middot; free %4 KB",
   "btn.start":"&#9654; Start","btn.stop":"&#9632; Stop","btn.reset":"&#8634; Reset",
@@ -229,6 +246,7 @@ var DICT={
   "nuc.toggle":"&#9883; Lines","nuc.title":"Nuclide lines",
   "nuc.all":"All","nuc.none":"None",
   "nuc.need_cal":"Energy calibration required",
+  "btn.lines":"Lines","st.on":"on","st.off":"off","btn.lines_title":"Show/hide selected nuclide lines — selection itself unchanged",
   "legend.live":"live",
   "cursor.hint":"hover the chart",
   "cal.title":"Energy calibration",
@@ -245,6 +263,7 @@ var DICT={
   "confirm.rebootEsp":"Reboot ESP32?",
   "confirm.wifiReset":"Reset WiFi?",
   "saved.savedAs":"Saved #%1","saved.saveErr":"Save error",
+  "saved.saveErrNoData":"No spectrum data (device not connected / no spectrum)","saved.saveErrNoSpace":"Low flash space — delete old snapshots",
   "log.start":"Start sent","log.stop":"Stop sent","log.reset":"Reset sent","log.info":"Info requested",
   "log.sent":"Sent: %1","log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
@@ -270,6 +289,7 @@ function applyI18n(){
  document.documentElement.lang=LANG;
  var b=document.getElementById("langBtn"); if(b)b.textContent=(LANG==="ru")?"EN":"RU";
  document.title="AtomSpectra · "+tr("nav.spectrum");
+ if(typeof syncNucVisBtn==="function")syncNucVisBtn();   // #UI-40 mirror: подпись кнопки on/off при старте и смене языка
 }
 function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
@@ -299,6 +319,8 @@ var doseK=0;
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
 async function loadDoseK(){try{var r=await(await fetch("/api/waterfall/dose_k")).json();doseK=(typeof r.dose_k==="number"&&r.dose_k>0)?r.dose_k:0;}catch(e){}}
 function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
+async function loadPrefix(){try{var r=await(await fetch("/api/boot-config")).json();var e=document.getElementById("fx-prefix");if(e)e.value=r.name_prefix||"";}catch(_){}}
+async function savePrefix(){var e=document.getElementById("fx-prefix"),st=document.getElementById("fx-prefix-st");if(!e)return;st.textContent="…";try{var r=await post("/api/boot-config",{headers:{"Content-Type":"application/json"},body:JSON.stringify({name_prefix:e.value})});st.textContent=r.ok?"✓":"✗";}catch(_){st.textContent="✗";}}
 
 function lg(m){if(!logEl)return;logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight}
 /* #UI-1: подтянуть текстовые ответы прибора из /api/devlog и показать их в логе команд («← ...») */
@@ -324,16 +346,18 @@ function clearCanvas(){
  X.save();X.translate(12,PT+PH/2);X.rotate(-Math.PI/2);X.textAlign="center";X.fillText(isCps?tr("ax.cps"):tr("ax.cnt"),0,0);X.restore();
 }
 
+function setDeadBanner(on){var b=document.getElementById("dead-banner");if(!b)return;if(on){b.innerHTML=tr("dead.warn");b.style.display="";}else{b.style.display="none";}}  /* #FW-43: баннер «определился, но не запитан» */
 async function update(){
  try{
   var r=await fetch("/api/spectrum.json");
-  if(!r.ok){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд */
+  if(!r.ok){setDeadBanner(r.headers.get("X-Spectrometer-Dead")==="1");if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд. #FW-43: дед-флаг из заголовка X-Spectrometer-Dead — баннер работает даже когда спектра нет (404) */
   var d=await r.json();
   failStreak=0;  /* #UI-2: успешный кадр — сброс счётчика подряд-неудач */
   if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib);nucBtnEnable(true);} else if(!calib){nucBtnEnable(false);}
   if(d.serial)document.getElementById("device-chip").textContent=d.serial;
   document.getElementById("ip-chip").textContent=location.hostname;
   lastD=d;
+  setDeadBanner(!!d.dead);  /* #FW-43 */
   var stEl=document.getElementById("status");
   var lv=(typeof d.live==="number")?d.live:d.time;
   var dpct=(d.time>0)?((d.time-lv)/d.time*100):0;
@@ -354,7 +378,7 @@ async function update(){
   document.getElementById("big-total").textContent=d.total.toLocaleString(lcl());
   if(doseK>0){var bigDr=(d.cps*doseK).toFixed(3);document.getElementById("big-dose").textContent=bigDr;document.getElementById("big-dose-sep").style.display="";document.getElementById("big-dose-wrap").style.display="";}else{document.getElementById("big-dose-sep").style.display="none";document.getElementById("big-dose-wrap").style.display="none";}
   draw(d);
- }catch(e){if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
+ }catch(e){if(++failStreak>=3||!lastD){clearCanvas();setDeadBanner(false);document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
  finally{pollDevLog();}   /* #UI-2: devlog (#UI-1) теперь ПОСЛЕ спектра, не конкурентно — устраняет лишний сокет → меньше 503 */
 }
 
@@ -371,11 +395,18 @@ function draw(d){
  if(mx<=0)mx=1;
  var yTicks=[],minExp=0,maxExp=0,yMap;
  if(isLog){
-  maxExp=Math.ceil(Math.log10(mx));if(maxExp<1)maxExp=1;
-  minExp=Math.max(maxExp-7,isCps?-3:0);
-  if(minExp>=maxExp)minExp=maxExp-1;
-  for(var p=minExp;p<=maxExp;p++)yTicks.push(Math.pow(10,p));
-  yMap=function(v){if(v<=0)return PB;var lv=Math.log10(v);if(lv<minExp)return PB;return PB-((lv-minExp)/(maxExp-minExp))*PH};
+  /* #UI-36: масштаб как в AtomSpectra-референсе — пол=ОДИН отсчёт, верх=пик, декады = реальный
+     диапазон данных (НЕ фикс 7 — 7 декад топили спектр до 1e-7, пустой шум снизу = «ужасно»).
+     Пол «один отсчёт»: counts→10^0=1; cps→1/tt (тот же отсчёт, поделённый на время). Разница
+     minExp = -log10(tt) — чистый вертикальный сдвиг → форма cps и counts идентична (#FW-35 цел).
+     #FW-26 (пик<1 не топим) сохранён: maxExp всегда трекает пик. */
+  maxExp=Math.log10(mx)+0.15;   /* лёгкий отступ сверху, одинаков для cps/counts */
+  minExp=isCps?-Math.log10(tt):0;   /* один отсчёт: cps=1/tt, counts=1 */
+  if(minExp>=maxExp-0.5)minExp=maxExp-1;   /* гарантия ≥~1 декады при крошечном пике */
+  /* тики — целые декады в окне [minExp..maxExp]; для counts под-1 не бывает (minExp=0). */
+  for(var p=Math.ceil(minExp);p<=Math.floor(maxExp);p++)yTicks.push(Math.pow(10,p));
+  /* простой лог-линейный map [minExp..maxExp]→[PB..PT]; #UI-35 half-split убран (при поле=1 суб-декад у counts нет, для cps сдвиг сохраняет identity). */
+  yMap=function(v){if(v<=0)return PB;var lv=Math.log10(v);if(lv<=minExp)return PB;if(lv>=maxExp)return PT;return PB-((lv-minExp)/(maxExp-minExp))*PH;};
  }else{
   yMap=function(v){return PB-(v/mx)*PH};
   var ys=niceStep(mx,6);for(var v=0;v<=mx*1.01;v+=ys)yTicks.push(v);
@@ -391,8 +422,13 @@ function draw(d){
  var bw=PW/N;
  var accent=getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#34d3c0';
  if(yO){X.fillStyle="rgba(110,168,255,0.28)";for(var i=0;i<yO.length;i++){var y=yMap(yO[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y)}}
- X.fillStyle=accent+"44";
+ /* #UI-36: лёгкая заливка (alpha 0x1e ≈ 0.12) + чёткая линия сверху — как в AtomSpectra-референсе.
+    Раньше accent+"44" (~0.27) сплошными столбцами = тяжёлая «плита», топила форму спектра. */
+ X.fillStyle=accent+"1e";
  for(var i=0;i<N;i++){var y=yMap(yV[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y)}
+ X.strokeStyle=accent;X.lineWidth=1;X.beginPath();
+ for(var i=0;i<N;i++){var px=PL+i*bw+bw/2,py=yMap(yV[i]);i===0?X.moveTo(px,py):X.lineTo(px,py)}
+ X.stroke();
  if(yO){X.strokeStyle="#6ea8ff";X.lineWidth=1.1;X.setLineDash([5,4]);X.beginPath();for(var i=0;i<yO.length;i++){var px=PL+i*bw+bw/2,py=yMap(yO[i]);i===0?X.moveTo(px,py):X.lineTo(px,py)}X.stroke();X.setLineDash([])}
  X.restore();
  drawNuclides(N);
@@ -483,7 +519,23 @@ async function loadFlashInfo(){
   var fi=document.getElementById("flash-inner");
   fi.style.width=pct+"%";
   fi.style.background=pct>90?"#ff8a82":pct>70?"#f0c45a":"var(--accent)";
+  // #FIELD-6: индикатор режима Indoor/Outdoor в шапке (клик = переключение)
+  var nm=r.net_mode||"sta"; window._netMode=nm;
+  var mc=document.getElementById("mode-chip");
+  if(mc){
+   mc.style.display="";
+   mc.textContent="⇄ "+((nm==="field_ap")?tr("mode.outdoor"):tr("mode.indoor"));
+   mc.style.borderColor=(nm==="field_ap")?"#f0c45a":"var(--accent)";
+   mc.style.color=(nm==="field_ap")?"#f0c45a":"var(--accent)";
+  }
  }catch(e){}
+}
+// #FIELD-6 (T4/T5): переключатель Indoor↔Outdoor из шапки. Пишет NVS ap_mode и ребутит.
+async function toggleMode(){
+ var cur=window._netMode||"sta";
+ var toOutdoor=(cur!=="field_ap");
+ if(!confirm(tr(toOutdoor?"mode.confirmOut":"mode.confirmIn")))return;
+ try{await post("/api/net-mode",{headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:toOutdoor?"outdoor":"indoor"})});}catch(e){}
 }
 async function loadOverlay(idx){
  try{var r=await(await fetch("/api/saved/"+idx+"/spectrum.json")).json();overlayBins=r.bins;overlayIdx=idx;
@@ -491,10 +543,13 @@ async function loadOverlay(idx){
  lg(tfmt("log.ovlOk",idx));if(lastD)draw(lastD);loadSaved();}catch(e){lg(tfmt("log.ovlErr",e))}
 }
 function clearOverlay(){overlayBins=null;overlayIdx=-1;document.getElementById("overlay-label").textContent="";document.getElementById("btn-clear-ovl").style.display="none";lg(tr("log.ovlClear"));if(lastD)draw(lastD);loadSaved();}
-async function loadSaved(){
+async function loadSaved(retry){
  var el=document.getElementById("saved");
  try{
-  var r=await(await fetch("/api/list")).json();
+  var resp=await fetch("/api/list",{cache:"no-store"});
+  var txt=await resp.text();
+  if(!resp.ok||!txt){throw new Error("empty /api/list");}  /* #FW-37: после F5 httpd отдаёт пустое тело (гонка при перезагрузке) → .json() падал SyntaxError */
+  var r=JSON.parse(txt);
   if(!r.spectra||r.spectra.length===0){el.innerHTML='<span class="empty">'+tr("saved.empty")+'</span>';return}
   var html='<table class="saved"><tr><th>'+tr("th.idx")+'</th><th>'+tr("th.saved")+'</th><th>'+tr("th.counts")+'</th><th>'+tr("th.time")+'</th><th>'+tr("th.export")+'</th><th></th></tr>';
   for(var i=0;i<r.spectra.length;i++){
@@ -505,13 +560,19 @@ async function loadSaved(){
     '<td><button class="btn sm" onclick="loadOverlay('+s.index+')">'+tr("btn.overlay")+'</button> <button class="btn sm red" onclick="delSaved('+s.index+')">'+tr("btn.del")+'</button></td></tr>';
   }
   el.innerHTML=html+'</table>';
- }catch(e){el.innerHTML='<span class="empty">'+tfmt("err.prefix",e)+'</span>'}
+ }catch(e){
+  if(!retry){ setTimeout(function(){loadSaved(true);},800); return; }  /* #FW-37: один тихий retry на гонку после F5 */
+  if(!el.querySelector("table")) el.innerHTML='<span class="empty">'+tfmt("err.prefix",e)+'</span>';  /* не затираем уже показанный список */
+ }
 }
 async function delSaved(idx){if(!confirm(tfmt("confirm.del",idx)))return;await post("/api/saved/"+idx+"/delete");lg(tfmt("log.del",idx));if(overlayIdx===idx)clearOverlay();loadSaved();loadFlashInfo()}
 async function startAcq(){await post("/api/command",{body:"-sta"});lg(tr("log.start"))}
 async function stopAcq(){await post("/api/command",{body:"-sto"});lg(tr("log.stop"))}
 async function resetSpectrum(){clearCanvas();lastD=null;document.getElementById("big-time").textContent="00:00:00";document.getElementById("big-cps").textContent="0";document.getElementById("big-total").textContent="0";await post("/api/reset");lg(tr("log.reset"))}
-async function saveSpectrum(){var r=await(await post("/api/save")).json();lg(r.ok?tfmt("saved.savedAs",r.index):tr("saved.saveErr"));if(r.ok){loadSaved();loadFlashInfo()}}
+async function saveSpectrum(){var r=await(await post("/api/save")).json();
+ if(r.ok){lg(tfmt("saved.savedAs",r.index));loadSaved();loadFlashInfo();return}
+ var k=r.err==="novalid"?"saved.saveErrNoData":r.err==="nospace"?"saved.saveErrNoSpace":"saved.saveErr";
+ lg(tr(k));}
 async function requestInfo(){calibEditing=false;await post("/api/command",{body:"-inf"});await post("/api/command",{body:"-cal"});lg(tr("log.info"));setTimeout(update,800);setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}  /* #UI-1: быстро подхватить ответы -inf/-cal */
 async function rebootDevice(){if(!confirm(tr("confirm.rebootDev")))return;await post("/api/reboot-device");lg(tr("log.rebootDev"))}
 async function rebootEsp(){if(!confirm(tr("confirm.rebootEsp")))return;await post("/api/reboot-esp");document.getElementById("status").textContent=tr("status.rebooting")}
@@ -554,6 +615,10 @@ var nucShow=(function(){
  return {k40:true,cs137:true,co60:true};
 })();
 function nucSave(){try{localStorage.setItem("aswf-nuc",JSON.stringify(nucShow));}catch(e){}}
+var nucVis=(function(){try{return localStorage.getItem("aswf-nuc-vis")!=="0";}catch(e){return true;}})();   /* #UI-40 mirror: быстрый on/off видимости линий, отдельно от выбора aswf-nuc (общий ключ с водопадом) */
+function syncNucVisBtn(){var b=document.getElementById("btn-nuc-vis");if(!b)return;b.textContent=tr("btn.lines")+": "+(nucVis?tr("st.on"):tr("st.off"));b.title=tr("btn.lines_title");b.style.opacity=nucVis?"":"0.6";}
+function toggleNucVis(){nucVis=!nucVis;try{localStorage.setItem("aswf-nuc-vis",nucVis?"1":"0");}catch(e){}syncNucVisBtn();if(lastD)draw(lastD);}
+syncNucVisBtn();   /* #UI-41: nucVis присваивается здесь (ниже applyI18n@557, где nucVis ещё undefined) — синхр. подпись кнопки на старте */
 function setNuc(id,v){nucShow[id]=!!v;nucSave();if(lastD)draw(lastD);}
 function nucAll(v){for(var i=0;i<NUCLIDES.length;i++){nucShow[NUCLIDES[i].id]=!!v;var cb=document.getElementById("nuc-cb-"+NUCLIDES[i].id);if(cb)cb.checked=!!v;}nucSave();if(lastD)draw(lastD);}
 function populateNucPanel(){
@@ -583,7 +648,7 @@ function nucBtnEnable(on){
  if(!on){var p=document.getElementById("nuc-panel");if(p)p.style.display="none";}
 }
 function drawNuclides(N){
- if(!calib||!lastD)return;
+ if(!calib||!lastD||!nucVis)return;   // #UI-40 mirror: быстрый on/off, выбор (aswf-nuc) не меняется
  var any=false;for(var k in nucShow){if(nucShow[k]){any=true;break;}}
  if(!any)return;
  X.save();X.beginPath();X.rect(PL,PT,PW,PH);X.clip();
@@ -613,9 +678,11 @@ function drawNuclides(N){
  document.getElementById("ip-chip").textContent=location.hostname;
  await loadCsrf();
  await loadDoseK();
+ loadPrefix();
  populateNucPanel();
  setInterval(update,2000);   /* #UI-15: 1000→2000ms — chunked /api/spectrum.json ел сокеты при F5; макс. uri_handlers=11 */
  setInterval(loadFlashInfo,10000);
+ loadFlashInfo();   // #FIELD-6: сразу показать режим Indoor/Outdoor в шапке
  clearCanvas();
  initCalib();
  update();
@@ -796,5 +863,6 @@ window.openZoomOverlay=function(sourcesFn,opts){
  });
 })();
 </script>
+<script src="/common-time.js"></script>
 </body>
 </html>

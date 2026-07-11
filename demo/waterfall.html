@@ -12,7 +12,7 @@ html,body{ margin:0; padding:0; background:var(--bg); }
 body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; padding-bottom:28px; }
 a{ color:inherit; text-decoration:none; }
 button,input,select{ font-family:inherit; }
-.wrap{ max-width:1460px; margin:0 auto; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
+.wrap{ max-width:none; margin:0; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
 header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
 .brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
 .logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
@@ -89,6 +89,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <nav>
 <a href="index.html" data-i18n="nav.spectrum">Спектр</a>
 <span class="on" data-i18n="nav.waterfall">Водопад</span>
+<a href="/monitor" data-i18n="nav.monitor">Мониторинг</a>
 <a href="saved.html" data-i18n="nav.saved">Сохранённые</a>
 <a href="system.html" data-i18n="nav.system">Система</a>
 <a href="service.html" data-i18n="nav.service">Сервис</a>
@@ -109,6 +110,13 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
      Кнопка скрыта; JS оставлен спящим (срабатывает только по клику). -->
 <button class="btn" id="bDisk" data-i18n-title="btn.disk_title" title="Сохранять входящий стрим в .aswf-файл на диске ПК" style="display:none"><span id="bDiskTxt" data-i18n="btn.disk">&#128190; Стрим на диск&hellip;</span></button>
 </div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;font-size:12px;color:#8a9686">
+ <span>Префикс файлов:</span>
+ <input type="text" id="fx-prefix" maxlength="23" spellcheck="false" autocomplete="off" placeholder="MY1" title="Добавляется в начало имени всех выгрузок этой платы. Латиница, цифры, _ и -." style="width:110px;background:#11150f;color:#cfd6cd;border:1px solid #444;padding:4px 7px;border-radius:4px;font-family:inherit;font-size:12px">
+ <button type="button" onclick="savePrefix()" style="cursor:pointer;background:rgba(52,211,192,.12);border:1px solid rgba(52,211,192,.4);color:#34d3c0;border-radius:6px;padding:5px 12px;font-family:inherit;font-size:12px;font-weight:600">Сохранить</button>
+ <span id="fx-prefix-st" style="min-width:16px;font-size:14px"></span>
 </div>
 
 <div class="row">
@@ -136,6 +144,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <label class="lbl"><span data-i18n="lbl.palette">Палитра</span> <span class="sw" id="palSw" data-i18n-title="lbl.palette_title" title="Сменить цветовую палитру" onclick="openPalette()"></span> <span id="palName" style="color:var(--accent);font-size:11.5px">Inferno</span></label>
 <label class="lbl"><span data-i18n="lbl.channels">Каналы</span> <input class="inp" type="number" id="chLo" min="0" max="8191" value="0"> – <input class="inp" type="number" id="chHi" min="1" max="8192" value="8192"></label>
 <button class="btn sm" id="bFit" data-i18n="btn.fit_reset">сброс зума</button>
+<button class="btn sm" id="bNuc" data-i18n-title="btn.lines_title" title="Показать/скрыть выбранные линии нуклидов — сам выбор не меняется"></button>
 </div>
 </section>
 
@@ -219,7 +228,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 var DICT={
  ru:{
   "title":"AtomSpectra · Водопад","device":"Прибор",
-  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
   "btn.start":"▶ Старт","btn.stop":"■ Стоп","btn.clear":"🗑 Очистить","btn.export_n42":"⬇ Экспорт .n42","btn.export_aswf":"⬇ Экспорт .aswf",
   "btn.disk":"💾 Стрим на диск…","btn.disk_stop":"■ Стрим на диск (стоп)",
   "btn.disk_title":"Сохранять входящий стрим в .aswf-файл на диске ПК",
@@ -237,6 +246,7 @@ var DICT={
   "lbl.axis_x":"Ось X","opt.channels":"каналы","opt.kev":"кэВ","lbl.brightness":"Яркость",
   "opt.log":"лог","opt.lin":"лин","lbl.contrast":"Контраст","lbl.palette":"Палитра",
   "lbl.palette_title":"Сменить цветовую палитру","lbl.channels":"Каналы","btn.fit_reset":"сброс зума",
+  "btn.lines":"Линии","st.on":"вкл","st.off":"выкл","btn.lines_title":"Показать/скрыть выбранные линии нуклидов — сам выбор не меняется",
   "lbl.slice":"Срез спектра","slc.live":"live · последняя строка",
   "slc.no_data":"нет данных","slc.wait":"ожидание данных…",
   "slc.cursor_prefix":"под курсором · #","slc.live_prefix":"live · #",
@@ -251,8 +261,9 @@ var DICT={
   "log.disk_flush_err":"диск: flush err ","log.disk_done":"диск: запись завершена (%1 стр., %2 МБ) → %3",
   "log.disk_ckpt":"диск: контрольная точка #%1 — файл зафиксирован на диске (%2 стр., %3 МБ)",
   "log.disk_ckpt_err":"диск: ошибка контрольной точки ","log.disk_blob":"диск: blob скачан (%1 стр., %2 МБ) → %3","log.disk_close_err":"диск: close err ",
-  "log.cleared":"очищено","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)","log.export_aswf":"экспорт .aswf (ASWF v3)",
-  "confirm.clear":"Очистить накопленную спектрограмму?",
+  "log.cleared":"очищено","log.clear_err":"стереть не удалось","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)","log.export_aswf":"экспорт .aswf (ASWF v3)",
+  "confirm.clear":"Стереть спектрограмму и все записанные сегменты на flash платы?",
+  "confirm.clear_rec":"Идёт запись. Остановить запись и стереть всё записанное?",
   "unload.recording":"Идёт запись на диск. Закрыть страницу?",
   "flash.off":"выкл","flash.full":"⚠ Flash заполнен (стрим продолжается)",
   "state.rec":"● ЗАПИСЬ","state.stop":"○ стоп",
@@ -274,7 +285,7 @@ var DICT={
  },
  en:{
   "title":"AtomSpectra · Waterfall","device":"Device",
-  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
   "btn.start":"▶ Start","btn.stop":"■ Stop","btn.clear":"🗑 Clear","btn.export_n42":"⬇ Export .n42","btn.export_aswf":"⬇ Export .aswf",
   "btn.disk":"💾 Stream to disk…","btn.disk_stop":"■ Stream to disk (stop)",
   "btn.disk_title":"Save the incoming stream to an .aswf file on the PC disk",
@@ -292,6 +303,7 @@ var DICT={
   "lbl.axis_x":"Axis X","opt.channels":"channels","opt.kev":"keV","lbl.brightness":"Brightness",
   "opt.log":"log","opt.lin":"lin","lbl.contrast":"Contrast","lbl.palette":"Palette",
   "lbl.palette_title":"Change colour palette","lbl.channels":"Channels","btn.fit_reset":"reset zoom",
+  "btn.lines":"Lines","st.on":"on","st.off":"off","btn.lines_title":"Show/hide selected nuclide lines — selection itself unchanged",
   "lbl.slice":"Spectrum slice","slc.live":"live · last row",
   "slc.no_data":"no data","slc.wait":"waiting for data…",
   "slc.cursor_prefix":"under cursor · #","slc.live_prefix":"live · #",
@@ -306,8 +318,9 @@ var DICT={
   "log.disk_flush_err":"disk: flush err ","log.disk_done":"disk: recording finished (%1 rows, %2 MB) → %3",
   "log.disk_ckpt":"disk: checkpoint #%1 — file committed to disk (%2 rows, %3 MB)",
   "log.disk_ckpt_err":"disk: checkpoint error ","log.disk_blob":"disk: blob downloaded (%1 rows, %2 MB) → %3","log.disk_close_err":"disk: close err ",
-  "log.cleared":"cleared","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)","log.export_aswf":"export .aswf (ASWF v3)",
-  "confirm.clear":"Clear the accumulated spectrogram?",
+  "log.cleared":"cleared","log.clear_err":"erase failed","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)","log.export_aswf":"export .aswf (ASWF v3)",
+  "confirm.clear":"Erase the spectrogram and all recorded segments on the board flash?",
+  "confirm.clear_rec":"Recording is active. Stop recording and erase everything?",
   "unload.recording":"Disk recording in progress. Close the page?",
   "flash.off":"off","flash.full":"⚠ Flash full (stream continues)",
   "state.rec":"● REC","state.stop":"○ stop",
@@ -346,6 +359,7 @@ function applyI18n(){
  });
  document.documentElement.lang=LANG;
  var btn=document.getElementById("langBtn"); if(btn)btn.textContent=(LANG==="ru")?"EN":"RU";
+ if(typeof syncNucBtn==="function")syncNucBtn();
 }
 function setLang(l){
  if(l!=="ru"&&l!=="en")l="ru";
@@ -516,6 +530,10 @@ var nucShow=(function(){
  return {k40:true,cs137:true,co60:true};
 })();
 function nucAny(){for(var k in nucShow){if(nucShow[k])return true;}return false;}
+/* #UI-40: быстрый тумблер видимости выбранных линий — НЕ трогает сам выбор
+   (nucShow/aswf-nuc), только скрывает/показывает маркеры. Своё хранилище, F5-safe. */
+var nucVis=(function(){try{return localStorage.getItem("aswf-nuc-vis")!=="0";}catch(e){return true;}})();
+function syncNucBtn(){var b=document.getElementById("bNuc");if(!b)return;b.textContent=t("btn.lines")+": "+(nucVis?t("st.on"):t("st.off"));b.style.opacity=nucVis?"":"0.55";}
 
 var normMax=64;
 function rowMax(r){var m=0;for(var i=chLo;i<chHi&&i<r.length;i++){if(r[i]>m)m=r[i];}return m;}
@@ -569,7 +587,7 @@ function draw(){
    compose(wfEl,curEl), поэтому линии видны и в обычном виде, и в zoom-оверлее.
    Координата X канала c: (c-chLo)/span*WFW (та же, что у баров среза). */
 function drawNuclidesWF(){
- if(!calib||!nucAny())return;
+ if(!calib||!nucAny()||!nucVis)return;   // #UI-40: nucVis — быстрый on/off, выбор не меняется
  var span=chHi-chLo; if(span<1)span=1;
  curx.save();
  curx.textAlign="left"; curx.textBaseline="top"; curx.font="9px ui-monospace,monospace";
@@ -622,9 +640,15 @@ function drawCursor(){
  var lastIdx=baseIndex+rows.length-1;
  var bottom=(viewBottom<0)?lastIdx:viewBottom;
  var li=(bottom-y)-baseIndex;
- var v=(li>=0&&li<rows.length&&slcCursorCh<rows[li].length)?rows[li][slcCursorCh]:0;
+ var inRow=(li>=0&&li<rows.length);
+ var v=(inRow&&slcCursorCh<rows[li].length)?rows[li][slcCursorCh]:0;
  var ke=calib?(" / "+ch2kev(slcCursorCh).toFixed(1)+" "+t("opt.kev")):"";
  var lbl="ch "+slcCursorCh+ke+" : "+v;
+ if(inRow){   // #UI-39: +номер строки и смещение «от сейчас» — паритет с полноэкранным readout
+  var gIdx=li+baseIndex, behind=lastIdx-gIdx; if(behind<0)behind=0;
+  var agoStr=(behind<=0)?t("hud.live"):("−"+Math.floor(behind*intervalSec/60)+"m "+(behind*intervalSec%60)+"s");
+  lbl+="   #"+gIdx+" · "+agoStr;
+ }
  curx.font="11px ui-monospace,monospace";
  var tw=curx.measureText(lbl).width+10;
  var tx=x+8; if(tx+tw>WFW-4)tx=x-tw-8;
@@ -723,7 +747,7 @@ function drawSlice(){
   slcx.fillRect(k*bw, by, bwDraw>0?bwDraw:bw, h);
  }
  // #DEMO-12: вертикальные маркеры выбранных нуклидов на срезе (та же X-шкала каналов)
- if(calib&&nucAny()){
+ if(calib&&nucAny()&&nucVis){   // #UI-40: тот же тумблер видимости, что и на спектрограмме
   for(var ni=0;ni<NUCLIDES.length;ni++){
    var nn=NUCLIDES[ni]; if(!nucShow[nn.id])continue;
    for(var nj=0;nj<nn.lines.length;nj++){
@@ -1137,6 +1161,8 @@ function updDiskInd(){
 var csrfToken="";
 function post(url,body){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});}
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||"";}catch(e){}}
+async function loadPrefix(){try{var r=await(await fetch("/api/boot-config")).json();var e=document.getElementById("fx-prefix");if(e)e.value=r.name_prefix||"";}catch(_){}}
+async function savePrefix(){var e=document.getElementById("fx-prefix"),st=document.getElementById("fx-prefix-st");if(!e)return;st.textContent="…";try{var r=await post("/api/boot-config",{name_prefix:e.value});st.textContent=r.ok?"✓":"✗";}catch(_){st.textContent="✗";}}
 
 // === #REC-11-A2: автономная выгрузка сегментов (push HTTP POST на адрес оператора) ===
 // Народмон-бан (CLAUDE.md): URL c «narodmon» отвергается ещё в браузере — зеркало
@@ -1180,9 +1206,20 @@ function saveOffload(){
 
 document.getElementById("bStart").onclick=async function(){await post("/api/waterfall/start");refreshStatus();};
 document.getElementById("bStop").onclick=async function(){await post("/api/waterfall/stop");refreshStatus();};
+function wfClearDone(){clearRows();draw();refreshStatus();lg(t("log.cleared"));}
 document.getElementById("bClear").onclick=async function(){
  if(!confirm(t("confirm.clear")))return;
- await post("/api/waterfall/clear");clearRows();draw();refreshStatus();lg(t("log.cleared"));};
+ var r=await(await post("/api/waterfall/clear")).json();
+ if(r.ok){wfClearDone();return;}
+ // #FW-25: сервер отклонил — запись активна. Предложить stop→clear.
+ if(r.err==="recording"){
+  if(!confirm(t("confirm.clear_rec")))return;
+  await post("/api/waterfall/stop");
+  var r2=await(await post("/api/waterfall/clear")).json();
+  if(r2.ok){wfClearDone();}else{lg(t("log.clear_err"));refreshStatus();}
+  return;
+ }
+ lg(t("log.clear_err"));refreshStatus();};
 async function applyInterval(){
  var el=document.getElementById("iv");
  var v=parseInt(el.value)||5;
@@ -1194,6 +1231,7 @@ document.getElementById("persist").onchange=async function(){
  await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
 document.getElementById("bExportN42").onclick=function(){window.location="/api/waterfall/export.n42";lg(t("log.export"));};
 document.getElementById("bExportAswf").onclick=function(){window.location="/api/waterfall/export.aswf";lg(t("log.export_aswf"));};
+
 document.getElementById("bDisk").onclick=function(){
  if(dskWritable||dskMemChunks)stopDiskStream();else startDiskStream();
 };
@@ -1247,6 +1285,8 @@ wf.addEventListener("wheel",function(e){
  applyI18n();
  var lb=document.getElementById("langBtn");
  if(lb)lb.onclick=function(){setLang(LANG==="ru"?"en":"ru");};
+ syncNucBtn();
+ var bn=document.getElementById("bNuc"); if(bn)bn.onclick=function(){nucVis=!nucVis;try{localStorage.setItem("aswf-nuc-vis",nucVis?"1":"0");}catch(e){}syncNucBtn();draw();};
  document.getElementById("ip-chip").textContent=location.hostname;
  var sb=document.getElementById("wf-scroll");
  if(sb)sb.addEventListener("input",function(){
@@ -1260,6 +1300,7 @@ wf.addEventListener("wheel",function(e){
  try{var lp=localStorage.getItem("aswf-pal");if(lp&&PALETTES[lp])savedPal=lp;}catch(e){}
  applyPalette(savedPal);
  await loadCsrf();
+ loadPrefix();
  try{var sp=await(await fetch("/api/spectrum.json")).json();
   if(sp.calib&&sp.calib.length)calib=sp.calib;
   if(sp.serial){serial=sp.serial;document.getElementById("device-chip").textContent=sp.serial;}
@@ -1567,5 +1608,6 @@ window.addEventListener("storage",function(e){
  if(typeof draw==="function")draw();
 });
 </script>
+<script src="/common-time.js"></script>
 </body>
 </html>
