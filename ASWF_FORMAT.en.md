@@ -15,7 +15,9 @@ no external schema to parse.
 |---------|-------------|
 | **v1** | Base format. 16384 bytes/row (8192 × uint16 LE). No duration field. |
 | **v2** | +2-byte uint16 LE duration appended to each row. `row_stride=16386`, `row_time` in header. |
-| **v3** | Self-describing `row_fields`. Per-row timestamp, GPS, dose rate. Baseline section. Compression flag. |
+| **v3** | Self-describing `row_fields`. Per-row timestamp, GPS, dose rate. Baseline section. Compression flag. `row_stride=16402`. |
+| **v4** | +per-row `crc32` (row integrity, `covers=16402`). `row_stride=16406`. Header gains `seg_seq` and `total_at_open` (dropped-segment detection and reconciliation). |
+| **v5** | +`temperature` (float32, detector °C) before `crc32` → `crc32.offset/covers` shift to `16406`. `row_stride=16410`. **Current firmware format** (`firmware-v1.0.11`, #FW-41). |
 
 ---
 
@@ -40,7 +42,8 @@ Offset 8+hlen:     B bytes     Baseline spectrum (if "baseline" key present; oth
 Offset 8+hlen+B:   N × stride  Data rows (oldest first)
 ```
 
-where `B = baseline.count × 4` (uint32 per channel), or `0` if the section is absent.
+where `B = baseline.channels × 4` (uint32 per channel; early files used the key `count`),
+or `0` if the section is absent.
 
 > **Important:** `hlen` is the reserved JSON area size, not the actual JSON text length.
 > Current value is always `4096`. Payload offset = `8 + hlen + B`.
@@ -57,7 +60,7 @@ The header is fully self-describing — every field needed for decoding is prese
 | Key            | Type             | Required | Description |
 |----------------|------------------|:---:|------|
 | `format`       | string           | yes | Always `"atomspectra-waterfall"` |
-| `version`      | int              | yes | `1`, `2`, or `3` |
+| `version`      | int              | yes | `1`…`5` (current firmware writes `5`) |
 | `channels`     | int              | yes | Channels per row; current value `8192` |
 | `dtype`        | string           | yes | Spectrum element type: `"uint16"` |
 | `byte_order`   | string           | yes | Byte order: `"little"` |
@@ -90,8 +93,8 @@ Array of field descriptors. Parsers read only described fields; unknown fields a
 
 ```json
 "row_fields": [
-  {"name": "spectrum",         "dtype": "uint16",  "count": 8192, "offset": 0},
-  {"name": "duration",         "dtype": "uint16",                 "offset": 16384},
+  {"name": "spectrum",         "dtype": "uint16",  "channels": 8192, "offset": 0},
+  {"name": "duration",         "dtype": "uint16",                    "offset": 16384},
   {"name": "timestamp",        "dtype": "uint32",                 "offset": 16386},
   {"name": "latitude",         "dtype": "float32",                "offset": 16390},
   {"name": "longitude",        "dtype": "float32",                "offset": 16394},
@@ -101,7 +104,7 @@ Array of field descriptors. Parsers read only described fields; unknown fields a
 
 | Field              | Type    | Description |
 |--------------------|---------|-------------|
-| `spectrum`         | uint16  | Spectrum: `count` channels LE, counts per interval |
+| `spectrum`         | uint16  | Spectrum: `channels` channels LE, counts per interval |
 | `duration`         | uint16  | Actual live time in seconds (0 = use `interval_sec`) |
 | `timestamp`        | uint32  | Unix timestamp of row start (UTC, seconds); 0 = unknown |
 | `latitude`         | float32 | Decimal degrees; NaN = no data |
@@ -111,52 +114,93 @@ Array of field descriptors. Parsers read only described fields; unknown fields a
 Fields `latitude`, `longitude`, `dose_rate_usv_h`, `timestamp` are optional.
 If the device has no GPS or dosimeter, the corresponding descriptor is simply absent from `row_fields`.
 
-### `baseline` Object (v3)
+### `baseline` Object (v3+)
 
 ```json
 "baseline": {
   "dtype":      "uint32",
-  "count":      8192,
-  "byte_order": "little",
-  "offset":     4104
+  "channels":   8192,
+  "byte_order": "little"
 }
 ```
 
 Baseline is the device's cumulative spectrum at the **start** of the current recording session.
-Physically: 8192 × uint32 LE = 32768 bytes, stored between the JSON area and the payload.
-`offset` = `8 + hlen` (for `hlen=4096` → 4104; always matches).
+Physically: `channels` × uint32 LE = 32768 bytes, stored between the JSON area and the payload
+(size `B = baseline.channels × 4`).
+
+> **Naming:** current firmware writes the key `channels`; early examples used `count` —
+> parsers must accept both (`baseline.channels ?? baseline.count`). There is no `offset`
+> key in the object — the offset is always `8 + hlen`.
 
 Useful for absolute spectrum reconstruction:
 `total[ch] = baseline[ch] + sum of all waterfall rows[ch]`.
 
-### Example v3 Header
+### Additional v4 / v5 Fields
+
+**v4** adds per-row integrity checking; **v5** adds detector temperature.
+
+| row_fields entry | Introduced | Type | Offset (v5) | Description |
+|---|---|---|---|---|
+| `temperature` | v5 | float32 | 16402 | Detector temperature, °C; `NaN` (`0x7FC00000`) until the device reports it |
+| `crc32`       | v4 | uint32  | 16406 | Row CRC32; `covers` = number of leading bytes covered |
+
+In v4, `crc32` sat at offset `16402` (right after `dose_rate`), `covers=16402`. In v5 a
+`temperature` field is inserted before it, so `crc32.offset = covers = 16406`. **Parsers
+must take `offset`/`covers` from `row_fields`, never hardcode them** — otherwise a version
+bump breaks parsing.
+
+### Header Fields v4+ (Integrity)
+
+| Key | Type | Description |
+|---|---|---|
+| `seg_seq`       | int (uint32) | Global monotonic segment number (survives reboot/clear via NVS). A gap in the sequence of merged segments means a segment was lost — the ring erased it before offload (#DATA-1b) |
+| `total_at_open` | int (uint32) | Device cumulative counter when the segment was opened. The delta between adjacent segments is reconciled against the Σ counts of the previous one (#DATA-1c) |
+
+### Row CRC32 (v4+)
+
+Standard CRC32: init `0xFFFFFFFF`, polynomial `0xEDB88320` (reflected), final XOR
+`0xFFFFFFFF` — zlib-compatible. The `crc32` field covers the first `covers` bytes of the row
+(everything before the field itself). Verification:
+
+```python
+import zlib
+def row_crc_ok(row_bytes, covers, stored_crc):
+    return (zlib.crc32(row_bytes[:covers]) & 0xFFFFFFFF) == stored_crc
+```
+
+A mismatch means the row was corrupted in transit/storage. `covers` comes from the `crc32`
+descriptor in `row_fields` (v4 → 16402, v5 → 16406).
+
+### Example v5 Header
 
 ```json
 {
-  "format":      "atomspectra-waterfall",
-  "version":     3,
-  "channels":    8192,
-  "dtype":       "uint16",
-  "byte_order":  "little",
-  "interval_sec": 60,
-  "started_at":  1783157403,
-  "saved_rows":  660,
-  "saved_at":    1783197003,
-  "serial":      "AS-001",
-  "calibration": [0.0, 0.298, 0.0],
-  "compressed":  false,
-  "row_stride":  16402,
+  "format":       "atomspectra-waterfall",
+  "version":      5,
+  "channels":     8192,
+  "dtype":        "uint16",
+  "byte_order":   "little",
+  "row_stride":   16410,
   "row_fields": [
-    {"name": "spectrum",        "dtype": "uint16",  "count": 8192, "offset": 0},
-    {"name": "duration",        "dtype": "uint16",                 "offset": 16384},
-    {"name": "timestamp",       "dtype": "uint32",                 "offset": 16386},
-    {"name": "latitude",        "dtype": "float32",                "offset": 16390},
-    {"name": "longitude",       "dtype": "float32",                "offset": 16394},
-    {"name": "dose_rate_usv_h", "dtype": "float32",                "offset": 16398}
+    {"name": "spectrum",    "dtype": "uint16",  "channels": 8192,                  "offset": 0},
+    {"name": "duration",    "dtype": "uint16",  "unit": "sec",                     "offset": 16384},
+    {"name": "timestamp",   "dtype": "uint32",  "unit": "unix_sec",                "offset": 16386},
+    {"name": "latitude",    "dtype": "float32", "unit": "deg",                     "offset": 16390},
+    {"name": "longitude",   "dtype": "float32", "unit": "deg",                     "offset": 16394},
+    {"name": "dose_rate",   "dtype": "float32", "unit": "usv_h",                   "offset": 16398},
+    {"name": "temperature", "dtype": "float32", "unit": "celsius",                 "offset": 16402},
+    {"name": "crc32",       "dtype": "uint32",  "algo": "crc32", "covers": 16406,  "offset": 16406}
   ],
-  "baseline": {
-    "dtype": "uint32", "count": 8192, "byte_order": "little", "offset": 4104
-  }
+  "baseline":      {"dtype": "uint32", "channels": 8192, "byte_order": "little"},
+  "compressed":    false,
+  "seg_seq":       42,
+  "total_at_open": 1234567,
+  "interval_sec":  60,
+  "started_at":    1783157403,
+  "saved_rows":    660,
+  "saved_at":      1783197003,
+  "serial":        "AS-001",
+  "calibration":   [0.0, 0.298, 0.0]
 }
 ```
 
@@ -245,7 +289,8 @@ def open_aswf(path):
 
     baseline_bytes = 0
     if "baseline" in hdr:
-        baseline_bytes = hdr["baseline"]["count"] * 4
+        bl = hdr["baseline"]
+        baseline_bytes = (bl.get("channels") or bl.get("count") or 0) * 4
 
     payload_off = 8 + hlen + baseline_bytes
 
@@ -253,7 +298,7 @@ def open_aswf(path):
         stride, compressed = hdr["channels"] * 2, False
     elif ver == 2:
         stride, compressed = hdr.get("row_stride", hdr["channels"] * 2), False
-    else:  # v3
+    else:  # v3 / v4 / v5 — stride and field offsets always come from the header (row_stride/row_fields)
         compressed = hdr.get("compressed", False)
         stride = hdr.get("row_stride", 0) if not compressed else 0
 
@@ -265,22 +310,24 @@ def open_aswf(path):
 
 ---
 
-## Python: Full Parser (v1–v3)
+## Python: Full Parser (v1–v5)
 
 ```python
 import json, struct, math
 from pathlib import Path
 
 def read_aswf(path):
-    """Read an .aswf file (v1/v2/v3), return (header, rows, baseline).
+    """Read an .aswf file (v1–v5), return (header, rows, baseline).
 
     rows  -- list of dicts with keys from row_fields:
-      'spectrum'        : tuple of int
-      'duration'        : int (seconds; 0 = use interval_sec)
-      'timestamp'       : int (unix ts; 0 = unknown)    [v3]
-      'latitude'        : float (NaN = no data)         [v3]
-      'longitude'       : float (NaN = no data)         [v3]
-      'dose_rate_usv_h' : float (NaN = no data)         [v3]
+      'spectrum'    : tuple of int
+      'duration'    : int (seconds; 0 = use interval_sec)
+      'timestamp'   : int (unix ts; 0 = unknown)    [v3+]
+      'latitude'    : float (NaN = no data)         [v3+]
+      'longitude'   : float (NaN = no data)         [v3+]
+      'dose_rate'   : float (NaN = no data)         [v3+]
+      'temperature' : float (NaN = no data, °C)     [v5+]
+      'crc32'       : int (row CRC32, see covers)   [v4+]
     baseline -- tuple of uint32 (or None if absent)
     """
     buf  = Path(path).read_bytes()
@@ -296,8 +343,9 @@ def read_aswf(path):
     baseline_bytes = 0
     if "baseline" in hdr:
         bi = hdr["baseline"]
-        baseline_bytes = bi["count"] * 4
-        baseline = struct.unpack_from(f"<{bi['count']}I", buf, 8 + hlen)
+        nbl = bi.get("channels") or bi.get("count") or 0
+        baseline_bytes = nbl * 4
+        baseline = struct.unpack_from(f"<{nbl}I", buf, 8 + hlen)
 
     payload_off = 8 + hlen + baseline_bytes
     payload     = buf[payload_off:]
@@ -437,11 +485,11 @@ GET /api/waterfall/export.aswf
 Authorization: Basic <base64(login:password)>
 ```
 
-Response `200 application/octet-stream` — complete ASWF v3 file.
+Response `200 application/octet-stream` — complete ASWF file of the current version (firmware currently writes v5).
 
-Exports the current PSRAM ring (last `ring_capacity` rows) as a single ASWF v3 file.
+Exports the current PSRAM ring (last `ring_capacity` rows) as a single ASWF v5 file.
 No baseline section (ring is a rolling window, not a full session).
-Row fields: `spectrum`, `duration`, `timestamp`, `latitude` (NaN), `longitude` (NaN), `dose_rate_usv_h`.
+Row fields: `spectrum`, `duration`, `timestamp`, `latitude` (NaN), `longitude` (NaN), `dose_rate`, `temperature`, `crc32`.
 Returns `404` if no data has been recorded yet.
 
 > **Note on field naming:** The device firmware uses `"name":"dose_rate"` with `"unit":"usv_h"` in `row_fields`;
@@ -459,6 +507,12 @@ The open segment (`finalized: false`) does not count toward the limit.
 
 ## Merging Segments
 
+> **Firmware format change (#REC-14):** segments with different `row_stride` (e.g. v3 `16402`
+> and v5 `16410`) **must not** be merged into one file — the reader lays the waterfall out by a
+> single `row_stride` from the header, so the tail after the seam becomes garbage. The recorder
+> routes mismatched formats into separate files `<base>__s<stride>.aswf`; the code below merges
+> segments of **one** format.
+
 ```python
 import json, struct
 from pathlib import Path
@@ -474,13 +528,14 @@ def merge_aswf(paths_sorted, out_path):
     baseline_bytes = 0
     baseline_data  = b""
     if "baseline" in hdr:
-        baseline_bytes = hdr["baseline"]["count"] * 4
+        _b = hdr["baseline"]
+        baseline_bytes = (_b.get("channels") or _b.get("count") or 0) * 4
         baseline_data  = first[8 + hlen:8 + hlen + baseline_bytes]
 
     payload = b""
     for buf in files:
         h2 = struct.unpack_from("<I", buf, 4)[0]
-        bl = hdr["baseline"]["count"] * 4 if "baseline" in hdr else 0
+        bl = baseline_bytes if "baseline" in hdr else 0
         payload += buf[8 + h2 + bl:]
 
     hdr["saved_rows"] = len(payload) // stride
@@ -510,6 +565,8 @@ def merge_aswf(paths_sorted, out_path):
 | `timestamp == 0` | Row timestamp unknown (v3). Reconstruct via `started_at`. |
 | `latitude/longitude == NaN` | No GPS fix. |
 | `dose_rate_usv_h == NaN` | Dosimeter unavailable. |
+| `temperature == NaN` | Device hasn't reported temperature yet (v5). |
+| `crc32` mismatch | Row corrupted in transit/storage (v4+). |
 | Unknown JSON keys | Ignore (extensibility). |
 | Unknown `row_fields` entries | Skip (unknown `offset`+`dtype`). |
 | `hlen` ≠ 4096 | Use the actual `hlen` from the file. |
@@ -538,4 +595,6 @@ Always check `"version"` before parsing.
 | v2 | spectrum + duration (uint16) | 16386 bytes |
 | v3 minimal | + timestamp (uint32) | 16390 bytes |
 | v3 full | + latitude + longitude + dose_rate | 16402 bytes |
-| v3 compressed | variable | — |
+| v4 | v3 full + crc32 | 16406 bytes |
+| v5 | v3 full + temperature + crc32 | 16410 bytes |
+| v3/v5 compressed | variable | — |
