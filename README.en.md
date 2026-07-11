@@ -206,23 +206,47 @@ header of the start page.
 spectrum is served at `http://<board-IP>/`, time comes from SNTP over the internet, and
 waterfall segments are uploaded to the receiver automatically.
 
-**🌲 Outdoor (field AP)** — the board **becomes an access point itself**, no router needed.
-For fieldwork where you only have a phone:
+**🌲 Outdoor (field AP)** — the board **becomes a Wi-Fi access point itself**; no router
+and no internet needed. This is the mode for field measurements when all you have is a
+phone (and, optionally, a power bank to run the board):
 
-- SSID `AtomSpectra-Outdoor`, password `atomspectra` (WPA2), IP `192.168.4.1`;
-- the phone connects to this network → a **captive portal** opens the Web UI
-  automatically (like the "sign in to network" prompt on public WiFi);
-- full interface: live spectrum, waterfall, export, instrument control;
-- waterfall data accumulates on the board's flash — pulled at home in Indoor mode.
+- **SSID** `AtomSpectra-Outdoor`, **password** `atomspectra` (WPA2-PSK), **address** `192.168.4.1`;
+- the phone joins this network and gets the **full** board Web UI: live spectrum, waterfall,
+  export (N42/XML/SPE/CSV), instrument control (`-sta`/`-sto`/`-rst`), calibration, saved spectra;
+- meanwhile waterfall data accumulates on the board's own flash (LittleFS partition) —
+  pulled later at home, in Indoor mode, by the receiver;
+- everything works offline: no SNTP, no outbound upload, no cloud.
+
+**What happens on connect (captive landing).**
+As soon as the phone joins `AtomSpectra-Outdoor`, the OS runs its usual connectivity check
+(Android `generate_204`, iOS/macOS `hotspot-detect`, Windows `ncsi`). The board answers it
+with a **lightweight sign-in page**, so the phone shows the familiar **"Sign in to network"**
+notification (like a café or airport). That page shows the device **address in large type**
+— `192.168.4.1` and `atomspectra.local` — and **opens the device page itself within ~1 s**;
+an "Open device →" button is there too.
+
+- The sign-in page is **deliberately lightweight** (no external fonts or scripts) so it
+  always renders in the phone's stripped-down "captive browser", where the heavy main UI
+  sometimes fails to load.
+- If the auto-redirect doesn't fire (iOS's built-in captive browser can block navigation),
+  the **address stays on screen**: open Safari/Chrome and type `192.168.4.1` by hand.
 
 **How to enter Outdoor:**
 
-1. **Toggle** Indoor→Outdoor in the start-page header (the board reboots);
-2. **Automatically** — if the home network is unreachable for ≥ 90 s, the board brings
-   up the field AP on its own (one-shot; the next reboot tries the home network again);
-3. **On a fresh board** — a "Field mode (Outdoor)" button in the setup portal.
+1. **Toggle** Indoor → Outdoor in the start-page header. The board reboots and raises the
+   access point; this is a **"sticky"** mode — it persists across reboots until you toggle back;
+2. **Automatically (fallback)** — if the home network is unreachable for ≥ 90 s, the board
+   raises the field AP **one-shot**: the next reboot tries the home network again. Handy when
+   you carried the board out of router range without touching settings;
+3. **On a fresh (unconfigured) board** — a **"Field mode (Outdoor)"** button in the setup portal.
 
-Return to Indoor with the same toggle.
+Return to Indoor with the same header toggle (or, for the fallback case, simply reboot within
+range of the home network).
+
+**Full field workflow:** at home in Indoor, set up waterfall recording → switch to Outdoor →
+take the board + phone (+ power bank) into the field → join `AtomSpectra-Outdoor` → the
+sign-in page pops with the address → work with the spectrum and waterfall → back home, switch
+to Indoor → the receiver pulls the accumulated waterfall segments off the board's flash.
 
 ### Time in field mode
 
