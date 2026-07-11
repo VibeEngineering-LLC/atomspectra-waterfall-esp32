@@ -83,9 +83,21 @@ int  usb_host_send_text_command(const char *cmd);
 // ДО usb_host_cdc_init() — флаги применяются однократно при первом USB-коннекте.
 void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfall, bool clear_spectrum);
 
+// #FIELD-1: три сетевых режима работы платы.
+typedef enum {
+    NET_MODE_STA = 0,      // Indoor: клиент домашней сети (STA)
+    NET_MODE_FIELD_AP,     // Outdoor: полевой AP, полный Web UI
+    NET_MODE_SETUP,        // captive setup-портал (свежая плата без конфига)
+} net_run_mode_t;
+
 void wifi_manager_init(void);
 bool wifi_is_connected(void);
-bool wifi_manager_is_ap_mode(void);
+net_run_mode_t wifi_manager_mode(void);   // #FIELD-1: текущий сетевой режим
+bool wifi_manager_is_ap_mode(void);        // true для FIELD_AP или SETUP (совместимость)
+int  wifi_manager_ap_clients(void);        // #FIELD-6: число STA-клиентов на AP (-1 если не AP)
+const char *wifi_manager_ap_ssid(void);    // #FIELD-6: SSID активного AP ("" если STA)
+bool wifi_manager_ap_pass_is_default(void);// #SEC-2: пароль AP не менялся (дефолт)
+bool wifi_manager_ap_forced(void);         // #FIELD-6: field_ap липкий (ap_mode=1) vs fallback
 
 void web_server_init(void);
 

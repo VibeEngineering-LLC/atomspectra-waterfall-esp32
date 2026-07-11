@@ -3,6 +3,7 @@
 #include "boot_config.h"
 #include "wf_offload.h"   // #REC-11-A2: автономная выгрузка сегментов водопада
 #include "monitor.h"      // #MON-1: серия CPS-мониторинга на плате
+#include "net_time.h"     // #FIELD-5: источник времени (SNTP/браузер/ручной)
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include <inttypes.h>
@@ -18,6 +19,7 @@ static const char *TAG = "main";
 static void time_sync_cb(struct timeval *tv)
 {
     (void)tv;
+    net_time_mark_sntp();      // #FIELD-5 (A2): зафиксировать факт реальной SNTP-синхронизации
     spectrogram_time_synced();
 }
 
@@ -67,16 +69,16 @@ void app_main(void)
     usb_host_cdc_set_autostart(bc.autostart_spectrum, bc.autostart_waterfall, bc.clear_spectrum);
     usb_host_cdc_init();
 
-    // #FW-44: свежая плата без wifi-конфига — AP-режим. USB Host уже поднят выше,
-    // поэтому в captive-цикле логируем реальную диагностику (USB/спектрометр/counts)
-    // вместо прежней немоты. Сеть-зависимые подсистемы (web/tcp/offload/sntp) в
-    // AP-режиме не поднимаем — captive-портал держит свой setup-httpd внутри
-    // wifi_manager. Выход из цикла — только перезагрузка после сохранения wifi.
-    if (wifi_manager_is_ap_mode()) {
-        ESP_LOGI(TAG, "Captive portal active, waiting for WiFi config");
+    // #FW-44/#FIELD-1: setup-портал (свежая плата без wifi-конфига) — диагностический
+    // цикл, сеть-зависимые подсистемы не поднимаем (setup-httpd держится внутри
+    // wifi_manager). USB Host уже поднят выше → логируем реальную диагностику вместо
+    // прежней немоты. Выход — только перезагрузка после сохранения wifi/выбора режима.
+    net_run_mode_t net_mode = wifi_manager_mode();
+    if (net_mode == NET_MODE_SETUP) {
+        ESP_LOGI(TAG, "Setup captive portal active, waiting for WiFi config");
         while (1) {
             const spectrum_data_t *sp = spectrum_get_current();
-            ESP_LOGI(TAG, "AP mode: connect SSID=AtomSpectra-Setup -> http://192.168.4.1 | USB:%s spectrometer:%s counts:%" PRIu32,
+            ESP_LOGI(TAG, "SETUP: connect SSID=AtomSpectra-Setup -> http://192.168.4.1 | USB:%s spectrometer:%s counts:%" PRIu32,
                 usb_host_cdc_is_connected() ? "OK" : "--",
                 usb_host_cdc_spectrometer_dead() ? "DEAD"
                     : (usb_host_cdc_is_connected() ? "streaming" : "--"),
@@ -85,11 +87,19 @@ void app_main(void)
         }
     }
 
+    // #FIELD-1: рабочий сетевой стек — общий для Indoor (STA) и Outdoor (полевой AP).
     web_server_init();
-    wf_offload_init();   // #REC-11-A2: поднять задачу-аплоадер (конфиг из NVS, по умолчанию выкл.)
     monitor_init();      // #MON-1: кольцо серии CPS (6 ч в PSRAM) + задача-подписчик коммитов
     tcp_bridge_init();
-    init_sntp();
+    if (net_mode == NET_MODE_STA) {
+        wf_offload_init();   // #REC-11-A2: аплоадер сегментов — только Indoor (есть сеть/приёмник)
+        init_sntp();          // SNTP-время — только Indoor (есть интернет)
+    } else {
+        // #FIELD-1: Outdoor (полевой AP) — интернета/приёмника нет: SNTP и offload
+        // не поднимаем. Время платы приходит от браузера телефона (#FIELD-5,
+        // POST /api/time); данные водопада копятся на flash, забираются дома.
+        ESP_LOGI(TAG, "FIELD-1: Outdoor AP — SNTP & offload disabled (time via browser)");
+    }
 
     ESP_LOGI(TAG, "All subsystems initialized");
 

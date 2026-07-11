@@ -197,6 +197,56 @@ idf.py -p COM14 flash
 #    The spectrum appears automatically
 ```
 
+## Network modes: Indoor and Outdoor
+
+The board runs in two modes. The **Indoor / Outdoor** toggle is visible right in the
+header of the start page.
+
+**🏠 Indoor (STA)** — as described above: the board is a client of your home WiFi, the
+spectrum is served at `http://<board-IP>/`, time comes from SNTP over the internet, and
+waterfall segments are uploaded to the receiver automatically.
+
+**🌲 Outdoor (field AP)** — the board **becomes an access point itself**, no router needed.
+For fieldwork where you only have a phone:
+
+- SSID `AtomSpectra-Outdoor`, password `atomspectra` (WPA2), IP `192.168.4.1`;
+- the phone connects to this network → a **captive portal** opens the Web UI
+  automatically (like the "sign in to network" prompt on public WiFi);
+- full interface: live spectrum, waterfall, export, instrument control;
+- waterfall data accumulates on the board's flash — pulled at home in Indoor mode.
+
+**How to enter Outdoor:**
+
+1. **Toggle** Indoor→Outdoor in the start-page header (the board reboots);
+2. **Automatically** — if the home network is unreachable for ≥ 90 s, the board brings
+   up the field AP on its own (one-shot; the next reboot tries the home network again);
+3. **On a fresh board** — a "Field mode (Outdoor)" button in the setup portal.
+
+Return to Indoor with the same toggle.
+
+### Time in field mode
+
+Outdoor has no internet → SNTP does not work. The board's time comes **from the phone
+browser** automatically on opening any page (and once an hour). Manual correction — a
+`datetime-local` field in the **System** section. When SNTP is active (at home), manual /
+browser setting is ignored — the time source does not fight itself.
+
+Exports (N42/XML/spe/CSV) taken before time has arrived (clock = 1970) are marked
+"TIME NOT SYNCHRONIZED" and do not corrupt normal recordings.
+
+### Field access point password
+
+The default password `atomspectra` is **public and documented**. The instrument
+(including `-rst`, which clears the spectrum) is controlled through the open AP — for
+crowded places **change the password** in the **System** section (AP password field +
+confirmation; applied after reboot). With the default password the Web UI shows a warning.
+
+### BT/BLE
+
+The board works over **USB only** (to the spectrometer) **and WiFi**. Bluetooth/BLE is
+not used and **not built** (`CONFIG_BT_ENABLED=n`): the ESP32-S3 BLE radio is not
+initialized in any mode and consumes no RAM or power.
+
 ## Web API
 
 | Endpoint | Method | What it does |
@@ -225,6 +275,9 @@ idf.py -p COM14 flash
 | `/api/reboot-device` | POST | Reboot the spectrometer (CMD 0xF3) |
 | `/api/reboot-esp` | POST | Reboot the ESP32 |
 | `/api/wifi/reset` | POST | Reset WiFi, reboot into setup mode |
+| `/api/time` | POST | Set board time (auto from browser / manual) — field mode |
+| `/api/net-mode` | POST | Switch Indoor/Outdoor, reboot |
+| `/api/ap-pass` | POST | Change field AP password, reboot |
 | `/waterfall` · `/api/waterfall/*` · `/ws/waterfall` | GET/POST/WS | **Waterfall** (spectrogram): record, snapshot, stream — see [`WATERFALL.en.md`](WATERFALL.en.md) |
 
 > **All POST endpoints require the `X-CSRF-Token` header** with the value obtained

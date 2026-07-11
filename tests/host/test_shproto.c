@@ -11,6 +11,8 @@ int g_failures = 0;
 
 // Round-trip-набор из test_roundtrip.c (одна общая сборка → один main).
 void roundtrip_suite(void);
+// #FIELD-6: guard-логика источника времени из test_net_time.c (main/net_time.c).
+void nettime_suite(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -161,6 +163,7 @@ int main(void)
     test_two_packets();
     test_buffer_overflow();
     roundtrip_suite();
+    nettime_suite();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);
