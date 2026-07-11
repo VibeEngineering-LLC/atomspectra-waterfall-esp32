@@ -3,6 +3,8 @@
 #include "web_waterfall.h"
 #include "web_util.h"
 #include "boot_config.h"
+#include "spectrogram.h"    // #FIELD-5: spectrogram_time_synced() при установке времени
+#include "net_time.h"       // #FIELD-5: guard-логика источника времени
 #include "monitor.h"        // #MON-1: серия CPS-мониторинга (/api/monitor/series)
 #include "esp_heap_caps.h"  // #MON-1: PSRAM-буфер чанка серии
 #include "esp_log.h"
@@ -16,6 +18,7 @@
 #include <time.h>
 #include <stddef.h>
 #include <math.h>
+#include <sys/time.h>       // #FIELD-5: gettimeofday/settimeofday
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -28,6 +31,13 @@
 #include <dirent.h>
 
 static const char *TAG = "web";
+
+// #FIELD-9 (A11): часы платы «синхронизированы», если время не near-epoch (< 2023-11).
+// В полевом AP до прихода браузерного времени часы = 1970; экспорт помечает это и НЕ
+// падает (localtime_r сам не падает). Пометка добавляется ТОЛЬКО при рассинхроне →
+// нормальные записи байт-точны к эталонным форматам (#EXP-1 N42/#CSV-1). Проверка — T14.
+#define WF_TIME_SYNCED_EPOCH 1700000000L   // 2023-11-14 UTC
+static inline bool time_is_synced(time_t t) { return t >= WF_TIME_SYNCED_EPOCH; }
 
 // CSRF-токен: генерируется при старте, выдаётся по GET /api/csrf-token,
 // требуется в заголовке X-CSRF-Token на всех мутирующих POST. Защищает
@@ -465,6 +475,16 @@ EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
 EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
 
+// #FIELD-5: общий JS авто-синхронизации времени (application/javascript, не text/html).
+static esp_err_t handle_common_time_js(httpd_req_t *req)
+{
+    extern const uint8_t common_time_js_start[] asm("_binary_common_time_js_start");
+    extern const uint8_t common_time_js_end[]   asm("_binary_common_time_js_end");
+    httpd_resp_set_type(req, "application/javascript");
+    httpd_resp_send(req, (const char *)common_time_js_start, common_time_js_end - common_time_js_start);
+    return ESP_OK;
+}
+
 static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp, const char *filename)
 {
     char *buf = malloc(4096);
@@ -492,6 +512,10 @@ static esp_err_t render_spectrum_xml(httpd_req_t *req, const spectrum_data_t *sp
     time_t t_start = end_time - sp->total_time_sec;
     localtime_r(&t_start, &ts);
     localtime_r(&end_time, &te);
+
+    // #FIELD-9 (A11): near-epoch → XML-комментарий (валиден, парсеры игнорируют); только при рассинхроне
+    if (!time_is_synced(end_time))
+        httpd_resp_sendstr_chunk(req, "      <!-- TIME NOT SYNCHRONIZED: board clock near-epoch, timestamps unreliable -->\r\n");
 
     char serial_esc[160];
     web_xml_escape(sp->serial_number[0] ? sp->serial_number : "AtomSpectra",
@@ -601,8 +625,11 @@ static esp_err_t render_spectrum_csv(httpd_req_t *req, const spectrum_data_t *sp
     // далее "канал,счёт" с канала 0 (не 1), без пробела после запятой, окончания CRLF,
     // 8192 канала. TotalTime = реальное (измерительное) время total_time_sec, формат %.1f.
     // Перекрывает прежний InterSpec/SpecUtils-заголовок #PR-2 по явному указанию оператора.
-    int n = snprintf(buf, 4096,
-        "Channel,Counts (TotalTime=%.1fs)\r\n", (double)sp->total_time_sec);
+    // #FIELD-9 (A11): near-epoch → пометка в скобке TotalTime (одна строка-заголовок цела); только при рассинхроне
+    time_t csv_ref = (sp->saved_at > 0) ? sp->saved_at : time(NULL);
+    int n = time_is_synced(csv_ref)
+        ? snprintf(buf, 4096, "Channel,Counts (TotalTime=%.1fs)\r\n", (double)sp->total_time_sec)
+        : snprintf(buf, 4096, "Channel,Counts (TotalTime=%.1fs; TIME NOT SYNCHRONIZED)\r\n", (double)sp->total_time_sec);
     httpd_resp_send_chunk(req, buf, n);
 
     for (int i = 0; i < SPECTRUM_CHANNELS; ) {
@@ -650,6 +677,12 @@ static esp_err_t render_spectrum_n42(httpd_req_t *req, const spectrum_data_t *sp
         " n42DocUUID=\"%s\" xmlns=\"http://physics.nist.gov/N42/2011/N42\">\r\n",
         uuid);
     httpd_resp_send_chunk(req, buf, n);
+    // #FIELD-9 (A11): near-epoch → Remark в начале RadInstrumentData (схема N42-2011 разрешает); только при рассинхроне
+    {
+        time_t et = (sp->saved_at > 0) ? sp->saved_at : time(NULL);
+        if (!time_is_synced(et))
+            httpd_resp_sendstr_chunk(req, "  <Remark>TIME NOT SYNCHRONIZED: board clock near-epoch, StartDateTime unreliable</Remark>\r\n");
+    }
     httpd_resp_sendstr_chunk(req,
         "  <RadInstrumentInformation id=\"RadInstrument\">\r\n"
         "    <RadInstrumentManufacturerName>KB Radar</RadInstrumentManufacturerName>\r\n"
@@ -757,6 +790,9 @@ static esp_err_t render_spectrum_spe(httpd_req_t *req, const spectrum_data_t *sp
         ts.tm_mday, ts.tm_mon + 1, (ts.tm_year + 1900) % 100,
         ts.tm_hour, ts.tm_min, ts.tm_sec,
         compute_live_time(sp), (double)sp->total_time_sec);
+    // #FIELD-9 (A11): near-epoch → строка COMMENT (SPE игнорирует неизвестные ключи); только при рассинхроне
+    if (!time_is_synced(end_time))
+        pos += snprintf(buf + pos, 4096 - pos, "COMMENT=TIME NOT SYNCHRONIZED (board clock near-epoch)\r\n");
     if (sp->calib_valid) {
         double emax = 0.0;
         for (int i = sp->calib_order; i >= 0; i--)
@@ -1043,6 +1079,18 @@ static esp_err_t handle_system(httpd_req_t *req)
         cJSON_AddNumberToObject(root, "rssi", ap.rssi);
         cJSON_AddStringToObject(root, "ssid", (char *)ap.ssid);
     }
+    // #FIELD-6: сетевой режим + статус полевого AP + источник времени (для system.html).
+    switch (wifi_manager_mode()) {
+        case NET_MODE_FIELD_AP: cJSON_AddStringToObject(root, "net_mode", "field_ap"); break;
+        case NET_MODE_SETUP:    cJSON_AddStringToObject(root, "net_mode", "setup");    break;
+        default:                cJSON_AddStringToObject(root, "net_mode", "sta");      break;
+    }
+    cJSON_AddStringToObject(root, "ap_ssid",        wifi_manager_ap_ssid());
+    cJSON_AddNumberToObject(root, "ap_clients",     wifi_manager_ap_clients());
+    cJSON_AddBoolToObject(root,   "ap_pass_default", wifi_manager_ap_pass_is_default());
+    cJSON_AddBoolToObject(root,   "ap_forced",      wifi_manager_ap_forced());
+    cJSON_AddStringToObject(root, "time_source",    net_time_source_str());
+    cJSON_AddBoolToObject(root,   "sntp_synced",    net_time_sntp_synced());
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json);
@@ -1473,6 +1521,178 @@ static esp_err_t handle_wifi_reset(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ===================== #FIELD-4/5/7: полевой AP — время и пароль =====================
+
+// Нижняя граница вменяемого epoch для /api/time (2023-11-14). WF_SANE_EPOCH из
+// spectrogram.c не экспортирован — дублируем как локальную санитарную границу.
+#define FIELD_MIN_EPOCH_S  1700000000LL
+#define FIELD_MAX_EPOCH_S  4102444800LL   // 2100-01-01
+#define FIELD_AP_URL       "http://192.168.4.1/"
+
+// #FIELD-5 (A2): POST /api/time — установка времени платы от браузера телефона.
+// Тело JSON: {"epoch_ms": <ms since 1970 UTC>, "manual": <bool, опц.>}.
+// В Outdoor (полевой AP) SNTP не поднят → sntp_synced=false → время идёт от телефона.
+// Guard-логика (net_time_should_accept) — в net_time.c (host-тестируема):
+//   sntp_synced → отклонить (война источников; T1); manual → принять; auto → |Δ|>5 с.
+// При приёме — settimeofday + пометка источника + spectrogram_time_synced() (пересчёт
+// started_at ongoing-записи из монотонного uptime, тот же путь что SNTP-cb #FW-23).
+static esp_err_t handle_time_set(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+
+    char body[128];
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_FAIL; }
+    body[len] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json"); return ESP_FAIL; }
+    cJSON *jms  = cJSON_GetObjectItem(root, "epoch_ms");
+    cJSON *jman = cJSON_GetObjectItem(root, "manual");
+    if (!cJSON_IsNumber(jms)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "epoch_ms required");
+        return ESP_FAIL;
+    }
+    int64_t epoch_ms = (int64_t)jms->valuedouble;
+    bool manual = cJSON_IsTrue(jman);
+    cJSON_Delete(root);
+
+    if (epoch_ms < FIELD_MIN_EPOCH_S * 1000 || epoch_ms > FIELD_MAX_EPOCH_S * 1000) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "epoch out of range");
+        return ESP_FAIL;
+    }
+
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    int64_t now_ms = (int64_t)now.tv_sec * 1000 + now.tv_usec / 1000;
+    int64_t dt_abs_sec = llabs(epoch_ms - now_ms) / 1000;
+
+    bool sntp   = net_time_sntp_synced();
+    bool accept = net_time_should_accept(sntp, manual, dt_abs_sec);
+
+    if (accept) {
+        struct timeval tv = { .tv_sec  = (time_t)(epoch_ms / 1000),
+                              .tv_usec = (suseconds_t)((epoch_ms % 1000) * 1000) };
+        settimeofday(&tv, NULL);
+        net_time_set_source(manual ? TIME_SRC_MANUAL : TIME_SRC_BROWSER);
+        spectrogram_time_synced();   // пересчёт started_at ongoing-записи (#FW-23)
+        ESP_LOGI(TAG, "FIELD-5: time set from %s (was off %lld s)",
+                 manual ? "manual" : "browser", (long long)dt_abs_sec);
+    }
+
+    char out[96];
+    int n = snprintf(out, sizeof(out),
+        "{\"ok\":true,\"accepted\":%s,\"source\":\"%s\",\"sntp\":%s}",
+        accept ? "true" : "false", net_time_source_str(), sntp ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, out, n);
+    return ESP_OK;
+}
+
+// #FIELD-4: captive-portal probe endpoints. В полевом AP DNS-hijack (wifi_manager)
+// заворачивает все имена на 192.168.4.1; OS-пробы связности (Android generate_204/
+// gen_204, iOS/macOS hotspot-detect/library-test, Windows ncsi/connecttest) получают
+// здесь 302 → всплывает «Вход в сеть», тап открывает Web UI. В STA (Indoor) плата —
+// клиент, проба до неё не доходит; для чистоты отвечаем 204 (как настоящий generate_204).
+static esp_err_t handle_captive_probe(httpd_req_t *req)
+{
+    if (wifi_manager_is_ap_mode()) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", FIELD_AP_URL);
+    } else {
+        httpd_resp_set_status(req, "204 No Content");
+    }
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+// #FIELD-7 (#SEC-2): POST /api/ap-pass — смена пароля полевого AP. Тело {"password":"..."}.
+// Пустой → сброс к дефолту (следующий boot возьмёт AP_PASS_DEFAULT). Непустой обязан быть
+// ≥8 символов (мин WPA2-PSK). Хранится в NVS wifi/ap_pass (тот же ключ, что читает
+// load_ap_config); применяется после ребута (способ A4 — пересоздавать netif/httpd на
+// лету рискованно). Пароль общий для всех (#SEC-2): оператор раздаёт SSID+пароль голосом.
+static esp_err_t handle_ap_pass(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+
+    char body[128];
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_FAIL; }
+    body[len] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json"); return ESP_FAIL; }
+    cJSON *jp = cJSON_GetObjectItem(root, "password");
+    if (!cJSON_IsString(jp)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "password required");
+        return ESP_FAIL;
+    }
+    const char *pass = jp->valuestring;
+    size_t plen = strlen(pass);
+    if (plen > 0 && plen < 8) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "password must be >=8 chars (WPA2)");
+        return ESP_FAIL;
+    }
+    if (plen >= WIFI_PASS_MAX) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "password too long");
+        return ESP_FAIL;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+        if (plen == 0) nvs_erase_key(nvs, "ap_pass");   // сброс к дефолту (not-found ок)
+        else           nvs_set_str(nvs, "ap_pass", pass);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    cJSON_Delete(root);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"reboot\":true}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
+// #FIELD-6 (T4/T5): переключатель Indoor/Outdoor со стартовой страницы. Тело
+// {"mode":"indoor"|"outdoor"}. outdoor → NVS ap_mode=1 (липкий forced AP); indoor →
+// снять ap_mode (ребут в STA). Применяется ребутом (способ A4). Тот же ключ ap_mode,
+// что читает wifi_manager на старте (FIELD-2b) и ставит setup-кнопка (FIELD-2c).
+static esp_err_t handle_net_mode(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    char body[64];
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_FAIL; }
+    body[len] = '\0';
+    cJSON *root = cJSON_Parse(body);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json"); return ESP_FAIL; }
+    cJSON *jm = cJSON_GetObjectItem(root, "mode");
+    const char *mode = cJSON_IsString(jm) ? jm->valuestring : NULL;
+    bool outdoor;
+    if (mode && strcmp(mode, "outdoor") == 0)      outdoor = true;
+    else if (mode && strcmp(mode, "indoor") == 0)  outdoor = false;
+    else { cJSON_Delete(root); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode must be indoor|outdoor"); return ESP_FAIL; }
+    cJSON_Delete(root);
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+        if (outdoor) nvs_set_u8(nvs, "ap_mode", 1);
+        else         nvs_erase_key(nvs, "ap_mode");   // → Indoor (not-found ок)
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"reboot\":true}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 void web_server_init(void)
 {
     csrf_generate();
@@ -1482,7 +1702,7 @@ void web_server_init(void)
     // tskNO_AFFINITY позволял httpd (prio 5) исполняться на core 0 рядом с
     // USB-приёмом — уводим целиком.
     config.core_id = 1;
-    config.max_uri_handlers = 64;        // #WF-2/#MON-1: 32 базовых (uris[], +/api/monitor/series) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 52. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. 64 = +12 запас.
+    config.max_uri_handlers = 72;        // #WF-2/#MON-1/#FIELD-4: 41 базовых (uris[]: было 33 + 8 FIELD: /api/time,/api/ap-pass,6 captive-проб) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 61. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. 72 = +11 запас.
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1529,11 +1749,23 @@ void web_server_init(void)
         {"/api/calibration",             HTTP_POST, handle_set_calibration,  NULL},
         {"/api/settings/backup",         HTTP_GET,  handle_settings_backup,  NULL},
         {"/api/settings/restore",        HTTP_POST, handle_settings_restore, NULL},
+        // #FIELD-5/7: установка времени от браузера + смена пароля полевого AP
+        {"/api/time",                    HTTP_POST, handle_time_set,         NULL},
+        {"/api/ap-pass",                 HTTP_POST, handle_ap_pass,          NULL},
+        {"/api/net-mode",                HTTP_POST, handle_net_mode,         NULL},  // #FIELD-6 T4/T5
+        // #FIELD-4: captive-portal пробы связности ОС → 302 на Web UI (в AP-режиме)
+        {"/generate_204",                HTTP_GET,  handle_captive_probe,    NULL},  // Android
+        {"/gen_204",                     HTTP_GET,  handle_captive_probe,    NULL},  // Android alt
+        {"/hotspot-detect.html",         HTTP_GET,  handle_captive_probe,    NULL},  // iOS/macOS
+        {"/library/test/success.html",   HTTP_GET,  handle_captive_probe,    NULL},  // iOS/macOS
+        {"/ncsi.txt",                    HTTP_GET,  handle_captive_probe,    NULL},  // Windows
+        {"/connecttest.txt",             HTTP_GET,  handle_captive_probe,    NULL},  // Windows
         {"/healthcheck",                 HTTP_GET,  handle_healthcheck,      NULL},
         {"/saved",                       HTTP_GET,  handle_saved_page,       NULL},
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
         {"/service",                     HTTP_GET,  handle_service_page,     NULL},
         {"/monitor",                     HTTP_GET,  handle_monitor_page,     NULL},
+        {"/common-time.js",              HTTP_GET,  handle_common_time_js,   NULL},  // #FIELD-5
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };
 

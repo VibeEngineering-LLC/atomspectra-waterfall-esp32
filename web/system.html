@@ -111,6 +111,23 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn" onclick="resetWifi()" data-i18n="wifi.reset">Сбросить WiFi (режим настройки)</button>
 </section>
 
+<section class="panel" id="field-panel">
+<div class="ttl"><span style="color:var(--accent)">&#9788;</span> <span data-i18n="field.title">Полевой режим · Время</span></div>
+<div class="kv"><span data-i18n="field.mode">Режим сети</span><span id="net-mode">—</span></div>
+<div class="kv" id="ap-ssid-row" style="display:none"><span data-i18n="field.apSsid">Точка доступа</span><span id="ap-ssid">—</span></div>
+<div class="kv" id="ap-clients-row" style="display:none"><span data-i18n="field.apClients">Подключено телефонов</span><span id="ap-clients">—</span></div>
+<div class="kv"><span data-i18n="field.timeSrc">Источник времени</span><span id="time-src">—</span></div>
+<input id="manual-time-inp" type="datetime-local" step="1" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px;margin-bottom:6px">
+<button class="btn" onclick="setManualTime()" data-i18n="field.setTime">Установить время платы</button>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="field.timeHint">В полевом режиме (без интернета) время берётся с телефона автоматически. Поле выше — ручная коррекция (пусто = текущее время телефона).</div>
+<div style="border-top:1px solid var(--bd);margin:12px 0 8px"></div>
+<div style="font-size:12px;color:#8a9686;margin-bottom:6px" data-i18n="field.apPassTitle">Пароль полевой точки доступа</div>
+<div id="ap-pass-warn" style="display:none;font-size:11px;color:#f0c45a;margin-bottom:6px" data-i18n="field.passDefaultWarn">Пароль AP — публичный по умолчанию; для людных мест смени пароль.</div>
+<input id="ap-pass-inp" type="text" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px">
+<button class="btn" onclick="changeApPass()" data-i18n="field.apPassSave">Сменить пароль AP (перезагрузка)</button>
+<div id="ap-pass-status" class="mut" style="font-size:11px;margin-top:5px"></div>
+</section>
+
 </div>
 
 <div class="grid">
@@ -244,6 +261,7 @@ var DICT={
   "cal.set":"задана (%1 коэфф., порядок %2)","cal.unset":"не задана",
   "tz.title":"Часовой пояс","tz.label":"Пояс отображения","tz.hint":"Влияет на ось времени, таблицу и CSV-экспорт вкладки «Мониторинг». Хранится в браузере.","tz.auto":"Авто (браузер, %1)","tz.saved":"Сохранено: %1",
   "confirm.rebootDev":"Перезагрузить прибор?","confirm.rebootEsp":"Перезагрузить ESP32?","confirm.resetWifi":"Сбросить WiFi и войти в режим настройки?",
+  "field.title":"Полевой режим · Время","field.mode":"Режим сети","field.apSsid":"Точка доступа","field.apClients":"Подключено телефонов","field.timeSrc":"Источник времени","field.setTime":"Установить время с телефона","field.timeHint":"В полевом режиме (без интернета) время берётся с телефона. Кнопка задаёт его вручную.","field.apPassTitle":"Пароль полевой точки доступа","field.apPassSave":"Сменить пароль AP (перезагрузка)","field.modeSta":"Домашняя сеть (Indoor)","field.modeAp":"Полевой AP (Outdoor)","field.modeSetup":"Настройка","field.modeApForced":"Outdoor (полевой AP, принудительно)","field.modeApFallback":"Outdoor (полевой AP, fallback)","field.passDefaultWarn":"Пароль AP — публичный по умолчанию; для людных мест смени пароль.","field.srcNone":"нет (1970)","field.srcBrowser":"браузер (авто)","field.srcManual":"ручной","field.passChanged":"Пароль сохранён, перезагрузка...","field.passShort":"Минимум 8 символов","field.confirmPass":"Сменить пароль точки доступа? Плата перезагрузится.",
   "up.d":"д","up.h":"ч","up.m":"м","up.s":"с",
   "tc":"TC"
  },
@@ -287,6 +305,7 @@ var DICT={
   "cal.set":"set (%1 coef., order %2)","cal.unset":"not set",
   "tz.title":"Time zone","tz.label":"Display zone","tz.hint":"Affects the time axis, table and CSV export of the Monitoring tab. Stored in the browser.","tz.auto":"Auto (browser, %1)","tz.saved":"Saved: %1",
   "confirm.rebootDev":"Reboot device?","confirm.rebootEsp":"Reboot ESP32?","confirm.resetWifi":"Reset WiFi and enter setup mode?",
+  "field.title":"Field mode · Time","field.mode":"Network mode","field.apSsid":"Access point","field.apClients":"Phones connected","field.timeSrc":"Time source","field.setTime":"Set time from phone","field.timeHint":"In field mode (no internet) the time comes from the phone. This button sets it manually.","field.apPassTitle":"Field access point password","field.apPassSave":"Change AP password (reboot)","field.modeSta":"Home network (Indoor)","field.modeAp":"Field AP (Outdoor)","field.modeSetup":"Setup","field.modeApForced":"Outdoor (field AP, forced)","field.modeApFallback":"Outdoor (field AP, fallback)","field.passDefaultWarn":"AP password is public by default; change it for crowded places.","field.srcNone":"none (1970)","field.srcBrowser":"browser (auto)","field.srcManual":"manual","field.passChanged":"Password saved, rebooting...","field.passShort":"Minimum 8 characters","field.confirmPass":"Change access point password? The board will reboot.",
   "up.d":"d","up.h":"h","up.m":"m","up.s":"s",
   "tc":"TC"
  }
@@ -409,6 +428,20 @@ async function refreshSystem(){
    document.getElementById("wifi-ip").textContent=location.hostname;
    document.getElementById("wifi-rssi").textContent="—";
   }
+  // #FIELD-6: режим сети, статус полевого AP, источник времени
+  var nm=r.net_mode||"sta";
+  var isAp = (nm==="field_ap");
+  document.getElementById("net-mode").textContent = nm==="setup"?t("field.modeSetup"):isAp?(r.ap_forced?t("field.modeApForced"):t("field.modeApFallback")):t("field.modeSta");
+  document.getElementById("ap-ssid-row").style.display = isAp?"":"none";
+  document.getElementById("ap-clients-row").style.display = isAp?"":"none";
+  if(isAp){
+   document.getElementById("ap-ssid").textContent = r.ap_ssid||"—";
+   document.getElementById("ap-clients").textContent = (typeof r.ap_clients==="number"&&r.ap_clients>=0)?r.ap_clients:"—";
+  }
+  // #SEC-2 (A5): предупредить о публичном дефолт-пароле только когда AP реально поднят
+  document.getElementById("ap-pass-warn").style.display = (isAp && r.ap_pass_default)?"":"none";
+  var ts=r.time_source||"none";
+  document.getElementById("time-src").textContent = ts==="sntp"?"SNTP":ts==="browser"?t("field.srcBrowser"):ts==="manual"?t("field.srcManual"):t("field.srcNone");
   var devDot=document.getElementById("dev-dot"), devStat=document.getElementById("dev-stat"), devChip=document.getElementById("dev-chip");
   if(r.usb_connected){
    devDot.classList.remove("off"); devStat.textContent=t("dev.chipOk"); devChip.classList.remove("warn"); devChip.classList.add("ok");
@@ -500,6 +533,27 @@ function saveTz(){
 async function rebootDevice(){if(!confirm(t("confirm.rebootDev")))return;await post("/api/reboot-device");}
 async function rebootEsp(){if(!confirm(t("confirm.rebootEsp")))return;await post("/api/reboot-esp");}
 async function resetWifi(){if(!confirm(t("confirm.resetWifi")))return;await post("/api/wifi/reset");}
+// #FIELD-5 (T11): ручная установка времени платы с телефона. manual=true → прошивка
+// примет безусловно (если SNTP не активен). В Indoor с рабочим SNTP запрос отклонится.
+async function setManualTime(){
+ try{
+  var inp=document.getElementById("manual-time-inp").value;
+  var ms=inp?new Date(inp).getTime():Date.now();  // datetime-local трактуется как локальное → getTime() = UTC ms
+  if(!ms||isNaN(ms))ms=Date.now();
+  var res=await(await post("/api/time",{headers:{"Content-Type":"application/json"},body:JSON.stringify({epoch_ms:ms,manual:true})})).json();
+  if(res&&res.accepted)document.getElementById("time-src").textContent=t("field.srcManual");
+ }catch(e){}
+}
+// #FIELD-7 (#SEC-2): смена пароля полевого AP. Пусто → сброс к дефолту; иначе ≥8 (WPA2).
+// Применяется после ребута (плата пересоздаёт AP с новым паролем).
+async function changeApPass(){
+ var v=document.getElementById("ap-pass-inp").value;
+ var st=document.getElementById("ap-pass-status");
+ if(v.length>0&&v.length<8){st.style.color="#ff8a82";st.textContent=t("field.passShort");return;}
+ if(!confirm(t("field.confirmPass")))return;
+ st.style.color="var(--accent)";st.textContent=t("field.passChanged");
+ try{await post("/api/ap-pass",{headers:{"Content-Type":"application/json"},body:JSON.stringify({password:v})});}catch(e){}
+}
 
 async function loadDoseK(){
  try{
@@ -585,5 +639,6 @@ async function clearDoseCurve(statusId){
  setInterval(refreshSpectrum,2000);
 })();
 </script>
+<script src="/common-time.js"></script>
 </body>
 </html>

@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_timer.h"       // #FIELD-2: fallback-таймер STA→AP
 #include "nvs_flash.h"
 #include "esp_http_server.h"
 #include "mdns.h"
@@ -19,7 +20,21 @@ static EventGroupHandle_t s_wifi_events;
 static int s_retry_count = 0;
 #define MAX_RETRY 10
 
-static bool s_ap_mode = false;
+// #FIELD-2a: STA не получила IP за FALLBACK_SEC → ребут в полевой AP.
+#define FALLBACK_SEC 90
+
+// #FIELD-1: текущий сетевой режим. Дефолт STA, устанавливается в развилке init.
+static net_run_mode_t s_mode = NET_MODE_STA;
+
+// #FIELD-1/#SEC-2: параметры полевого AP (дефолты — из ТЗ разд. 9).
+#define AP_SSID_DEFAULT "AtomSpectra-Outdoor"
+#define AP_PASS_DEFAULT "atomspectra"
+static char s_ap_ssid[WIFI_SSID_MAX] = AP_SSID_DEFAULT;
+static char s_ap_pass[WIFI_PASS_MAX] = AP_PASS_DEFAULT;
+static bool s_ap_pass_default = true;   // #SEC-2: пароль AP не менялся
+static bool s_ap_forced = false;        // #FIELD-6: field_ap липкий (ap_mode=1) vs fallback
+
+static esp_timer_handle_t s_fallback_timer = NULL;
 
 /* ---- DNS captive portal ---- */
 
@@ -75,7 +90,7 @@ static void dns_captive_task(void *arg)
     }
 }
 
-/* ---- Captive portal HTTP ---- */
+/* ---- Captive setup portal HTTP (свежая плата, NET_MODE_SETUP) ---- */
 
 static esp_err_t handle_setup_root(httpd_req_t *req)
 {
@@ -176,6 +191,24 @@ static esp_err_t handle_setup_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
+// #FIELD-2c: из setup-портала — «Работать без роутера (полевой режим)».
+// Ставит forced-флаг Outdoor и ребутит: свежая плата сразу в поле без домашней сети.
+static esp_err_t handle_setup_field(httpd_req_t *req)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "ap_mode", 1);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    ESP_LOGI(TAG, "FIELD-2c: field mode requested from setup -> reboot");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return ESP_OK;
+}
+
 static esp_err_t handle_setup_redirect(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -186,7 +219,7 @@ static esp_err_t handle_setup_redirect(httpd_req_t *req)
 
 static void start_captive_portal(void)
 {
-    s_ap_mode = true;
+    s_mode = NET_MODE_SETUP;
 
     esp_netif_create_default_wifi_ap();
 
@@ -203,7 +236,7 @@ static void start_captive_portal(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "AP started: SSID=AtomSpectra-Setup, IP=192.168.4.1");
+    ESP_LOGI(TAG, "Setup AP: SSID=AtomSpectra-Setup, IP=192.168.4.1");
 
     xTaskCreate(dns_captive_task, "dns_captive", 4096, NULL, 5, NULL);
 
@@ -214,10 +247,11 @@ static void start_captive_portal(void)
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
         const httpd_uri_t uris[] = {
-            {"/",            HTTP_GET,  handle_setup_root,     NULL},
-            {"/api/scan",    HTTP_GET,  handle_setup_scan,     NULL},
-            {"/api/connect", HTTP_POST, handle_setup_connect,  NULL},
-            {"/*",           HTTP_GET,  handle_setup_redirect, NULL},
+            {"/",              HTTP_GET,  handle_setup_root,     NULL},
+            {"/api/scan",      HTTP_GET,  handle_setup_scan,     NULL},
+            {"/api/connect",   HTTP_POST, handle_setup_connect,  NULL},
+            {"/api/field-mode",HTTP_POST, handle_setup_field,    NULL},  // #FIELD-2c
+            {"/*",             HTTP_GET,  handle_setup_redirect, NULL},
         };
         for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++)
             httpd_register_uri_handler(server, &uris[i]);
@@ -240,6 +274,73 @@ static void start_mdns(void)
     ESP_LOGI(TAG, "mDNS started: http://atomspectra.local/");
 }
 
+/* ---- Полевой AP (Outdoor, NET_MODE_FIELD_AP) ---- */
+
+// #FIELD-1/#SEC-2: подтянуть SSID/пароль AP из NVS (иначе — документированные дефолты).
+static void load_ap_config(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READONLY, &nvs) != ESP_OK) return;
+    size_t len = sizeof(s_ap_ssid);
+    nvs_get_str(nvs, "ap_ssid", s_ap_ssid, &len);   // not-found → дефолт цел
+    len = sizeof(s_ap_pass);
+    if (nvs_get_str(nvs, "ap_pass", s_ap_pass, &len) == ESP_OK)
+        s_ap_pass_default = false;                   // пароль был задан оператором
+    nvs_close(nvs);
+}
+
+// #FIELD-1: полевой AP-режим. AP-only (не APSTA), полный Web UI поднимает main.c.
+// DNS-hijack + mDNS здесь; captive-пробы и REST — в web_server (#FIELD-4).
+static void start_field_ap(void)
+{
+    s_mode = NET_MODE_FIELD_AP;
+    load_ap_config();
+
+    esp_netif_create_default_wifi_ap();
+
+    wifi_config_t ap = {
+        .ap = {
+            .channel        = 1,   // #FIELD-1/A10: мягкое требование (AP-only гарантирует)
+            .max_connection = 4,
+            .authmode = (strlen(s_ap_pass) >= 8) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN,
+        }
+    };
+    strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
+    ap.ap.ssid_len = strlen(s_ap_ssid);
+    strlcpy((char *)ap.ap.password, s_ap_pass, sizeof(ap.ap.password));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "FIELD-1: Outdoor AP up: SSID=%s auth=%s IP=192.168.4.1",
+             s_ap_ssid, (ap.ap.authmode == WIFI_AUTH_OPEN) ? "OPEN" : "WPA2");
+
+    xTaskCreate(dns_captive_task, "dns_captive", 4096, NULL, 5, NULL);
+    start_mdns();
+}
+
+/* ---- STA fallback → полевой AP (FIELD-2a, способ A4: ребут+одноразовый флаг) ---- */
+
+static void set_fb_flag_and_reboot(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "ap_fb_once", 1);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    ESP_LOGW(TAG, "FIELD-2a: STA no IP -> reboot into field AP");
+    esp_restart();
+}
+
+static void fallback_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!wifi_is_connected())
+        set_fb_flag_and_reboot();
+}
+
 /* ---- STA mode ---- */
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -254,12 +355,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             s_retry_count++;
             ESP_LOGW(TAG, "Reconnecting (%d/%d)...", s_retry_count, MAX_RETRY);
         } else {
-            ESP_LOGE(TAG, "WiFi failed after %d retries", MAX_RETRY);
+            // #FIELD-2a: не тупик, как раньше, а полевой AP (либо раньше 90с-таймера)
+            ESP_LOGE(TAG, "WiFi failed after %d retries -> field AP", MAX_RETRY);
+            set_fb_flag_and_reboot();
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "Connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
+        // #FIELD-2a: STA поднялась — отменить fallback-таймер
+        if (s_fallback_timer) esp_timer_stop(s_fallback_timer);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
     }
 }
@@ -281,8 +386,39 @@ void wifi_manager_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {0};
+    // #FIELD-2: режимные флаги NVS
+    uint8_t ap_mode = 0, ap_fb_once = 0;
     nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READONLY, &nvs) == ESP_OK) {
+        nvs_get_u8(nvs, "ap_mode", &ap_mode);
+        nvs_get_u8(nvs, "ap_fb_once", &ap_fb_once);
+        nvs_close(nvs);
+    }
+
+    // #FIELD-2a: одноразовый fallback после неудачной STA — войти в поле, сбросить флаг.
+    // Не липкий: следующий ребут снова пробует STA (FIELD-3).
+    if (ap_fb_once) {
+        if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+            nvs_erase_key(nvs, "ap_fb_once");
+            nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+        ESP_LOGW(TAG, "FIELD-2a: entering field AP (one-shot fallback)");
+        s_ap_forced = false;   // #FIELD-6: это fallback, не липкий forced
+        start_field_ap();
+        return;
+    }
+
+    // #FIELD-2b: forced Outdoor (липкий; снимается переключателем Indoor/Outdoor в UI).
+    if (ap_mode) {
+        ESP_LOGI(TAG, "FIELD-2b: forced Outdoor (ap_mode=1)");
+        s_ap_forced = true;    // #FIELD-6: липкий forced (снимается переключателем)
+        start_field_ap();
+        return;
+    }
+
+    // STA-конфиг из NVS
+    wifi_config_t wifi_config = {0};
     if (nvs_open("wifi", NVS_READONLY, &nvs) == ESP_OK) {
         size_t len = sizeof(wifi_config.sta.ssid);
         nvs_get_str(nvs, "ssid", (char *)wifi_config.sta.ssid, &len);
@@ -293,11 +429,12 @@ void wifi_manager_init(void)
     }
 
     if (wifi_config.sta.ssid[0] == 0) {
-        ESP_LOGW(TAG, "No WiFi config, starting captive portal");
+        ESP_LOGW(TAG, "No WiFi config, starting setup captive portal");
         start_captive_portal();
         return;
     }
 
+    // #FIELD-1: Indoor (STA) + fallback-таймер 90с (FIELD-2a).
     esp_event_handler_instance_t inst_any, inst_got_ip;
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
         &wifi_event_handler, NULL, &inst_any);
@@ -310,8 +447,18 @@ void wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     start_mdns();
+    s_mode = NET_MODE_STA;
 
-    ESP_LOGI(TAG, "WiFi STA starting, SSID=%s", wifi_config.sta.ssid);
+    // fallback-таймер: нет IP за 90с → ребут в полевой AP
+    const esp_timer_create_args_t targs = {
+        .callback = fallback_timer_cb,
+        .name = "wifi_fb",
+    };
+    if (esp_timer_create(&targs, &s_fallback_timer) == ESP_OK)
+        esp_timer_start_once(s_fallback_timer, (uint64_t)FALLBACK_SEC * 1000000);
+
+    ESP_LOGI(TAG, "WiFi STA starting, SSID=%s (fallback %ds)",
+             wifi_config.sta.ssid, FALLBACK_SEC);
 }
 
 bool wifi_is_connected(void)
@@ -319,7 +466,37 @@ bool wifi_is_connected(void)
     return (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) != 0;
 }
 
+net_run_mode_t wifi_manager_mode(void)
+{
+    return s_mode;
+}
+
 bool wifi_manager_is_ap_mode(void)
 {
-    return s_ap_mode;
+    return s_mode != NET_MODE_STA;   // FIELD_AP или SETUP
+}
+
+int wifi_manager_ap_clients(void)
+{
+    if (s_mode == NET_MODE_STA) return -1;
+    wifi_sta_list_t list;
+    if (esp_wifi_ap_get_sta_list(&list) == ESP_OK) return list.num;
+    return 0;
+}
+
+const char *wifi_manager_ap_ssid(void)
+{
+    if (s_mode == NET_MODE_FIELD_AP) return s_ap_ssid;
+    if (s_mode == NET_MODE_SETUP)    return "AtomSpectra-Setup";
+    return "";
+}
+
+bool wifi_manager_ap_forced(void)
+{
+    return s_ap_forced;
+}
+
+bool wifi_manager_ap_pass_is_default(void)
+{
+    return s_ap_pass_default;
 }

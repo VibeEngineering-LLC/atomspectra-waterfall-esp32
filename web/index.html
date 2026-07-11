@@ -67,6 +67,7 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 <div class="chips">
 <span class="chip ok"><span class="dot"></span><span id="device-chip" data-i18n="device">Прибор</span></span>
 <span class="chip" id="ip-chip">—</span>
+<span class="chip" id="mode-chip" onclick="toggleMode()" title="Indoor/Outdoor" style="cursor:pointer;display:none">—</span>
 <span class="chip lang" id="langBtn">EN</span>
 </div>
 </header>
@@ -182,6 +183,7 @@ var DICT={
  ru:{
   "device":"Прибор",
   "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitor":"Мониторинг","nav.saved":"Сохранённые","nav.system":"Система","nav.service":"Сервис",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor","mode.confirmOut":"Переключить в полевой режим (Outdoor)? Плата перезагрузится, поднимет точку доступа AtomSpectra-Outdoor, текущее подключение прервётся.","mode.confirmIn":"Вернуться в домашний режим (Indoor)? Плата перезагрузится и подключится к домашней сети.",
   "status.connecting":"Подключение...",
   "status.rebooting":"Перезагрузка...",
   "status.wifiSetup":"Настройка WiFi...",
@@ -226,6 +228,7 @@ var DICT={
  en:{
   "device":"Device",
   "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitor":"Monitoring","nav.saved":"Saved","nav.system":"System","nav.service":"Service",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor","mode.confirmOut":"Switch to field mode (Outdoor)? The board will reboot, bring up the AtomSpectra-Outdoor access point, and the current connection will drop.","mode.confirmIn":"Return to home mode (Indoor)? The board will reboot and connect to the home network.",
   "status.connecting":"Connecting...",
   "status.rebooting":"Rebooting...",
   "status.wifiSetup":"WiFi setup...",
@@ -515,7 +518,23 @@ async function loadFlashInfo(){
   var fi=document.getElementById("flash-inner");
   fi.style.width=pct+"%";
   fi.style.background=pct>90?"#ff8a82":pct>70?"#f0c45a":"var(--accent)";
+  // #FIELD-6: индикатор режима Indoor/Outdoor в шапке (клик = переключение)
+  var nm=r.net_mode||"sta"; window._netMode=nm;
+  var mc=document.getElementById("mode-chip");
+  if(mc){
+   mc.style.display="";
+   mc.textContent=(nm==="field_ap")?tr("mode.outdoor"):tr("mode.indoor");
+   mc.style.borderColor=(nm==="field_ap")?"#f0c45a":"";
+   mc.style.color=(nm==="field_ap")?"#f0c45a":"";
+  }
  }catch(e){}
+}
+// #FIELD-6 (T4/T5): переключатель Indoor↔Outdoor из шапки. Пишет NVS ap_mode и ребутит.
+async function toggleMode(){
+ var cur=window._netMode||"sta";
+ var toOutdoor=(cur!=="field_ap");
+ if(!confirm(tr(toOutdoor?"mode.confirmOut":"mode.confirmIn")))return;
+ try{await post("/api/net-mode",{headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:toOutdoor?"outdoor":"indoor"})});}catch(e){}
 }
 async function loadOverlay(idx){
  try{var r=await(await fetch("/api/saved/"+idx+"/spectrum.json")).json();overlayBins=r.bins;overlayIdx=idx;
@@ -662,6 +681,7 @@ function drawNuclides(N){
  populateNucPanel();
  setInterval(update,2000);   /* #UI-15: 1000→2000ms — chunked /api/spectrum.json ел сокеты при F5; макс. uri_handlers=11 */
  setInterval(loadFlashInfo,10000);
+ loadFlashInfo();   // #FIELD-6: сразу показать режим Indoor/Outdoor в шапке
  clearCanvas();
  initCalib();
  update();
@@ -842,5 +862,6 @@ window.openZoomOverlay=function(sourcesFn,opts){
  });
 })();
 </script>
+<script src="/common-time.js"></script>
 </body>
 </html>

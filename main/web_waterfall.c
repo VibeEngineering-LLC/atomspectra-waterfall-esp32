@@ -250,9 +250,22 @@ static esp_err_t h_window(httpd_req_t *req)
 
 /* ---- v3: GET /api/waterfall/export.aswf — кольцо PSRAM в бинарном ASWF v3 ---- */
 
+// #INT-1: аккумулятивный CRC32 (zlib-совместимый, poly 0xEDB88320), тот же алгоритм,
+// что spectrogram.c crc32_upd (путь сегмента). Дублирован намеренно (стандарт, не
+// расходится) чтобы не тянуть spectrogram-static наружу. Старт 0xFFFFFFFF, финал ^= 0xFFFFFFFF — у вызывающего.
+static uint32_t wf_crc32_upd(uint32_t crc, const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        crc ^= p[i];
+        for (int j = 0; j < 8; j++)
+            crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+    }
+    return crc;
+}
+
 typedef struct {
     httpd_req_t    *req;
-    uint8_t        *tail;        /* 22-байт буфер: dur(2)+ts(4)+lat(4)+lon(4)+dose(4)+temp(4) */
+    uint8_t        *tail;        /* 26-байт буфер: dur(2)+ts(4)+lat(4)+lon(4)+dose(4)+temp(4)+crc32(4) */
     const uint16_t *durs;
     const float    *temps;       /* #FW-41: t1 детектора по строкам (NaN если нет -inf) */
     uint32_t        r0;
@@ -291,11 +304,20 @@ static bool aswf_row_emit(void *vctx, const uint16_t *row, size_t bytes)
     memcpy(t + 10, &lon_v,  4);
     memcpy(t + 14, &dose,   4);
     memcpy(t + 18, &temp_v, 4);                    // #FW-41
-    return httpd_resp_send_chunk(c->req, (const char *)t, 22) == ESP_OK;
+    // #INT-1: per-row CRC32 (как у сегментов) — покрывает spectrum(16384)+tail(22)=16406,
+    // тот же байт-порядок/алгоритм, что seg_finalize → единый v5 с контролем целостности.
+    uint32_t crc = 0xFFFFFFFFu;
+    crc = wf_crc32_upd(crc, (const uint8_t *)row, WF_ROW_BYTES);   // spectrum 16384
+    crc = wf_crc32_upd(crc, t, 22);                                // dur..temperature
+    crc ^= 0xFFFFFFFFu;
+    t[22] = crc & 0xFF;         t[23] = (crc >> 8) & 0xFF;
+    t[24] = (crc >> 16) & 0xFF; t[25] = (crc >> 24) & 0xFF;
+    return httpd_resp_send_chunk(c->req, (const char *)t, 26) == ESP_OK;
 }
 
-/* GET /api/waterfall/export.aswf -> ASWF v3 (кольцо PSRAM, без baseline-секции).
-   Совместим с v3-парсерами. wf_pull_client.py с v3-поддержкой читает напрямую. */
+/* GET /api/waterfall/export.aswf -> ASWF v5 (кольцо PSRAM, без baseline-секции, с per-row crc32).
+   #INT-1: раньше stream-export шёл без crc (stride 16406); теперь несёт crc32 как сегменты
+   (stride 16410) → контроль целостности доступен и на выгрузке кольца. Самоописываемо (row_fields). */
 static esp_err_t h_export_aswf(httpd_req_t *req)
 {
     wf_status_t s;
@@ -310,7 +332,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
 
     uint16_t *row  = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
     char     *hbuf = malloc(WF_HDR_RESERVE);
-    uint8_t  *tail = malloc(22);   // #FW-41: +temp(4)
+    uint8_t  *tail = malloc(26);   // #FW-41 +temp(4); #INT-1 +crc32(4)
     if (!row || !hbuf || !tail) {
         if (row)  heap_caps_free(row);
         if (hbuf) free(hbuf);
@@ -337,14 +359,15 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
         "{\"name\":\"latitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
         "{\"name\":\"longitude\",\"dtype\":\"float32\",\"unit\":\"deg\",\"offset\":%d},"
         "{\"name\":\"dose_rate\",\"dtype\":\"float32\",\"unit\":\"usv_h\",\"offset\":%d},"
-        "{\"name\":\"temperature\",\"dtype\":\"float32\",\"unit\":\"celsius\",\"offset\":%d}"
+        "{\"name\":\"temperature\",\"dtype\":\"float32\",\"unit\":\"celsius\",\"offset\":%d},"
+        "{\"name\":\"crc32\",\"dtype\":\"uint32\",\"algo\":\"crc32\",\"covers\":%d,\"offset\":%d}"
         "]"
         ",\"compressed\":false"
         ",\"interval_sec\":%" PRIu32 ",\"started_at\":%ld",
         (uint32_t)s.ring_count, (long)now,
-        // #FW-41: v5 stream-export без crc32, +temperature → stride=WF_ROW_PRECRC=16406.
-        // (#FW-39 держал 16402 без temp; константа авто-выросла с добавлением TEMP в .h.)
-        WF_CHANNELS, WF_ROW_PRECRC,
+        // #INT-1: v5 stream-export ТЕПЕРЬ с crc32 (как сегмент) → stride=WF_ROW_STRIDE=16410.
+        // Раньше 16406 без crc (#FW-41); контроль целостности теперь и на export.aswf.
+        WF_CHANNELS, WF_ROW_STRIDE,
         WF_CHANNELS,
         WF_ROW_BYTES,
         WF_ROW_BYTES + WF_DUR_BYTES,
@@ -352,6 +375,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 4,
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 8,
         WF_ROW_BYTES + WF_DUR_BYTES + WF_TS_BYTES + 12,   // temperature.offset=16402
+        WF_ROW_PRECRC, WF_ROW_PRECRC,                     // crc32 covers=offset=16406
         s.interval_sec, (long)first_ts);
     if (n > 0 && n < cap && sp && sp->serial_number[0])
         n += snprintf(hbuf + n, cap - n, ",\"serial\":\"%s\"", sp->serial_number);

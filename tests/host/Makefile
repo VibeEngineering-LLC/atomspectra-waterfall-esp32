@@ -7,8 +7,9 @@
 #   make clean  — убрать бинарники
 
 CC ?= gcc
-CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O2 -I../../components/shproto/include
-SRCS = test_shproto.c test_roundtrip.c ../../components/shproto/shproto.c
+CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O2 -I../../components/shproto/include -I../../main
+SRCS = test_shproto.c test_roundtrip.c ../../components/shproto/shproto.c \
+       test_net_time.c ../../main/net_time.c
 
 test: $(SRCS) test_util.h
 	$(CC) $(CFLAGS) -o test_runner $(SRCS)
