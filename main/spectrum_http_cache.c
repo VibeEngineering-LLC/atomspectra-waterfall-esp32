@@ -196,9 +196,10 @@ uint32_t spectrum_http_cache_render_count(void)
 
 static void set_render_hdr(httpd_req_t *req)
 {
-    char h[16];
-    snprintf(h, sizeof(h), "%" PRIu32, s_render_count);
-    httpd_resp_set_hdr(req, "X-Spectrum-Render-Count", h);
+    // esp_http_server stores pointers — value must outlive the send.
+    static char s_render_hdr[16];
+    snprintf(s_render_hdr, sizeof(s_render_hdr), "%" PRIu32, s_render_count);
+    httpd_resp_set_hdr(req, "X-Spectrum-Render-Count", s_render_hdr);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
 

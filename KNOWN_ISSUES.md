@@ -441,6 +441,9 @@ idle-плате гуляет **20–400+ ms** почти без потерь. В
 - **#PERF-3** — waterfall `scheduleDraw()` / rAF coalesce (HiDPI без изменений).
 - **#PERF-4** — спека async upload job API: `docs/spectrum-upload-job-api.md` (ещё не код).
 
+Soak after (`.185`, index+waterfall+AtomSpectra, 9000×0.2 с): p50 **5.1** / p95 **60.3** / p99 **92**
+(было 7.7 / 86.8 / 179); loss 0%; RFC jitter 39.6→**8.8** ms. Max всё ещё редкий выброс (~2 с).
+
 ### Максимум каналов — 8192
 
 Прибор Atom Spectra передаёт 8192 канала. Это аппаратное ограничение спектрометра, не прошивки.

@@ -439,6 +439,9 @@ with 0% loss (baseline `board185-20260726T183636Z`). In `v1.2.2ff`:
 - **#PERF-3** — waterfall `scheduleDraw()` / rAF coalesce (HiDPI unchanged).
 - **#PERF-4** — async upload job API spec only: `docs/spectrum-upload-job-api.md`.
 
+Soak after (`.185`, index+waterfall+AtomSpectra, 9000×0.2 s): p50 **5.1** / p95 **60.3** / p99 **92**
+(was 7.7 / 86.8 / 179); 0% loss; RFC jitter 39.6→**8.8** ms. Rare max spike still ~2 s.
+
 ### Maximum channels — 8192
 
 The Atom Spectra instrument transmits 8192 channels. This is a hardware limitation of the spectrometer, not the firmware.
