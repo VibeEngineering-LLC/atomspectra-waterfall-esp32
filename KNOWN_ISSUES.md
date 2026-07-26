@@ -429,6 +429,18 @@ idle-плате гуляет **20–400+ ms** почти без потерь. В
 `esp_wifi_start()` для STA выставляется `WIFI_PS_NONE` (trade-off: выше потребление
 в STA). На плате #1 (2026-07-26): Mac ICMP p95 192→17 ms, R00T p95 ≈20 ms, loss 0%.
 
+### Web UI perf (`v1.2.2ff`, #PERF-1…4)
+
+Под нагрузкой браузер+AtomSpectra soak давал p50≈8 ms / **p95≈87 ms** / max≈1 s при
+0% loss (baseline `board185-20260726T183636Z`). С `v1.2.2ff`:
+
+- **#PERF-1** — 2 с snapshot-кэш спектра (`spectrum_http_cache`): N вкладок = 1 render;
+  hot path index = `/api/spectrum` + `/api/spectrum/meta.json`.
+- **#PERF-2** — HEAVY lane (`http_io_gate`, concurrency=1): segment/window/export →
+  503 + `Retry-After`; фронт `heavyFetch()`; autosave пропускается пока HEAVY busy.
+- **#PERF-3** — waterfall `scheduleDraw()` / rAF coalesce (HiDPI без изменений).
+- **#PERF-4** — спека async upload job API: `docs/spectrum-upload-job-api.md` (ещё не код).
+
 ### Максимум каналов — 8192
 
 Прибор Atom Spectra передаёт 8192 канала. Это аппаратное ограничение спектрометра, не прошивки.

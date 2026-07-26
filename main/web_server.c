@@ -6,6 +6,8 @@
 #include "spectrogram.h"    // #FIELD-5: spectrogram_time_synced() при установке времени
 #include "net_time.h"       // #FIELD-5: guard-логика источника времени
 #include "monitor.h"        // #MON-1: серия CPS-мониторинга (/api/monitor/series)
+#include "spectrum_http_cache.h"  // #PERF-1: 2s snapshot cache + meta/binary
+#include "http_io_gate.h"         // #PERF-2: HEAVY lane gate
 #include "esp_heap_caps.h"  // #MON-1: PSRAM-буфер чанка серии
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -131,21 +133,14 @@ static esp_err_t handle_status(httpd_req_t *req)
 
 static esp_err_t handle_spectrum(httpd_req_t *req)
 {
-    spectrum_data_t *sp = malloc(sizeof(*sp));
-    if (!sp) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    if (!spectrum_get_snapshot(sp)) {
-        free(sp);
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data yet");
-        return ESP_FAIL;
-    }
-    httpd_resp_set_type(req, "application/octet-stream");
-    httpd_resp_set_hdr(req, "Content-Disposition", "inline");
-    httpd_resp_send(req, (const char *)sp->bins, SPECTRUM_CHANNELS * sizeof(uint32_t));
-    free(sp);
-    return ESP_OK;
+    // #PERF-1: shared 2s cache — binary hot path for index.html
+    return spectrum_http_send_bins(req);
+}
+
+static esp_err_t handle_spectrum_meta(httpd_req_t *req)
+{
+    // #PERF-1: meta without 8192 bins (system/monitor tiles)
+    return spectrum_http_send_meta(req);
 }
 
 // #DT-4: мёртвое время берём ИЗ ДЕТЕКТОРА. STAT-кадр (cmd 0x04) несёт pulse_width
@@ -216,24 +211,9 @@ static esp_err_t render_spectrum_json(httpd_req_t *req, const spectrum_data_t *s
 
 static esp_err_t handle_spectrum_json(httpd_req_t *req)
 {
-    spectrum_data_t *sp = malloc(sizeof(*sp));
-    if (!sp) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
-        return ESP_FAIL;
-    }
-    if (!spectrum_get_snapshot(sp)) {
-        free(sp);
-        // #FW-43: дед-флаг доступен даже без валидного снапшота спектра. Дед-состояние
-        // (прибор определился, но не запитан) часто = НЕТ данных спектра → снапшот
-        // невалиден → сюда. Без заголовка баннер бы не показался (dead:N живёт только в
-        // render_spectrum_json на валидном пути). Фронт читает заголовок на каждом 404.
-        httpd_resp_set_hdr(req, "X-Spectrometer-Dead", usb_host_cdc_spectrometer_dead() ? "1" : "0");
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data yet");
-        return ESP_FAIL;
-    }
-    esp_err_t ret = render_spectrum_json(req, sp);
-    free(sp);
-    return ret;
+    // #PERF-1: single-flight JSON cache (TTL 2s). X-Spectrometer-Dead on 404
+    // handled inside spectrum_http_send_json.
+    return spectrum_http_send_json(req);
 }
 
 static esp_err_t handle_command(httpd_req_t *req)
@@ -822,69 +802,85 @@ static esp_err_t render_spectrum_spe(httpd_req_t *req, const spectrum_data_t *sp
 
 static esp_err_t handle_export_xml(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(*sp));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (!spectrum_get_snapshot(sp)) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data");
         return ESP_FAIL;
     }
     esp_err_t ret = render_spectrum_xml(req, sp, "spectrum.xml");
     free(sp);
+    http_io_gate_leave();
     return ret;
 }
 
 static esp_err_t handle_export_spe(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(*sp));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (!spectrum_get_snapshot(sp)) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data");
         return ESP_FAIL;
     }
     esp_err_t ret = render_spectrum_spe(req, sp, "spectrum.spe");
     free(sp);
+    http_io_gate_leave();
     return ret;
 }
 
 static esp_err_t handle_export_n42(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(*sp));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (!spectrum_get_snapshot(sp)) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data");
         return ESP_FAIL;
     }
     esp_err_t ret = render_spectrum_n42(req, sp, "spectrum.n42");
     free(sp);
+    http_io_gate_leave();
     return ret;
 }
 
 static esp_err_t handle_export_csv(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(*sp));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (!spectrum_get_snapshot(sp)) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data");
         return ESP_FAIL;
     }
     esp_err_t ret = render_spectrum_csv(req, sp, "spectrum.csv");
     free(sp);
+    http_io_gate_leave();
     return ret;
 }
 
@@ -1092,6 +1088,10 @@ static esp_err_t handle_system(httpd_req_t *req)
     cJSON_AddBoolToObject(root,   "ap_forced",      wifi_manager_ap_forced());
     cJSON_AddStringToObject(root, "time_source",    net_time_source_str());
     cJSON_AddBoolToObject(root,   "sntp_synced",    net_time_sntp_synced());
+    // #PERF-1/#PERF-2: observability for multi-tab spectrum cache + HEAVY gate
+    cJSON_AddNumberToObject(root, "spectrum_render_count", (double)spectrum_http_cache_render_count());
+    cJSON_AddBoolToObject(root,   "http_heavy_busy", http_io_gate_busy());
+    cJSON_AddNumberToObject(root, "http_heavy_rejects", (double)http_io_gate_reject_count());
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json);
@@ -1699,6 +1699,8 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
 void web_server_init(void)
 {
     csrf_generate();
+    http_io_gate_init();           // #PERF-2
+    spectrum_http_cache_init();    // #PERF-1
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     // #WF-1: httpd на core 1 к остальной прикладной сети (#TCP-2). Дефолт
@@ -1729,6 +1731,7 @@ void web_server_init(void)
         {"/api/status",                  HTTP_GET,  handle_status,           NULL},
         {"/api/spectrum",                HTTP_GET,  handle_spectrum,         NULL},
         {"/api/spectrum.json",           HTTP_GET,  handle_spectrum_json,    NULL},
+        {"/api/spectrum/meta.json",      HTTP_GET,  handle_spectrum_meta,    NULL},  // #PERF-1
         {"/api/command",                 HTTP_POST, handle_command,          NULL},
         {"/api/devlog",                  HTTP_GET,  handle_devlog,           NULL},
         {"/api/monitor/series",          HTTP_GET,  handle_monitor_series,   NULL},  // #MON-1

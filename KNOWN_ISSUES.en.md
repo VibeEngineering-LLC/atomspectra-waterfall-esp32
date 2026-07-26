@@ -429,6 +429,16 @@ jitter of **20–400+ ms** with near-zero loss on an idle board. After `esp_wifi
 in STA mode, `wifi_manager.c` sets `WIFI_PS_NONE` (trade-off: higher STA power draw).
 Board #1 (2026-07-26): Mac ICMP p95 192→17 ms, R00T p95 ≈20 ms, 0% loss.
 
+### Web UI perf (`v1.2.2ff`, #PERF-1…4)
+
+Under browser+AtomSpectra load, ICMP soak showed p50≈8 ms / **p95≈87 ms** / max≈1 s
+with 0% loss (baseline `board185-20260726T183636Z`). In `v1.2.2ff`:
+
+- **#PERF-1** — 2 s spectrum snapshot cache; index hot path = `/api/spectrum` + `/api/spectrum/meta.json`.
+- **#PERF-2** — HEAVY lane (`http_io_gate`, concurrency=1): 503 + `Retry-After`; `heavyFetch()`; autosave skips while busy.
+- **#PERF-3** — waterfall `scheduleDraw()` / rAF coalesce (HiDPI unchanged).
+- **#PERF-4** — async upload job API spec only: `docs/spectrum-upload-job-api.md`.
+
 ### Maximum channels — 8192
 
 The Atom Spectra instrument transmits 8192 channels. This is a hardware limitation of the spectrometer, not the firmware.
