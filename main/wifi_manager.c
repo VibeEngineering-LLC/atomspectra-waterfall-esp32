@@ -445,6 +445,15 @@ void wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* Disable modem sleep: default MIN_MODEM causes 20-400ms ICMP/HTTP RTT
+     * jitter with near-zero loss on idle STA. Trade-off: higher STA power. */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    {
+        wifi_ps_type_t ps = WIFI_PS_NONE;
+        if (esp_wifi_get_ps(&ps) == ESP_OK) {
+            ESP_LOGI(TAG, "WiFi PS mode=%d (0=NONE)", (int)ps);
+        }
+    }
 
     start_mdns();
     s_mode = NET_MODE_STA;

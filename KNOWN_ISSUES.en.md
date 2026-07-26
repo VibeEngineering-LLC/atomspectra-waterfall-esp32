@@ -422,6 +422,13 @@ The TCP bridge (port 8234) supports **one** simultaneous connection. A second co
 
 5 GHz networks are not supported in hardware. Make sure the router broadcasts on 2.4 GHz.
 
+### WiFi STA: modem sleep disabled (`WIFI_PS_NONE`)
+
+ESP-IDF 5.4 STA defaults to **MIN_MODEM** power save, which produces ICMP/HTTP RTT
+jitter of **20–400+ ms** with near-zero loss on an idle board. After `esp_wifi_start()`
+in STA mode, `wifi_manager.c` sets `WIFI_PS_NONE` (trade-off: higher STA power draw).
+Board #1 (2026-07-26): Mac ICMP p95 192→17 ms, R00T p95 ≈20 ms, 0% loss.
+
 ### Maximum channels — 8192
 
 The Atom Spectra instrument transmits 8192 channels. This is a hardware limitation of the spectrometer, not the firmware.
