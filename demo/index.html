@@ -349,9 +349,18 @@ function clearCanvas(){
 function setDeadBanner(on){var b=document.getElementById("dead-banner");if(!b)return;if(on){b.innerHTML=tr("dead.warn");b.style.display="";}else{b.style.display="none";}}  /* #FW-43: баннер «определился, но не запитан» */
 async function update(){
  try{
-  var r=await fetch("/api/spectrum.json");
-  if(!r.ok){setDeadBanner(r.headers.get("X-Spectrometer-Dead")==="1");if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд. #FW-43: дед-флаг из заголовка X-Spectrometer-Dead — баннер работает даже когда спектра нет (404) */
-  var d=await r.json();
+  /* #PERF-1: binary bins (32 KiB) + meta JSON — shared 2s server cache */
+  var rb=await fetch("/api/spectrum");
+  var rm=await fetch("/api/spectrum/meta.json");
+  if(!rb.ok||!rm.ok){
+   var deadHdr=(rm.headers&&rm.headers.get("X-Spectrometer-Dead"))||(rb.headers&&rb.headers.get("X-Spectrometer-Dead"));
+   setDeadBanner(deadHdr==="1");
+   if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}
+   return;
+  }
+  var ab=await rb.arrayBuffer();
+  var d=await rm.json();
+  d.bins=new Uint32Array(ab);
   failStreak=0;  /* #UI-2: успешный кадр — сброс счётчика подряд-неудач */
   if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib);nucBtnEnable(true);} else if(!calib){nucBtnEnable(false);}
   if(d.serial)document.getElementById("device-chip").textContent=d.serial;
