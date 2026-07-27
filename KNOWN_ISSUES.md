@@ -6,6 +6,22 @@
 
 ## Открытые
 
+### #FW-50: ночное зависание web-интерфейса (водопад + мониторинг)
+
+**Статус:** открыто · диагностика в `v1.2.2ffl` (PSRAM debug-log ring + Mac pull).
+
+**Наблюдение (2026-07-27):** плата `.185` (~board `333f895775a1`) перестала отвечать на LAN
+около **05:42 МСК** при включённых водопаде и мониторинге; MikroTik DHCP `deassigned` позже
+по истечении lease. AtomSpectra по USB не перезагружали — спектр на приборе сохранился.
+CAP/SSID и другие клиенты VLAN были живы → не AP. Гипотезы: soft-lock без WDT, HEAVY/httpd,
+USB Host + WiFi soak; **не** путать с уже закрытым **#FW-13** (LittleFS autosave freeze /
+UART CDC blocking — зашито ранее).
+
+**Инструмент:** Сервис → Debug-лог (NVS `dbglog`); кольцо 384 KiB PSRAM; `GET /api/debug/log`,
+`POST /api/debug/log/flush` без CSRF; Mac launchd каждые 5 мин. Default **off**.
+
+---
+
 ### BUG-AS-08: ⚠ Шлюз не резервирует заводскую DSP-настройку прибора
 
 **Статус:** ограничение by design + предупреждение (не баг прошивки шлюза).

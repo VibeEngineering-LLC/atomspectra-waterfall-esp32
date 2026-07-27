@@ -49,6 +49,8 @@ CONFIG_LITTLEFS_MAX_PARTITIONS=3
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# Compile-time max so ESP_LOGD is not a no-op (runtime still filtered by Layer A).
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
 # Task watchdog
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30

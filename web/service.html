@@ -98,6 +98,22 @@ pre.preview{ margin-top:12px; font-size:11px; line-height:1.5; color:#9aa496; ba
 <div class="mut" id="restore-status" style="font-size:11px;margin-top:9px;text-align:center;min-height:14px"></div>
 </section>
 
+<section class="panel" id="dbglog-panel">
+<div class="ttl"><span style="color:var(--accent)">&#9998;</span> <span data-i18n="dbglog.title">Debug-лог (#FW-50)</span></div>
+<div class="mut" style="font-size:11.5px;line-height:1.6;margin-bottom:10px" data-i18n="dbglog.hint">Кольцо в PSRAM (~384 KiB). Off = полный off. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).</div>
+<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin:8px 0">
+<input type="checkbox" id="dbglog-en"> <span data-i18n="dbglog.enable">Включить сбор логов</span>
+</label>
+<label style="display:block;font-size:12px;margin:8px 0 4px" data-i18n="dbglog.level">Подробность</label>
+<select class="inp" id="dbglog-lv" style="width:100%">
+<option value="standard">standard</option>
+<option value="detailed">detailed</option>
+<option value="debug">debug</option>
+</select>
+<button class="btn green" id="btn-dbglog-save" onclick="saveDbglog()" data-i18n="dbglog.save">Сохранить</button>
+<div class="mut" id="dbglog-status" style="font-size:11px;margin-top:9px;text-align:center;min-height:14px"></div>
+</section>
+
 </div>
 
 <section class="panel" id="param-panel" style="display:none">
@@ -175,7 +191,14 @@ var DICT={
   "restore.applying":"Отправка настроек в прибор...",
   "restore.ok":"Готово — настройки восстановлены",
   "restore.err":"Ошибка восстановления",
-  "restore.noDevice":"Прибор не подключён"
+  "restore.noDevice":"Прибор не подключён",
+  "dbglog.title":"Debug-лог (#FW-50)",
+  "dbglog.hint":"Кольцо в PSRAM (~384 KiB). Off = полный off. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).",
+  "dbglog.enable":"Включить сбор логов",
+  "dbglog.level":"Подробность",
+  "dbglog.save":"Сохранить",
+  "dbglog.saved":"Сохранено",
+  "dbglog.err":"Ошибка сохранения"
  },
  en:{
   "page.title":"AtomSpectra · Service",
@@ -232,7 +255,14 @@ var DICT={
   "restore.applying":"Sending settings to device...",
   "restore.ok":"Done — settings restored",
   "restore.err":"Restore error",
-  "restore.noDevice":"Device not connected"
+  "restore.noDevice":"Device not connected",
+  "dbglog.title":"Debug log (#FW-50)",
+  "dbglog.hint":"PSRAM ring (~384 KiB). Off = full off. Mac pull every 5 min (standard/detailed) or 30 s (debug).",
+  "dbglog.enable":"Enable log capture",
+  "dbglog.level":"Verbosity",
+  "dbglog.save":"Save",
+  "dbglog.saved":"Saved",
+  "dbglog.err":"Save error"
  }
 };
 var LANG=(function(){try{return localStorage.getItem("aswf-lang")||"ru";}catch(e){return"ru";}})();
@@ -279,6 +309,30 @@ async function refreshSystem(){
    devDot.classList.add("off"); devStat.textContent=t("dev.chipOff"); devChip.classList.add("warn"); devChip.classList.remove("ok");
   }
  }catch(e){}
+}
+
+async function loadDbglog(){
+ try{
+  var r=await(await fetch("/api/debug/log/config")).json();
+  document.getElementById("dbglog-en").checked=!!r.enabled;
+  var lv=r.level||"standard";
+  document.getElementById("dbglog-lv").value=lv;
+  var s=document.getElementById("dbglog-status");
+  if(s) s.textContent="fill="+r.fill_pct+"% drop="+r.dropped+" gen="+r.gen;
+ }catch(e){}
+}
+async function saveDbglog(){
+ var s=document.getElementById("dbglog-status");
+ try{
+  var body=JSON.stringify({
+   enabled:document.getElementById("dbglog-en").checked,
+   level:document.getElementById("dbglog-lv").value
+  });
+  var r=await post("/api/debug/log/config",{headers:{"Content-Type":"application/json"},body:body});
+  if(!r.ok){ s.textContent=t("dbglog.err"); s.style.color="#ff8a82"; return; }
+  s.style.color="var(--accent)"; s.textContent=t("dbglog.saved");
+  await loadDbglog();
+ }catch(e){ s.textContent=t("dbglog.err"); s.style.color="#ff8a82"; }
 }
 
 async function doBackup(){
@@ -436,6 +490,7 @@ async function doRestore(){
  document.getElementById("ip-chip").textContent=location.hostname;
  await loadCsrf();
  await refreshSystem();
+ await loadDbglog();
  setInterval(refreshSystem,3000);
 })();
 </script>
