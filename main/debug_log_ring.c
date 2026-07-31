@@ -380,12 +380,37 @@ esp_err_t debug_log_ring_flush(uint32_t upto_seq, uint32_t gen)
         xSemaphoreGive(s_mtx);
         return ESP_OK;
     }
-    (void)upto_seq;
-    s_head = 0;
-    s_used = 0;
-    s_next_seq = 0;
-    s_dropped = 0;
-    s_gen++;
+    // upto_seq == 0 — полный сброс: нумерация начинается заново, поэтому
+    // поколение растёт и клиент понимает, что его since больше не применим.
+    if (upto_seq == 0) {
+        s_head = 0;
+        s_used = 0;
+        s_next_seq = 0;
+        s_dropped = 0;
+        s_gen++;
+        xSemaphoreGive(s_mtx);
+        return ESP_OK;
+    }
+
+    // Частичный сброс: выкидываем строки со seq < upto_seq, остальные остаются
+    // с прежними номерами — значит next_seq и gen не трогаем, иначе клиент,
+    // подтвердивший забранный кусок, потеряет ещё не прочитанный хвост.
+    uint32_t lines = 0;
+    for (size_t i = 0; i < s_used; i++)
+        if (s_ring[(s_head + s_cap - s_used + i) % s_cap] == '\n') lines++;
+    uint32_t first_seq = (s_next_seq >= lines) ? (s_next_seq - lines) : 0;
+
+    if (upto_seq >= s_next_seq) {         // подтверждено всё, что есть
+        s_used = 0;
+    } else if (upto_seq > first_seq) {
+        uint32_t skip = upto_seq - first_seq;
+        size_t drop = 0;
+        while (skip > 0 && drop < s_used) {
+            if (s_ring[(s_head + s_cap - s_used + drop) % s_cap] == '\n') skip--;
+            drop++;
+        }
+        s_used -= drop;                   // start выводится из head и used
+    }
     xSemaphoreGive(s_mtx);
     return ESP_OK;
 }
