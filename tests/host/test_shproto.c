@@ -13,6 +13,9 @@ int g_failures = 0;
 void roundtrip_suite(void);
 // #FIELD-6: guard-логика источника времени из test_net_time.c (main/net_time.c).
 void nettime_suite(void);
+// #FW-50: фильтр уровня для UART из test_debug_log_filter.c
+// (main/debug_log_level_filter.h).
+void dbglog_filter_suite(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -164,6 +167,7 @@ int main(void)
     test_buffer_overflow();
     roundtrip_suite();
     nettime_suite();
+    dbglog_filter_suite();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);

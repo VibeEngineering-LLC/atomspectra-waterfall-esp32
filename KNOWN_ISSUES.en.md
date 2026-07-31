@@ -6,6 +6,74 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ## Open
 
+### #FW-50: overnight web UI hang (waterfall + monitoring)
+
+**Status:** open · diagnostics in `v1.2.3` (PSRAM debug-log ring + Mac pull).
+
+**Observation (2026-07-27):** a board on the LAN stopped answering overnight with
+waterfall + monitoring enabled; later the dhcp lease from ap expired. AtomSpectra
+USB was not power-cycled — instrument spectrum preserved. Other clients on the same
+network stayed up → not an AP failure. Do **not** confuse with closed **#FW-13**
+(LittleFS autosave freeze / UART CDC blocking — already fixed).
+
+**Tooling:** Service → Debug log (NVS `dbglog`); 384 KiB PSRAM ring; the dump is pulled by an
+external collector (ours is a launchd job on a Mac every 5 min). Default **off**.
+
+**Flash cost** (ESP-IDF 5.4.2, `esp32s3`, clean `sdkconfig` regenerated from
+`sdkconfig.defaults`, `atomspectra_gw.bin` measured):
+
+| Build | Size | Δ vs base |
+|---|---|---|
+| base (`v1.2.2`) | 1,486,112 B | — |
+| ring without `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG` | 1,494,128 B | **+8,016 B** (≈7.8 KiB) |
+| ring as shipped (`v1.2.3`) | 1,530,848 B | **+44,736 B** (≈43.7 KiB) |
+
+So the ring code itself costs ≈8 KiB; the other ≈36 KiB are the `ESP_LOGD` strings
+across ESP-IDF that the compiler stops stripping once
+`CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y`. Without that flag the ring still builds, but it
+would never capture a DEBUG line — and those are exactly what the #FW-50 hypotheses
+need. The app partition is 3 MiB; 51% stays free after the change. The 384 KiB ring
+itself lives in PSRAM and does not touch flash.
+
+**Ring endpoint contract:**
+
+| Endpoint | CSRF | Why |
+|---|---|---|
+| `GET /api/debug/log/meta` | no | ring counters/settings only (`enabled`, `level`, `next_seq`, `dropped`, `lost_busy`, `gen`, `fill_pct`) — no `fw_version`/uptime/heap; hygiene, not auth (`/api/system` nearby is still open) |
+| `GET /api/debug/log?since=N` | **yes** | the dump exposes SSID, IP and offload URL |
+| `POST /api/debug/log/flush` | **yes** | mutating request |
+| `GET/POST /api/debug/log/config` | POST — yes | same as other settings |
+
+Requiring the header on a `GET` is deliberate: a third-party page open in the same browser
+cannot read the token (same-origin policy), so it cannot pull the log from the user's
+address either. Any external collector should do:
+
+```sh
+TOKEN=$(curl -s http://<board>/api/csrf-token | sed 's/.*"token":"\([^"]*\)".*/\1/')
+curl -s -H "X-CSRF-Token: $TOKEN" "http://<board>/api/debug/log?since=0"
+```
+
+**Levels (`level` setting) — a ladder over tag scope, not just depth:**
+
+| Level | What reaches the ring |
+|---|---|
+| `standard` | `*` = WARN + own tags (`main`, `wf`, `web`, `http_io`, …) at INFO |
+| `detailed` | same + system networking tags at INFO (`httpd*`, `wifi*`, `dhcpc`/`dhcps`, `lwip`) |
+| `debug` | same + DEBUG for the hottest own tags (`usb_cdc`, `spectrum`, `wf_ofl`) |
+
+**What the ring will NOT catch.** The buffer lives in PSRAM and does not survive
+a reboot: after a panic, a WDT reset or power loss the dump is empty and `gen`
+restarts. The tool targets the soft-lock hypothesis specifically — the board is
+alive and answers over HTTP while the UI is dead; for a "panicked and rebooted"
+scenario you need a coredump, not this ring. Lines dropped because the ring
+mutex was busy are counted separately from lines evicted by wraparound and show
+up as `busy=` next to `drop=` (Service → Debug log) and as `lost_busy` in
+`/api/debug/log/meta`: "there were no logs" and "logs were lost at the
+interesting moment" are different outcomes and must not be conflated when
+analysing a hang.
+
+---
+
 ### BUG-AS-08: ⚠ The gateway does not back up the instrument's factory DSP tuning
 
 **Status:** limitation by design + warning (not a gateway-firmware bug).
