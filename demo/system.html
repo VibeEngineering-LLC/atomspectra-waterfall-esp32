@@ -485,7 +485,9 @@ async function refreshSpectrum(){
    document.getElementById("cpu-cur").textContent=r.cpu;
    spark("cpuc",cpu,'#f0c45a');
   }
-  if(r.bins)document.getElementById("dev-ch").textContent=r.bins.length;
+  /* #PERF-1: meta.json отдаёт число каналов полем channels — массив bins уехал
+     в бинарную /api/spectrum, поэтому r.bins.length здесь больше нет. */
+  if(typeof r.channels==="number")document.getElementById("dev-ch").textContent=r.channels;
  }catch(e){}
 }
 
