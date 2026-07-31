@@ -445,6 +445,19 @@ void wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* #PERF-5: дефолтный для STA MIN_MODEM power save даёт джиттер ICMP/HTTP RTT
+     * на idle-плате почти без потерь. Trade-off: выше потребление в STA.
+     * Не критично для загрузки — при ошибке продолжаем на дефолтном PS. */
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_ps(NONE) failed: %s, keeping default PS",
+                 esp_err_to_name(ps_err));
+    } else {
+        wifi_ps_type_t ps = WIFI_PS_NONE;
+        if (esp_wifi_get_ps(&ps) == ESP_OK) {
+            ESP_LOGI(TAG, "WiFi PS mode=%d (0=NONE)", (int)ps);
+        }
+    }
 
     start_mdns();
     s_mode = NET_MODE_STA;
