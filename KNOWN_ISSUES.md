@@ -435,6 +435,22 @@ TCP-мост (порт 8234) поддерживает **одно** одновр�
 Вызов не критичен для загрузки: при ошибке `esp_wifi_set_ps()` пишется
 предупреждение в лог, плата продолжает работу на дефолтном энергосбережении.
 
+### Web UI perf (`v1.2.2`, #PERF-1…4)
+
+Под нагрузкой (браузер + AtomSpectra на ПК) ICMP-soak до платы давал
+p50 ≈ 7.7 ms / **p95 ≈ 86.8 ms** / p99 ≈ 179 ms при 0% потерь — 9000 пакетов,
+30 минут, прошивка `v1.1.2f`. После `v1.2.2`: p50 ≈ 5.1 ms / **p95 ≈ 60.3 ms** /
+p99 ≈ 92.1 ms, RFC 3550 jitter 39.6 → 8.8 ms, потери по-прежнему 0%.
+Единичный максимум при этом вырос (1.03 → 2.15 s, один сэмпл из 9000) — разбор
+и полные данные в [`docs/perf-soak-v1.2.2.md`](docs/perf-soak-v1.2.2.md).
+
+- **#PERF-1** — 2 с snapshot-кэш спектра (`spectrum_http_cache`): N вкладок = 1 render;
+  hot path index = `/api/spectrum` + `/api/spectrum/meta.json`.
+- **#PERF-2** — HEAVY lane (`http_io_gate`, concurrency=1): segment/window/export →
+  503 + `Retry-After`; фронт `heavyFetch()`; autosave пропускается пока HEAVY busy.
+- **#PERF-3** — waterfall `scheduleDraw()` / rAF coalesce (HiDPI без изменений).
+- **#PERF-4** — спека async upload job API: `docs/spectrum-upload-job-api.md` (ещё не код).
+
 ### Максимум каналов — 8192
 
 Прибор Atom Spectra передаёт 8192 канала. Это аппаратное ограничение спектрометра, не прошивки.

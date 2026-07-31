@@ -478,7 +478,7 @@ async function refreshDevice(){
 
 async function refreshSpectrum(){
  try{
-  var r=await(await fetch("/api/spectrum.json")).json();
+  var r=await(await fetch("/api/spectrum/meta.json")).json();
   if(typeof r.cpu==="number"){
    cpu.push(r.cpu); if(cpu.length>80)cpu.shift();
    document.getElementById("cpu-cur").textContent=r.cpu;

@@ -130,10 +130,10 @@ table.saved tr.on td{ background:rgba(110,168,255,.07); }
 
 <div class="row" style="padding:0;gap:8px">
 <button class="btn sm green" onclick="saveSpectrum()" data-i18n-html="btn.save">&#128190; Сохранить</button>
-<button class="btn sm" onclick="location.href='/api/export.xml'" data-i18n="btn.expXml">Export XML</button>
-<button class="btn sm" onclick="location.href='/api/export.csv'" data-i18n="btn.expCsv">Export CSV</button>
-<button class="btn sm" onclick="location.href='/api/export.n42'" data-i18n="btn.expN42">Export N42</button>
-<button class="btn sm" onclick="location.href='/api/export.spe'" data-i18n="btn.expSpe">Export SPE</button>
+<button class="btn sm" onclick="exportSpectrum('/api/export.xml')" data-i18n="btn.expXml">Export XML</button>
+<button class="btn sm" onclick="exportSpectrum('/api/export.csv')" data-i18n="btn.expCsv">Export CSV</button>
+<button class="btn sm" onclick="exportSpectrum('/api/export.n42')" data-i18n="btn.expN42">Export N42</button>
+<button class="btn sm" onclick="exportSpectrum('/api/export.spe')" data-i18n="btn.expSpe">Export SPE</button>
 <button class="btn sm" onclick="clearOverlay()" id="btn-clear-ovl" style="display:none" data-i18n="btn.clearOvl">Снять overlay</button>
 <span id="overlay-label"></span>
 </div>
@@ -221,6 +221,7 @@ var DICT={
   "log.start":"Start sent","log.stop":"Stop sent","log.reset":"Reset sent","log.info":"Info requested",
   "log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
+  "log.exportOk":"Выгружено: %1","log.exportErr":"Экспорт не удался: %1",
   "log.cal":"Calibration: [%1]","log.calErr":"Calibration error: %1","log.calClear":"Calibration cleared",
   "st.real":"Реал.","st.live":"Живое","st.dead":"Мёртв.","st.dose":"МД",
   "err.prefix":"Error: %1"
@@ -266,6 +267,7 @@ var DICT={
   "log.start":"Start sent","log.stop":"Stop sent","log.reset":"Reset sent","log.info":"Info requested",
   "log.sent":"Sent: %1","log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
+  "log.exportOk":"Exported: %1","log.exportErr":"Export failed: %1",
   "log.cal":"Calibration: [%1]","log.calErr":"Calibration error: %1","log.calClear":"Calibration cleared",
   "st.real":"Real","st.live":"Live","st.dead":"Dead","st.dose":"DR",
   "err.prefix":"Error: %1"
@@ -348,9 +350,18 @@ function clearCanvas(){
 function setDeadBanner(on){var b=document.getElementById("dead-banner");if(!b)return;if(on){b.innerHTML=tr("dead.warn");b.style.display="";}else{b.style.display="none";}}  /* #FW-43: баннер «определился, но не запитан» */
 async function update(){
  try{
-  var r=await fetch("/api/spectrum.json");
-  if(!r.ok){setDeadBanner(r.headers.get("X-Spectrometer-Dead")==="1");if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд. #FW-43: дед-флаг из заголовка X-Spectrometer-Dead — баннер работает даже когда спектра нет (404) */
-  var d=await r.json();
+  /* #PERF-1: binary bins (32 KiB) + meta JSON — shared 2s server cache */
+  var rb=await fetch("/api/spectrum");
+  var rm=await fetch("/api/spectrum/meta.json");
+  if(!rb.ok||!rm.ok){
+   var deadHdr=(rm.headers&&rm.headers.get("X-Spectrometer-Dead"))||(rb.headers&&rb.headers.get("X-Spectrometer-Dead"));
+   setDeadBanner(deadHdr==="1");
+   if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}
+   return;
+  }
+  var ab=await rb.arrayBuffer();
+  var d=await rm.json();
+  d.bins=new Uint32Array(ab);
   failStreak=0;  /* #UI-2: успешный кадр — сброс счётчика подряд-неудач */
   if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib);nucBtnEnable(true);} else if(!calib){nucBtnEnable(false);}
   if(d.serial)document.getElementById("device-chip").textContent=d.serial;
@@ -572,6 +583,11 @@ async function saveSpectrum(){var r=await(await post("/api/save")).json();
  if(r.ok){lg(tfmt("saved.savedAs",r.index));loadSaved();loadFlashInfo();return}
  var k=r.err==="novalid"?"saved.saveErrNoData":r.err==="nospace"?"saved.saveErrNoSpace":"saved.saveErr";
  lg(tr(k));}
+/* #PERF-2: экспорт идёт через heavyFetch — при занятых воротах ждём и повторяем,
+   а не уводим вкладку на 503-JSON, как делал location.href. */
+function exportSpectrum(url){
+ window.heavyDownload(url).then(function(name){lg(tfmt("log.exportOk",name));})
+  .catch(function(e){lg(tfmt("log.exportErr",String(e && e.message||e)));});}
 async function requestInfo(){calibEditing=false;await post("/api/command",{body:"-inf"});await post("/api/command",{body:"-cal"});lg(tr("log.info"));setTimeout(update,800);setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}  /* #UI-1: быстро подхватить ответы -inf/-cal */
 async function rebootDevice(){if(!confirm(tr("confirm.rebootDev")))return;await post("/api/reboot-device");lg(tr("log.rebootDev"))}
 async function rebootEsp(){if(!confirm(tr("confirm.rebootEsp")))return;await post("/api/reboot-esp");document.getElementById("status").textContent=tr("status.rebooting")}
