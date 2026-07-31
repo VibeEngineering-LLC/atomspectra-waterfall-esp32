@@ -205,11 +205,14 @@ uint32_t spectrum_http_cache_render_count(void)
     return s_render_count;
 }
 
-static void set_render_hdr(httpd_req_t *req, uint32_t render_count)
+// esp_http_server хранит указатель, а не копию: значение обязано дожить до
+// httpd_resp_send(). Поэтому буфер принадлежит кадру отправителя, а не этой
+// функции и не snapshot_begin() — оба возвращаются раньше отправки.
+static void set_render_hdr(httpd_req_t *req, uint32_t render_count,
+                           char *hdr, size_t hdr_size)
 {
-    char h[16];
-    snprintf(h, sizeof(h), "%" PRIu32, render_count);
-    httpd_resp_set_hdr(req, "X-Spectrum-Render-Count", h);
+    snprintf(hdr, hdr_size, "%" PRIu32, render_count);
+    httpd_resp_set_hdr(req, "X-Spectrum-Render-Count", hdr);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
 
@@ -220,7 +223,8 @@ typedef enum { PAYLOAD_JSON, PAYLOAD_META, PAYLOAD_BINS } payload_kind_t;
 // передачи (до 32 KiB бинов) и блокирует остальные запросы к спектру.
 // s_readers не даёт пересборке освободить буферы, пока их отправляют.
 static void snapshot_begin(httpd_req_t *req, payload_kind_t kind,
-                           const char **payload, size_t *len)
+                           const char **payload, size_t *len,
+                           char *hdr, size_t hdr_size)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
     switch (kind) {
@@ -231,7 +235,7 @@ static void snapshot_begin(httpd_req_t *req, payload_kind_t kind,
         *len = SPECTRUM_CHANNELS * sizeof(uint32_t);
         break;
     }
-    set_render_hdr(req, s_render_count);
+    set_render_hdr(req, s_render_count, hdr, hdr_size);
     s_readers++;
     xSemaphoreGive(s_mtx);
 }
@@ -253,7 +257,8 @@ esp_err_t spectrum_http_send_json(httpd_req_t *req)
     }
     const char *payload = NULL;
     size_t len = 0;
-    snapshot_begin(req, PAYLOAD_JSON, &payload, &len);
+    char hdr[16];   // живёт до конца функции — дольше, чем httpd_resp_send()
+    snapshot_begin(req, PAYLOAD_JSON, &payload, &len, hdr, sizeof(hdr));
     httpd_resp_set_type(req, "application/json");
     esp_err_t e = httpd_resp_send(req, payload, len);
     snapshot_end();
@@ -263,12 +268,17 @@ esp_err_t spectrum_http_send_json(httpd_req_t *req)
 esp_err_t spectrum_http_send_bins(httpd_req_t *req)
 {
     if (!spectrum_http_cache_ensure()) {
+        // Тот же заголовок, что у .json и meta.json: три ручки на одних данных
+        // не должны отличаться диагностикой 404.
+        httpd_resp_set_hdr(req, "X-Spectrometer-Dead",
+                           usb_host_cdc_spectrometer_dead() ? "1" : "0");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No spectrum data yet");
         return ESP_FAIL;
     }
     const char *payload = NULL;
     size_t len = 0;
-    snapshot_begin(req, PAYLOAD_BINS, &payload, &len);
+    char hdr[16];   // живёт до конца функции — дольше, чем httpd_resp_send()
+    snapshot_begin(req, PAYLOAD_BINS, &payload, &len, hdr, sizeof(hdr));
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline");
     esp_err_t e = httpd_resp_send(req, payload, len);
@@ -286,7 +296,8 @@ esp_err_t spectrum_http_send_meta(httpd_req_t *req)
     }
     const char *payload = NULL;
     size_t len = 0;
-    snapshot_begin(req, PAYLOAD_META, &payload, &len);
+    char hdr[16];   // живёт до конца функции — дольше, чем httpd_resp_send()
+    snapshot_begin(req, PAYLOAD_META, &payload, &len, hdr, sizeof(hdr));
     httpd_resp_set_type(req, "application/json");
     esp_err_t e = httpd_resp_send(req, payload, len);
     snapshot_end();
