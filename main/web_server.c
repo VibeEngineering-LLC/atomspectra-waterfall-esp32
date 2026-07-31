@@ -8,6 +8,7 @@
 #include "monitor.h"        // #MON-1: серия CPS-мониторинга (/api/monitor/series)
 #include "spectrum_http_cache.h"  // #PERF-1: 2s snapshot cache + meta/binary
 #include "http_io_gate.h"         // #PERF-2: HEAVY lane gate
+#include "debug_log_ring.h"
 #include "esp_heap_caps.h"  // #MON-1: PSRAM-буфер чанка серии
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -257,6 +258,122 @@ static esp_err_t handle_devlog(httpd_req_t *req)
     httpd_resp_sendstr(req, buf);
     free(buf);
     return ESP_OK;
+}
+
+// #FW-50: GET /api/debug/log/meta — JSON status of PSRAM log ring (no CSRF).
+static esp_err_t handle_debug_log_meta(httpd_req_t *req)
+{
+    char buf[512];
+    debug_log_ring_meta_json(buf, sizeof(buf));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, buf);
+}
+
+// #FW-50: GET /api/debug/log?since=N — text/plain dump.
+// Требует X-CSRF-Token, хотя это GET: в дампе лога видно SSID, IP и URL выгрузки,
+// а без заголовка любая открытая в браузере сторонняя страница может дёрнуть
+// эндпоинт с адреса пользователя. Токен читается только с самой платы
+// (GET /api/csrf-token), поэтому drive-by странице он недоступен.
+static esp_err_t handle_debug_log_get(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    uint32_t since = 0;
+    char q[48], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK)
+        since = strtoul(v, NULL, 10);
+    return debug_log_ring_http_dump(req, since);
+}
+
+// #FW-50: POST /api/debug/log/flush — мутирующий запрос, CSRF как у остальных.
+// Optional JSON body: {"upto_seq":N,"gen":G}
+static esp_err_t handle_debug_log_flush(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    uint32_t upto = 0, gen = 0;
+    int total = req->content_len;
+    if (total > 0 && total < 256) {
+        char body[256];
+        int r = httpd_req_recv(req, body, total);
+        if (r > 0) {
+            body[r < 255 ? r : 255] = '\0';
+            cJSON *root = cJSON_Parse(body);
+            if (root) {
+                cJSON *u = cJSON_GetObjectItem(root, "upto_seq");
+                cJSON *g = cJSON_GetObjectItem(root, "gen");
+                if (cJSON_IsNumber(u)) upto = (uint32_t)u->valuedouble;
+                if (cJSON_IsNumber(g)) gen = (uint32_t)g->valuedouble;
+                cJSON_Delete(root);
+            }
+        }
+    }
+    esp_err_t e = debug_log_ring_flush(upto, gen);
+    if (e == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"gen_mismatch\"}");
+    }
+    if (e != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "flush failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    char buf[96];
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"gen\":%lu}",
+             (unsigned long)debug_log_ring_gen());
+    return httpd_resp_sendstr(req, buf);
+}
+
+// #FW-50: GET/POST /api/debug/log/config — settings. POST uses CSRF like other mutating UI.
+static esp_err_t handle_debug_log_config_get(httpd_req_t *req)
+{
+    char buf[512];
+    debug_log_ring_meta_json(buf, sizeof(buf));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, buf);
+}
+
+static esp_err_t handle_debug_log_config_set(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    int total = req->content_len;
+    if (total <= 0 || total >= 256) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body");
+        return ESP_FAIL;
+    }
+    char body[256];
+    int r = httpd_req_recv(req, body, total);
+    if (r <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv");
+        return ESP_FAIL;
+    }
+    body[r < 255 ? r : 255] = '\0';
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
+        return ESP_FAIL;
+    }
+    cJSON *en = cJSON_GetObjectItem(root, "enabled");
+    cJSON *lv = cJSON_GetObjectItem(root, "level");
+    bool enabled = debug_log_ring_enabled();
+    dbglog_level_t level = debug_log_ring_level();
+    if (cJSON_IsBool(en)) enabled = cJSON_IsTrue(en);
+    if (cJSON_IsString(lv) && lv->valuestring) {
+        if (!strcmp(lv->valuestring, "debug")) level = DBGLOG_LEVEL_DEBUG;
+        else if (!strcmp(lv->valuestring, "detailed")) level = DBGLOG_LEVEL_DETAILED;
+        else level = DBGLOG_LEVEL_STANDARD;
+    }
+    cJSON_Delete(root);
+    esp_err_t e = debug_log_ring_set_config(enabled, level);
+    if (e != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"alloc_or_nvs\"}");
+    }
+    char buf[512];
+    debug_log_ring_meta_json(buf, sizeof(buf));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, buf);
 }
 
 // #MON-1: серия CPS-мониторинга с платы. GET /api/monitor/series?since=<seq>
@@ -1734,6 +1851,11 @@ void web_server_init(void)
         {"/api/spectrum/meta.json",      HTTP_GET,  handle_spectrum_meta,    NULL},  // #PERF-1
         {"/api/command",                 HTTP_POST, handle_command,          NULL},
         {"/api/devlog",                  HTTP_GET,  handle_devlog,           NULL},
+        {"/api/debug/log/meta",          HTTP_GET,  handle_debug_log_meta,   NULL},  // #FW-50
+        {"/api/debug/log",               HTTP_GET,  handle_debug_log_get,    NULL},  // #FW-50 CSRF
+        {"/api/debug/log/flush",         HTTP_POST, handle_debug_log_flush,  NULL},  // #FW-50 CSRF
+        {"/api/debug/log/config",        HTTP_GET,  handle_debug_log_config_get, NULL},
+        {"/api/debug/log/config",        HTTP_POST, handle_debug_log_config_set, NULL},  // CSRF
         {"/api/monitor/series",          HTTP_GET,  handle_monitor_series,   NULL},  // #MON-1
         {"/api/reset",                   HTTP_POST, handle_reset,            NULL},
         {"/api/boot-config",             HTTP_GET,  handle_boot_config_get,  NULL},

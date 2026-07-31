@@ -382,6 +382,7 @@ static void seg_finalize(void)
 // (под s_fs_lock)
 static bool seg_open_new(void)
 {
+    int64_t t0 = esp_timer_get_time();
     char p[64];
     seg_path(p, sizeof(p), s_seg_next);
     // #FW-14: "wb" — шапка после открытия не читается и не патчится
@@ -438,7 +439,8 @@ static bool seg_open_new(void)
     s_seg_rows      = 0;
     s_seg_opened_at = now;
     s_seg_next++;
-    ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf opened", s_seg_cur);
+    ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf opened in %lld us", s_seg_cur,
+             (long long)(esp_timer_get_time() - t0));
     return true;
 }
 

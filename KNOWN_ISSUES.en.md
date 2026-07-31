@@ -6,6 +6,39 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ## Open
 
+### #FW-50: overnight web UI hang (waterfall + monitoring)
+
+**Status:** open · diagnostics in `v1.2.2ffl` (PSRAM debug-log ring + Mac pull).
+
+**Observation (2026-07-27):** board `.185` stopped answering on LAN around **05:42 MSK** with
+waterfall + monitoring enabled; MikroTik DHCP later `deassigned` on lease expiry. AtomSpectra
+USB was not power-cycled — instrument spectrum preserved. CAP/SSID and other VLAN clients OK
+→ not AP failure. Do **not** confuse with closed **#FW-13** (LittleFS autosave freeze / UART
+CDC blocking — already fixed).
+
+**Tooling:** Service → Debug log (NVS `dbglog`); 384 KiB PSRAM ring; the dump is pulled by an
+external collector (ours is a launchd job on a Mac every 5 min). Default **off**.
+
+**Ring endpoint contract:**
+
+| Endpoint | CSRF | Why |
+|---|---|---|
+| `GET /api/debug/log/meta` | no | counters only, no content |
+| `GET /api/debug/log?since=N` | **yes** | the dump exposes SSID, IP and offload URL |
+| `POST /api/debug/log/flush` | **yes** | mutating request |
+| `GET/POST /api/debug/log/config` | POST — yes | same as other settings |
+
+Requiring the header on a `GET` is deliberate: a third-party page open in the same browser
+cannot read the token (same-origin policy), so it cannot pull the log from the user's
+address either. Any external collector should do:
+
+```sh
+TOKEN=$(curl -s http://<board>/api/csrf-token | sed 's/.*"token":"\([^"]*\)".*/\1/')
+curl -s -H "X-CSRF-Token: $TOKEN" "http://<board>/api/debug/log?since=0"
+```
+
+---
+
 ### BUG-AS-08: ⚠ The gateway does not back up the instrument's factory DSP tuning
 
 **Status:** limitation by design + warning (not a gateway-firmware bug).
