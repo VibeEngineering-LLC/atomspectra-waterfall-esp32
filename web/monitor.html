@@ -316,7 +316,7 @@ function intervalSec(){ var v=parseInt(document.getElementById("interval").value
 // идёт отдельно (syncSeries) — троттлинг фоновой вкладки этому не вредит. ---
 async function livePoll(){
  var r;
- try{ r=await(await fetch("/api/spectrum.json",{cache:"no-store"})).json(); }
+ try{ r=await(await fetch("/api/spectrum/meta.json",{cache:"no-store"})).json(); }
  catch(e){
   document.getElementById("dev-dot").classList.add("off");
   document.getElementById("dev-stat").textContent=t("dev.chipOff");

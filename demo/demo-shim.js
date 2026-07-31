@@ -67,6 +67,25 @@
     return SPEC;
   }
 
+  /* #PERF-1: главная страница берёт спектр двумя запросами — бинарные бины
+   * (/api/spectrum, uint32 LE) и метаданные без массива (/api/spectrum/meta.json,
+   * число каналов полем channels). Без этих двух маршрутов запросы попадали в
+   * общий `{ok:true}`: статус 200 проходил guard `!r.ok`, а new Uint32Array на
+   * 11 байтах бросал RangeError, и демо не рисовало спектр вовсе. */
+  function spectrumBinsBuffer() {
+    var bins = spectrumJSON().bins;
+    var u32 = new Uint32Array(bins.length);
+    for (var i = 0; i < bins.length; i++) u32[i] = bins[i] >>> 0;
+    return u32.buffer;
+  }
+  function spectrumMetaJSON() {
+    var s = spectrumJSON(), m = {};
+    for (var k in s) if (k !== "bins") m[k] = s[k];
+    m.channels = CH;
+    m.dead = 0;
+    return m;
+  }
+
   function uptimeSec() {
     var now = (window.performance && performance.now) ? performance.now() : startMs;
     return Math.floor((now - startMs) / 1000) + 137;
@@ -118,6 +137,8 @@
     var method = (init && init.method) ? init.method.toUpperCase() : "GET";
     if (path === "/api/csrf-token") return jsonResp({ token: "demo" });
     if (path === "/api/spectrum.json") return jsonResp(spectrumJSON());
+    if (path === "/api/spectrum") return binResp(spectrumBinsBuffer());
+    if (path === "/api/spectrum/meta.json") return jsonResp(spectrumMetaJSON());
     if (path === "/api/system") return jsonResp(systemJSON());
     if (path === "/api/device") return jsonResp(deviceJSON());
     if (path === "/api/list") return jsonResp({ spectra: [] });

@@ -435,6 +435,26 @@ battery-powered scenario the mode should be reverted to `MIN_MODEM`.
 The call is not boot-critical: if `esp_wifi_set_ps()` fails, a warning is logged
 and the board keeps running with the default power-save mode.
 
+### Web UI perf (`v1.2.2`, #PERF-1…4)
+
+Under load (browser + AtomSpectra on a PC) an ICMP soak against the board showed
+p50 ≈ 7.7 ms / **p95 ≈ 86.8 ms** / p99 ≈ 179 ms at 0% loss — 9000 packets,
+30 minutes, firmware `v1.1.2f`. With `v1.2.2`: p50 ≈ 5.1 ms / **p95 ≈ 60.3 ms** /
+p99 ≈ 92.1 ms, RFC 3550 jitter 39.6 → 8.8 ms, loss still 0%.
+The single worst sample did grow (1.03 → 2.15 s, one sample out of 9000) — full
+data and analysis in [`docs/perf1_report.md`](docs/perf1_report.md).
+
+Both runs were taken on builds that already have modem sleep disabled
+(`WIFI_PS_NONE`, #PERF-5); `v1.1.2f` is a private "base + #PERF-5" build and has
+no tag in the repository. #PERF-5 ships as a separate change, so on this branch
+**in isolation** modem sleep stays enabled by default and the absolute numbers
+above are not reproducible on it. Treat the delta as reproducible, not the numbers.
+
+- **#PERF-1** — 2 s spectrum snapshot cache; index hot path = `/api/spectrum` + `/api/spectrum/meta.json`.
+- **#PERF-2** — HEAVY lane (`http_io_gate`, concurrency=1): 503 + `Retry-After`; `heavyFetch()`; autosave skips while busy.
+- **#PERF-3** — waterfall `scheduleDraw()` / rAF coalesce (HiDPI unchanged).
+- **#PERF-4** — async upload job API spec only: `docs/spectrum-upload-job-api.md`.
+
 ### Maximum channels — 8192
 
 The Atom Spectra instrument transmits 8192 channels. This is a hardware limitation of the spectrometer, not the firmware.

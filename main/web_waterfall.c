@@ -3,6 +3,7 @@
 #include "web_waterfall.h"
 #include "web_util.h"
 #include "wf_offload.h"   // #REC-11-A2: конфиг/статус автономной выгрузки
+#include "http_io_gate.h" // #PERF-2: HEAVY lane for segment/window/export
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -21,6 +22,14 @@ static const char *TAG = "wf_web";
 
 #define WF_WS_MAX        4
 #define WS_INFLIGHT_MAX  8   // P2-3: лимит несброшенных кадров на клиента
+// #PERF-2: сколько ждать HEAVY-слот на /api/waterfall/segment, прежде чем отдать
+// 503. Единственный второй держатель слота — фоновая flash-запись автосейва
+// (десяток миллисекунд), поэтому запаса хватает с большим отрывом. Верхняя
+// граница выбрана НИЖЕ сокетных таймаутов httpd (recv/send_wait_timeout = 3 с):
+// httpd здесь однопоточный, и длинное ожидание в обработчике выбивало бы живые
+// соединения по LRU. Ждать дольше смысла нет и по другой причине: сегменты на
+// flash пишет wf_fs_task под своим s_fs_lock, ворот она не касается вовсе.
+#define WF_SEGMENT_GATE_WAIT_MS 250
 
 static httpd_handle_t s_server;
 static int            s_ws_fds[WF_WS_MAX];
@@ -219,6 +228,7 @@ static bool wf_window_emit(void *ctx, const uint16_t *row, size_t bytes)
 
 static esp_err_t h_window(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     /* Потоковая отдача всего кольца (до 256 строк) через единственный 16-КБ
        bounce-буфер: НЕ держим второй 4-МБ буфер в PSRAM рядом с ring → нет
        OOM/HTTP 500. rows берём снимком ring_count; ring_count монотонно растёт
@@ -226,7 +236,11 @@ static esp_err_t h_window(httpd_req_t *req)
     wf_status_t s;
     spectrogram_get_status(&s);
     uint16_t *bounce = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);
-    if (!bounce) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return ESP_FAIL; }
+    if (!bounce) {
+        http_io_gate_leave();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
 
     uint32_t rows = s.ring_count;
     uint32_t first = (rows <= s.total_rows) ? (s.total_rows - rows) : 0;
@@ -240,11 +254,14 @@ static esp_err_t h_window(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/octet-stream");
     if (httpd_resp_send_chunk(req, (char *)pre, 20) != ESP_OK) {
-        heap_caps_free(bounce); return ESP_FAIL;
+        heap_caps_free(bounce);
+        http_io_gate_leave();
+        return ESP_FAIL;
     }
     spectrogram_stream_window(bounce, rows, NULL, wf_window_emit, req);
     httpd_resp_send_chunk(req, NULL, 0);
     heap_caps_free(bounce);
+    http_io_gate_leave();
     return ESP_OK;
 }
 
@@ -320,9 +337,11 @@ static bool aswf_row_emit(void *vctx, const uint16_t *row, size_t bytes)
    (stride 16410) → контроль целостности доступен и на выгрузке кольца. Самоописываемо (row_fields). */
 static esp_err_t h_export_aswf(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     wf_status_t s;
     spectrogram_get_status(&s);
     if (s.ring_count == 0) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no waterfall data");
         return ESP_FAIL;
     }
@@ -338,6 +357,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
         if (hbuf) free(hbuf);
         if (tail) free(tail);
         if (sp)   free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
         return ESP_FAIL;
     }
@@ -427,6 +447,7 @@ static esp_err_t h_export_aswf(httpd_req_t *req)
     free(hbuf);
     free(tail);
     if (sp) free(sp);
+    http_io_gate_leave();
     return ESP_OK;
 }
 
@@ -494,9 +515,11 @@ static bool n42_row_emit(void *vctx, const uint16_t *row, size_t bytes)
    поэтому экспорт работает и при выключенном persist (Flash). */
 static esp_err_t h_export_n42(httpd_req_t *req)
 {
+    if (!http_io_gate_enter_or_503(req)) return ESP_OK;
     wf_status_t s;
     spectrogram_get_status(&s);
     if (s.ring_count == 0) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no waterfall data");
         return ESP_FAIL;
     }
@@ -511,6 +534,7 @@ static esp_err_t h_export_n42(httpd_req_t *req)
         if (row) heap_caps_free(row);
         if (acc) free(acc);
         if (sp) free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
         return ESP_FAIL;
     }
@@ -587,6 +611,7 @@ static esp_err_t h_export_n42(httpd_req_t *req)
     free(acc);
     if (durs) free(durs);   /* #FW-5 */
     if (sp) free(sp);
+    http_io_gate_leave();
     return ESP_OK;
 }
 
@@ -658,13 +683,21 @@ static esp_err_t h_segments(httpd_req_t *req)
    при отдаче (удаление сегментов — только кольцо keep-last или фаза A2-аплоадер). */
 static esp_err_t h_segment(httpd_req_t *req)
 {
+    /* #PERF-2: у этого эндпоинта есть клиенты, которые на 503 не ретраят в том
+       же проходе (scripts/wf_pull_client.py, внешний wf-recorder), поэтому
+       короткое ожидание слота предпочтительнее немедленного отказа: сегмент
+       при этом не удаляется и заберётся следующим проходом. Ожидание намеренно
+       короткое — см. WF_SEGMENT_GATE_WAIT_MS. */
+    if (!http_io_gate_enter_wait_or_503(req, WF_SEGMENT_GATE_WAIT_MS)) return ESP_OK;
     char query[96], name[40];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "name required");
         return ESP_FAIL;
     }
     if (!wf_seg_name_ok(name)) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad name");
         return ESP_FAIL;
     }
@@ -672,10 +705,19 @@ static esp_err_t h_segment(httpd_req_t *req)
     // %.90s/%.30s: доказуемая граница для -Wformat-truncation (name[40] валидно ≤24).
     snprintf(path, sizeof(path), "%.90s/%.30s", spectrogram_seg_dir(), name);
     FILE *f = fopen(path, "rb");      // read-only: отдаём, не трогая файл
-    if (!f) { httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found"); return ESP_FAIL; }
+    if (!f) {
+        http_io_gate_leave();
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
+        return ESP_FAIL;
+    }
 
     char *bufp = malloc(4096);
-    if (!bufp) { fclose(f); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return ESP_FAIL; }
+    if (!bufp) {
+        fclose(f);
+        http_io_gate_leave();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
 
     char disp[80];
     snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", name);
@@ -684,11 +726,17 @@ static esp_err_t h_segment(httpd_req_t *req)
 
     size_t rd;
     while ((rd = fread(bufp, 1, 4096, f)) > 0) {
-        if (httpd_resp_send_chunk(req, bufp, rd) != ESP_OK) { free(bufp); fclose(f); return ESP_FAIL; }
+        if (httpd_resp_send_chunk(req, bufp, rd) != ESP_OK) {
+            free(bufp);
+            fclose(f);
+            http_io_gate_leave();
+            return ESP_FAIL;
+        }
     }
     free(bufp);
     fclose(f);
     httpd_resp_send_chunk(req, NULL, 0);
+    http_io_gate_leave();
     return ESP_OK;
 }
 
