@@ -1,6 +1,7 @@
 #include "debug_log_ring.h"
 
 #include "atomspectra.h"
+#include "debug_log_level_filter.h"
 #include "http_io_gate.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -154,31 +155,9 @@ static int hooked_vprintf(const char *fmt, va_list args)
     if (s_enabled && n > 0)
         ring_append(buf, (size_t)n);
 
-    // UART: only ≤ INFO. Detect level letter after "TAG: " is hard; ESP format is
-    // "E (ts) TAG: msg". First non-space char is often E/W/I/D.
-    // При CONFIG_LOG_COLORS=y строка начинается с CSI ("\033[0;32m"), и без
-    // пропуска escape-последовательности первым непробельным символом окажется
-    // \033 — уровень не определится и DEBUG уедет в UART.
-    bool to_uart = true;
-    for (int i = 0; i < n; i++) {
-        char c = buf[i];
-        if (c == ' ' || c == '\t') continue;
-        if (c == '\033') {
-            int j = i + 1;
-            if (j < n && buf[j] == '[') {
-                j++;
-                while (j < n && (unsigned char)buf[j] >= 0x30
-                             && (unsigned char)buf[j] <= 0x3F) j++;  // параметры
-                while (j < n && (unsigned char)buf[j] >= 0x20
-                             && (unsigned char)buf[j] <= 0x2F) j++;  // intermediate
-                if (j < n) j++;                                      // final byte
-            }
-            i = j - 1;  // компенсируем i++ в заголовке цикла
-            continue;
-        }
-        if (c == 'D' || c == 'V') to_uart = false;
-        break;
-    }
+    // UART: only ≤ INFO — правило и разбор CSI живут в debug_log_level_filter.h,
+    // который покрыт host-тестом tests/host/test_debug_log_filter.c.
+    bool to_uart = dbglog_line_goes_to_uart(buf, n);
 
     int ret = 0;
     if (to_uart && s_prev_vprintf)
