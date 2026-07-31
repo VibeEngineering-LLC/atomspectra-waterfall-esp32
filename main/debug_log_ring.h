@@ -22,6 +22,9 @@ esp_err_t debug_log_ring_set_config(bool enabled, dbglog_level_t level);
 
 uint32_t debug_log_ring_next_seq(void);
 uint32_t debug_log_ring_dropped(void);
+// Строки, отброшенные из-за занятого мьютекса кольца (не путать с вытеснением
+// по кругу): ring_append не ждёт слот, чтобы не паниковать в ISR/critical.
+uint32_t debug_log_ring_lost_busy(void);
 uint32_t debug_log_ring_gen(void);
 int      debug_log_ring_fill_pct(void);
 

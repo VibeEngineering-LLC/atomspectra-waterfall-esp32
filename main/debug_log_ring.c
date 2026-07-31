@@ -30,7 +30,8 @@ static size_t             s_cap;
 static size_t             s_head;      // next write offset
 static size_t             s_used;
 static uint32_t           s_next_seq;  // monotonic line sequence
-static uint32_t           s_dropped;
+static uint32_t           s_dropped;    // вытеснено кольцом (место кончилось)
+static uint32_t           s_lost_busy;  // отброшено: мьютекс был занят
 static uint32_t           s_gen;
 static bool               s_enabled;
 static dbglog_level_t     s_level;
@@ -122,7 +123,17 @@ static void ring_append_locked(const char *data, size_t len)
 static void ring_append(const char *data, size_t len)
 {
     if (!s_mtx) return;
-    if (xSemaphoreTake(s_mtx, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    // Таймаут строго 0: ESP_LOGx может прийти из региона с подавленным
+    // планировщиком, а xQueueSemaphoreTake содержит configASSERT, запрещающий
+    // там блокирующее ожидание (FreeRTOS queue.c, «Cannot block if the
+    // scheduler is suspended»). Инструмент для ловли зависаний не должен сам
+    // быть источником паники. Цена — строки, потерянные при занятом мьютексе;
+    // они считаются отдельно от вытеснения по кольцу, иначе «логов не было» не
+    // отличить от «потеряны в интересный момент».
+    if (xSemaphoreTake(s_mtx, 0) != pdTRUE) {
+        s_lost_busy++;
+        return;
+    }
     // s_ring мог быть уже освобождён: free_ring() успел отработать и отдать
     // мьютекс до нашего входа. Проверки s_enabled в hooked_vprintf для этого
     // недостаточно — она пройдена раньше, чем начался teardown.
@@ -329,6 +340,7 @@ bool debug_log_ring_enabled(void) { return s_enabled; }
 dbglog_level_t debug_log_ring_level(void) { return s_level; }
 uint32_t debug_log_ring_next_seq(void) { return s_next_seq; }
 uint32_t debug_log_ring_dropped(void) { return s_dropped; }
+uint32_t debug_log_ring_lost_busy(void) { return s_lost_busy; }
 uint32_t debug_log_ring_gen(void) { return s_gen; }
 
 int debug_log_ring_fill_pct(void)
@@ -446,10 +458,12 @@ int debug_log_ring_meta_json(char *buf, size_t bufsz)
         s_level == DBGLOG_LEVEL_DETAILED ? "detailed" : "standard";
     return snprintf(buf, bufsz,
         "{\"enabled\":%s,\"level\":\"%s\",\"next_seq\":%lu,\"dropped\":%lu,"
+        "\"lost_busy\":%lu,"
         "\"gen\":%lu,\"fill_pct\":%d,\"fw_version\":\"%s\","
         "\"uptime_s\":%llu,\"free_heap\":%lu,\"min_free_heap\":%lu}",
         s_enabled ? "true" : "false", lv,
         (unsigned long)s_next_seq, (unsigned long)s_dropped,
+        (unsigned long)s_lost_busy,
         (unsigned long)s_gen, debug_log_ring_fill_pct(),
         app ? app->version : "?",
         (unsigned long long)(esp_timer_get_time() / 1000000ULL),

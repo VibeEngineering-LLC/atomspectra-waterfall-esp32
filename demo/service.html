@@ -319,7 +319,10 @@ async function loadDbglog(){
   var lv=r.level||"standard";
   document.getElementById("dbglog-lv").value=lv;
   var s=document.getElementById("dbglog-status");
-  if(s) s.textContent="fill="+r.fill_pct+"% drop="+r.dropped+" gen="+r.gen;
+  // busy — строки, потерянные на занятом мьютексе кольца; отдельно от drop
+  // (вытеснение по кругу), иначе не отличить «лога не было» от «потерян».
+  if(s) s.textContent="fill="+r.fill_pct+"% drop="+r.dropped
+   +(r.lost_busy?" busy="+r.lost_busy:"")+" gen="+r.gen;
  }catch(e){}
 }
 async function saveDbglog(){
