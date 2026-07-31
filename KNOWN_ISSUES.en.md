@@ -53,6 +53,25 @@ TOKEN=$(curl -s http://<board>/api/csrf-token | sed 's/.*"token":"\([^"]*\)".*/\
 curl -s -H "X-CSRF-Token: $TOKEN" "http://<board>/api/debug/log?since=0"
 ```
 
+**Levels (`level` setting) — a ladder over tag scope, not just depth:**
+
+| Level | What reaches the ring |
+|---|---|
+| `standard` | `*` = WARN + own tags (`main`, `wf`, `web`, `http_io`, …) at INFO |
+| `detailed` | same + system networking tags at INFO (`httpd*`, `wifi*`, `dhcpc`/`dhcps`, `lwip`) |
+| `debug` | same + DEBUG for the hottest own tags (`usb_cdc`, `spectrum`, `wf_ofl`) |
+
+**What the ring will NOT catch.** The buffer lives in PSRAM and does not survive
+a reboot: after a panic, a WDT reset or power loss the dump is empty and `gen`
+restarts. The tool targets the soft-lock hypothesis specifically — the board is
+alive and answers over HTTP while the UI is dead; for a "panicked and rebooted"
+scenario you need a coredump, not this ring. Lines dropped because the ring
+mutex was busy are counted separately from lines evicted by wraparound and show
+up as `busy=` next to `drop=` (Service → Debug log) and as `lost_busy` in
+`/api/debug/log/meta`: "there were no logs" and "logs were lost at the
+interesting moment" are different outcomes and must not be conflated when
+analysing a hang.
+
 ---
 
 ### BUG-AS-08: ⚠ The gateway does not back up the instrument's factory DSP tuning
