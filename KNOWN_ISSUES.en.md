@@ -442,7 +442,13 @@ p50 ≈ 7.7 ms / **p95 ≈ 86.8 ms** / p99 ≈ 179 ms at 0% loss — 9000 packet
 30 minutes, firmware `v1.1.2f`. With `v1.2.2`: p50 ≈ 5.1 ms / **p95 ≈ 60.3 ms** /
 p99 ≈ 92.1 ms, RFC 3550 jitter 39.6 → 8.8 ms, loss still 0%.
 The single worst sample did grow (1.03 → 2.15 s, one sample out of 9000) — full
-data and analysis in [`docs/perf-soak-v1.2.2.md`](docs/perf-soak-v1.2.2.md).
+data and analysis in [`docs/perf1_report.md`](docs/perf1_report.md).
+
+Both runs were taken on builds that already have modem sleep disabled
+(`WIFI_PS_NONE`, #PERF-5); `v1.1.2f` is a private "base + #PERF-5" build and has
+no tag in the repository. #PERF-5 ships as a separate change, so on this branch
+**in isolation** modem sleep stays enabled by default and the absolute numbers
+above are not reproducible on it. Treat the delta as reproducible, not the numbers.
 
 - **#PERF-1** — 2 s spectrum snapshot cache; index hot path = `/api/spectrum` + `/api/spectrum/meta.json`.
 - **#PERF-2** — HEAVY lane (`http_io_gate`, concurrency=1): 503 + `Retry-After`; `heavyFetch()`; autosave skips while busy.
