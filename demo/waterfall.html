@@ -1243,19 +1243,16 @@ document.getElementById("bIv").onclick=applyInterval;
 document.getElementById("iv").onchange=applyInterval;
 document.getElementById("persist").onchange=async function(){
  await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
+/* #PERF-2: зеркало web/waterfall.html — через heavyDownload (r.ok, имя из
+   Content-Disposition, revoke object URL). В самом демо эти два обработчика
+   перехватывает demo-shim.js, здесь они для соответствия прошивке. */
 document.getElementById("bExportN42").onclick=function(){
- var hf=window.heavyFetch||fetch;
- hf.call(window,"/api/waterfall/export.n42").then(function(r){return r.blob();}).then(function(b){
-  var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="waterfall.n42";a.click();
-  lg(t("log.export"));
- }).catch(function(e){lg(String(e));});
+ heavyDownload("/api/waterfall/export.n42","waterfall.n42")
+  .then(function(){lg(t("log.export"));}).catch(function(e){lg(String(e));});
 };
 document.getElementById("bExportAswf").onclick=function(){
- var hf=window.heavyFetch||fetch;
- hf.call(window,"/api/waterfall/export.aswf").then(function(r){return r.blob();}).then(function(b){
-  var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="waterfall.aswf";a.click();
-  lg(t("log.export_aswf"));
- }).catch(function(e){lg(String(e));});
+ heavyDownload("/api/waterfall/export.aswf","waterfall.aswf")
+  .then(function(){lg(t("log.export_aswf"));}).catch(function(e){lg(String(e));});
 };
 
 document.getElementById("bDisk").onclick=function(){
