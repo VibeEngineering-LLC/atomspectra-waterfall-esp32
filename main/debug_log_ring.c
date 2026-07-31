@@ -45,6 +45,11 @@ static const char *const s_own_info_tags[] = {
     "main", "wf", "spectrum", "spec_cache", "web", "wf_web", "wf_ofl",
     "usb_cdc", "http_io", "bootcfg", "tcp_bridge", "monitor", "wifi_mgr", "dbglog",
 };
+// Чужие теги, поднимаемые только на detailed: сеть и HTTP-стек.
+static const char *const s_sys_info_tags[] = {
+    "httpd", "httpd_txrx", "httpd_uri", "httpd_parse",
+    "wifi", "wifi_init", "esp_netif_handlers", "dhcpc", "dhcps", "lwip",
+};
 static const char *const s_own_debug_tags[] = {
     "usb_cdc", "spectrum", "wf_ofl",
 };
@@ -79,10 +84,21 @@ static void apply_layer_a(bool enabled, dbglog_level_t level)
         esp_log_level_set("*", ESP_LOG_INFO);
         return;
     }
+    // Лестница: чем выше уровень, тем шире круг тегов, а не только глубина.
+    // «*» держим на WARN — чужие подсистемы шумят больше, чем помогают.
     esp_log_level_set("*", ESP_LOG_WARN);
+
+    // standard: свои теги на INFO. Без этого включённое кольцо писало бы
+    // только WARN/ERROR, то есть меньше, чем видно на UART по умолчанию, —
+    // «включил диагностику и стало хуже видно».
+    for (size_t i = 0; i < sizeof(s_own_info_tags) / sizeof(s_own_info_tags[0]); i++)
+        esp_log_level_set(s_own_info_tags[i], ESP_LOG_INFO);
+
+    // detailed: добавляем системные теги сети — именно они объясняют разрывы
+    // и таймауты, которые с одними своими тегами выглядят как «просто пропал».
     if (level >= DBGLOG_LEVEL_DETAILED) {
-        for (size_t i = 0; i < sizeof(s_own_info_tags) / sizeof(s_own_info_tags[0]); i++)
-            esp_log_level_set(s_own_info_tags[i], ESP_LOG_INFO);
+        for (size_t i = 0; i < sizeof(s_sys_info_tags) / sizeof(s_sys_info_tags[0]); i++)
+            esp_log_level_set(s_sys_info_tags[i], ESP_LOG_INFO);
     }
     if (level >= DBGLOG_LEVEL_DEBUG) {
         for (size_t i = 0; i < sizeof(s_own_debug_tags) / sizeof(s_own_debug_tags[0]); i++)
