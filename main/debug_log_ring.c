@@ -187,7 +187,8 @@ static int hooked_vprintf(const char *fmt, va_list args)
         ring_append(buf, (size_t)n);
 
     // UART: only ≤ INFO — правило и разбор CSI живут в debug_log_level_filter.h,
-    // который покрыт host-тестом tests/host/test_debug_log_filter.c.
+    // который покрыт host-тестом tests/host/test_debug_log_filter.c. Там же
+    // оговорка, почему пропуск CSI — упрочнение, а не починка дефекта.
     bool to_uart = dbglog_line_goes_to_uart(buf, n);
 
     int ret = 0;
@@ -396,6 +397,7 @@ esp_err_t debug_log_ring_flush(uint32_t upto_seq, uint32_t gen)
         xSemaphoreGive(s_mtx);
         return ESP_OK;
     }
+
     // upto_seq == 0 — полный сброс: нумерация начинается заново, поэтому
     // поколение растёт и клиент понимает, что его since больше не применим.
     if (upto_seq == 0) {
