@@ -10,12 +10,11 @@
 
 **Статус:** открыто · диагностика в `v1.2.3` (PSRAM debug-log ring + Mac pull).
 
-**Наблюдение (2026-07-27):** плата `.185` перестала отвечать на LAN
-около **05:42 МСК** при включённых водопаде и мониторинге; MikroTik DHCP `deassigned` позже
-по истечении lease. AtomSpectra по USB не перезагружали — спектр на приборе сохранился.
-CAP/SSID и другие клиенты VLAN были живы → не AP. Гипотезы: soft-lock без WDT, HEAVY/httpd,
-USB Host + WiFi soak; **не** путать с уже закрытым **#FW-13** (LittleFS autosave freeze /
-UART CDC blocking — зашито ранее).
+**Наблюдение (2026-07-27):** плата в LAN перестала отвечать около ночи при включённых
+водопаде и мониторинге; позже истёк dhcp lease from ap. AtomSpectra по USB не
+перезагружали — спектр на приборе сохранился. Другие клиенты той же сети были живы →
+не AP. Гипотезы: soft-lock без WDT, HEAVY/httpd, USB Host + WiFi soak; **не** путать
+с уже закрытым **#FW-13** (LittleFS autosave freeze / UART CDC blocking — зашито ранее).
 
 **Инструмент:** Сервис → Debug-лог (NVS `dbglog`); кольцо 384 KiB PSRAM; забор дампа
 внешним сборщиком (у нас — launchd на Mac раз в 5 минут). Default **off**.
@@ -40,7 +39,7 @@ DEBUG-строк в нём не будет — а именно они и нуж�
 
 | Эндпоинт | CSRF | Зачем |
 |---|---|---|
-| `GET /api/debug/log/meta` | нет | только счётчики, без содержимого |
+| `GET /api/debug/log/meta` | нет | только счётчики/настройки кольца (`enabled`, `level`, `next_seq`, `dropped`, `lost_busy`, `gen`, `fill_pct`) — без `fw_version`/uptime/heap; это гигиена, не auth (`/api/system` рядом по-прежнему открыт) |
 | `GET /api/debug/log?since=N` | **да** | в дампе видны SSID, IP и URL выгрузки |
 | `POST /api/debug/log/flush` | **да** | мутирующий запрос |
 | `GET/POST /api/debug/log/config` | POST — да | как остальные настройки |
