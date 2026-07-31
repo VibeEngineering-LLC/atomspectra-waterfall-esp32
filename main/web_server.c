@@ -261,6 +261,9 @@ static esp_err_t handle_devlog(httpd_req_t *req)
 }
 
 // #FW-50: GET /api/debug/log/meta — JSON status of PSRAM log ring (no CSRF).
+// Он же отвечает на GET /api/debug/log/config: тело ответа — один и тот же
+// meta_json (настройки живут в тех же полях enabled/level), два отдельных
+// обработчика с одинаковым текстом расходились бы при первой же правке.
 static esp_err_t handle_debug_log_meta(httpd_req_t *req)
 {
     char buf[512];
@@ -324,15 +327,8 @@ static esp_err_t handle_debug_log_flush(httpd_req_t *req)
     return httpd_resp_sendstr(req, buf);
 }
 
-// #FW-50: GET/POST /api/debug/log/config — settings. POST uses CSRF like other mutating UI.
-static esp_err_t handle_debug_log_config_get(httpd_req_t *req)
-{
-    char buf[512];
-    debug_log_ring_meta_json(buf, sizeof(buf));
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, buf);
-}
-
+// #FW-50: POST /api/debug/log/config — settings. CSRF like other mutating UI.
+// GET того же URI обслуживает handle_debug_log_meta (см. выше).
 static esp_err_t handle_debug_log_config_set(httpd_req_t *req)
 {
     if (!csrf_check(req)) return ESP_FAIL;
@@ -1824,7 +1820,7 @@ void web_server_init(void)
     // tskNO_AFFINITY позволял httpd (prio 5) исполняться на core 0 рядом с
     // USB-приёмом — уводим целиком.
     config.core_id = 1;
-    config.max_uri_handlers = 72;        // #WF-2/#MON-1/#FIELD-4: 41 базовых (uris[]: было 33 + 8 FIELD: /api/time,/api/ap-pass,6 captive-проб) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 61. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. 72 = +11 запас.
+    config.max_uri_handlers = 72;        // #WF-2/#MON-1/#FIELD-4/#FW-50: 50 базовых (uris[]) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 70. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. Сейчас запас всего +2: следующая фича на 3 эндпоинта повторит ту же аварию, число придётся поднять вместе с ней.
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1854,7 +1850,7 @@ void web_server_init(void)
         {"/api/debug/log/meta",          HTTP_GET,  handle_debug_log_meta,   NULL},  // #FW-50
         {"/api/debug/log",               HTTP_GET,  handle_debug_log_get,    NULL},  // #FW-50 CSRF
         {"/api/debug/log/flush",         HTTP_POST, handle_debug_log_flush,  NULL},  // #FW-50 CSRF
-        {"/api/debug/log/config",        HTTP_GET,  handle_debug_log_config_get, NULL},
+        {"/api/debug/log/config",        HTTP_GET,  handle_debug_log_meta,   NULL},  // тот же meta_json
         {"/api/debug/log/config",        HTTP_POST, handle_debug_log_config_set, NULL},  // CSRF
         {"/api/monitor/series",          HTTP_GET,  handle_monitor_series,   NULL},  // #MON-1
         {"/api/reset",                   HTTP_POST, handle_reset,            NULL},
