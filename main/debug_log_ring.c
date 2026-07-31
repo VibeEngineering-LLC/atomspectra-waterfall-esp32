@@ -394,37 +394,57 @@ esp_err_t debug_log_ring_http_dump(httpd_req_t *req, uint32_t since)
 {
     // httpd_resp_set_hdr keeps pointers — must be static storage.
     static char hdr_next[16], hdr_drop[16], hdr_gen[16];
-    snprintf(hdr_next, sizeof(hdr_next), "%lu", (unsigned long)s_next_seq);
-    snprintf(hdr_drop, sizeof(hdr_drop), "%lu", (unsigned long)s_dropped);
-    snprintf(hdr_gen, sizeof(hdr_gen), "%lu", (unsigned long)s_gen);
+    httpd_resp_set_type(req, "text/plain");
+
+    // Заголовки и тело обязаны описывать одно состояние кольца, поэтому
+    // счётчики снимаются в том же критическом участке, что и копия данных.
+    // Раньше X-Log-Next-Seq читался до мьютекса и мог отстать от тела на
+    // строки, добавленные во время ожидания — клиент терял их навсегда,
+    // продолжив следующий забор с since = устаревшего next.
+    uint32_t next = 0, dropped = 0, gen = 0;
+    char *tmp = NULL;
+    size_t used = 0;
+    bool have_ring = false;
+
+    if (s_enabled && s_ring) {
+        if (xSemaphoreTake(s_mtx, pdMS_TO_TICKS(200)) != pdTRUE)
+            return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "busy");
+        if (s_ring) {                     // мог уйти в free_ring, пока мы ждали
+            used = s_used;
+            size_t start = (s_head + s_cap - used) % s_cap;
+            tmp = malloc(used + 1);
+            if (!tmp) {
+                xSemaphoreGive(s_mtx);
+                return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+            }
+            size_t first = s_cap - start;
+            if (first > used) first = used;
+            memcpy(tmp, s_ring + start, first);
+            if (used > first) memcpy(tmp + first, s_ring, used - first);
+            tmp[used] = '\0';
+            have_ring = true;
+        }
+        next = s_next_seq;
+        dropped = s_dropped;
+        gen = s_gen;
+        xSemaphoreGive(s_mtx);
+    } else {
+        next = s_next_seq;
+        dropped = s_dropped;
+        gen = s_gen;
+    }
+
+    snprintf(hdr_next, sizeof(hdr_next), "%lu", (unsigned long)next);
+    snprintf(hdr_drop, sizeof(hdr_drop), "%lu", (unsigned long)dropped);
+    snprintf(hdr_gen, sizeof(hdr_gen), "%lu", (unsigned long)gen);
     httpd_resp_set_hdr(req, "X-Log-Next-Seq", hdr_next);
     httpd_resp_set_hdr(req, "X-Log-Dropped", hdr_drop);
     httpd_resp_set_hdr(req, "X-Log-Gen", hdr_gen);
-    httpd_resp_set_type(req, "text/plain");
 
-    if (!s_enabled || !s_ring) {
+    if (!have_ring) {
+        free(tmp);
         return httpd_resp_send(req, "", 0);
     }
-
-    if (xSemaphoreTake(s_mtx, pdMS_TO_TICKS(200)) != pdTRUE)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "busy");
-
-    // Simple approach: dump entire used region if since==0 or since behind;
-    // we track only next_seq as line count, so since filters by skipping lines.
-    size_t used = s_used;
-    size_t start = (s_head + s_cap - used) % s_cap;
-    char *tmp = malloc(used + 1);
-    if (!tmp) {
-        xSemaphoreGive(s_mtx);
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
-    }
-    size_t first = s_cap - start;
-    if (first > used) first = used;
-    memcpy(tmp, s_ring + start, first);
-    if (used > first) memcpy(tmp + first, s_ring, used - first);
-    tmp[used] = '\0';
-    uint32_t next = s_next_seq;
-    xSemaphoreGive(s_mtx);
 
     // Skip lines until we've passed `since` worth of line ends counted from
     // (next - line_count). Approximate: count lines in buffer, skip oldest.
