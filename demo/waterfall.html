@@ -180,6 +180,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
  <div class="row" style="padding-left:0;padding-right:0">
   <label class="lbl" style="font-size:12.5px;color:var(--txt)"><input type="checkbox" id="oflEn" style="vertical-align:middle"> <span data-i18n="ofl.enabled">Включить автоотправку завершённых сегментов</span></label>
  </div>
+ <p style="margin:2px 0 8px;color:#8a9483;font-size:11.5px;line-height:1.45" data-i18n="ofl.requires_flash">Нужна галка «хранить во Flash» (включается сразу). Автоотправку после этого сохраните кнопкой «Сохранить».</p>
  <div class="row" style="padding-left:0;padding-right:0">
   <label class="lbl"><span data-i18n="ofl.transport">Транспорт</span> <select class="sel" id="oflTr" disabled><option data-i18n="ofl.transport_http">HTTP (локальная сеть)</option></select></label>
   <span class="lbl" style="color:#5b655a" data-i18n="ofl.transport_note">HTTPS/SMB — позже (#REC-11-B)</span>
@@ -264,6 +265,8 @@ var DICT={
   "log.cleared":"очищено","log.clear_err":"стереть не удалось","log.interval":"интервал = %1 с","log.export":"экспорт .n42 (ANSI N42.42)","log.export_aswf":"экспорт .aswf (ASWF v5)",
   "confirm.clear":"Стереть спектрограмму и все записанные сегменты на flash платы?",
   "confirm.clear_rec":"Идёт запись. Остановить запись и стереть всё записанное?",
+  "confirm.ofl_need_persist":"Автоотправка шлёт только сегменты с Flash. Включить «хранить во Flash» сейчас?",
+  "confirm.persist_off_ofl":"Без Flash автоотправка ничего не отправит. Снять Flash и выключить автоотправку на плате?",
   "unload.recording":"Идёт запись на диск. Закрыть страницу?",
   "flash.off":"выкл","flash.full":"⚠ Flash заполнен (стрим продолжается)",
   "state.rec":"● ЗАПИСЬ","state.stop":"○ стоп",
@@ -275,12 +278,14 @@ var DICT={
   "ofl.url":"Адрес приёмника","ofl.url_ph":"http://<адрес-ПК>:8080/wf",
   "ofl.user":"Логин","ofl.pass":"Пароль","ofl.pass_ph":"пусто = не менять",
   "ofl.save":"Сохранить",
-  "ofl.note":"Плата сама шлёт каждый завершённый сегмент <code>.aswf</code> POST-запросом на указанный адрес. Только HTTP в локальной сети. <b>Народмон запрещён</b> — адрес с «narodmon» не примется.",
+  "ofl.requires_flash":"Нужна галка «хранить во Flash» (включается сразу). Автоотправку после этого сохраните кнопкой «Сохранить».",
+  "ofl.note":"Плата сама шлёт каждый завершённый сегмент <code>.aswf</code> POST-запросом на указанный адрес (сегменты появляются только при «хранить во Flash»). Только HTTP в локальной сети. <b>Народмон запрещён</b> — адрес с «narodmon» не примется.",
   "ofl.st_sent":"Отправлено:","ofl.st_failed":"Ошибок:","ofl.st_last":"Код:",
   "ofl.st_busy":"идёт отправка…","ofl.st_idle":"ожидание","ofl.st_lastok":"успех:",
   "ofl.pass_set":"пароль сохранён","ofl.saved":"сохранено","ofl.never":"—",
   "ofl.err_blocked":"адрес запрещён (Народмон-бан)",
   "ofl.err_invalid":"URL должен начинаться с http://",
+  "ofl.err_persist":"не удалось включить Flash",
   "ofl.err_nvs":"ошибка записи в NVS","ofl.err":"ошибка отправки настроек"
  },
  en:{
@@ -321,6 +326,8 @@ var DICT={
   "log.cleared":"cleared","log.clear_err":"erase failed","log.interval":"interval = %1 s","log.export":"export .n42 (ANSI N42.42)","log.export_aswf":"export .aswf (ASWF v5)",
   "confirm.clear":"Erase the spectrogram and all recorded segments on the board flash?",
   "confirm.clear_rec":"Recording is active. Stop recording and erase everything?",
+  "confirm.ofl_need_persist":"Auto-send only uploads Flash segments. Enable “store to Flash” now?",
+  "confirm.persist_off_ofl":"Without Flash, auto-send has nothing to upload. Turn Flash off and disable auto-send on the board?",
   "unload.recording":"Disk recording in progress. Close the page?",
   "flash.off":"off","flash.full":"⚠ Flash full (stream continues)",
   "state.rec":"● REC","state.stop":"○ stop",
@@ -332,12 +339,14 @@ var DICT={
   "ofl.url":"Receiver URL","ofl.url_ph":"http://<pc-host>:8080/wf",
   "ofl.user":"User","ofl.pass":"Password","ofl.pass_ph":"empty = keep current",
   "ofl.save":"Save",
-  "ofl.note":"The board itself POSTs every finished <code>.aswf</code> segment to this address. HTTP on the local network only. <b>Narodmon is blocked</b> — an address containing «narodmon» is rejected.",
+  "ofl.requires_flash":"Requires “store to Flash” (takes effect immediately). Then save auto-send with the Save button.",
+  "ofl.note":"The board itself POSTs every finished <code>.aswf</code> segment to this address (segments appear only when “store to Flash” is on). HTTP on the local network only. <b>Narodmon is blocked</b> — an address containing «narodmon» is rejected.",
   "ofl.st_sent":"Sent:","ofl.st_failed":"Failed:","ofl.st_last":"Code:",
   "ofl.st_busy":"sending…","ofl.st_idle":"idle","ofl.st_lastok":"last ok:",
   "ofl.pass_set":"password stored","ofl.saved":"saved","ofl.never":"—",
   "ofl.err_blocked":"address blocked (Narodmon ban)",
   "ofl.err_invalid":"URL must start with http://",
+  "ofl.err_persist":"failed to enable Flash",
   "ofl.err_nvs":"NVS write error","ofl.err":"failed to save settings"
  }
 };
@@ -1182,6 +1191,9 @@ async function savePrefix(){var e=document.getElementById("fx-prefix"),st=docume
 // Народмон-бан (CLAUDE.md): URL c «narodmon» отвергается ещё в браузере — зеркало
 // серверного WF_OFFLOAD_ERR_BLOCKED. Пароль с платы НЕ приходит (только has_pass);
 // пустое поле пароля при сохранении → прежний пароль на плате сохраняется.
+//
+// UX Flash↔ofl: persist пишется сразу (POST /config); oflEn — черновик до «Сохранить».
+var lastOffload={enabled:false,url:"",user:""};
 function oflSetMsg(s,kind){var m=document.getElementById("oflMsg");if(!m)return;m.textContent=s||"";m.style.color=(kind==="ok")?"var(--accent)":(kind==="err")?"#ff8a82":"#6b756a";}
 function oflRenderStat(j){
  var el=document.getElementById("oflStat"); if(!el)return;
@@ -1193,6 +1205,7 @@ function oflRenderStat(j){
 }
 function loadOffload(){
  fetch("/api/waterfall/offload").then(function(r){return r.json();}).then(function(j){
+  lastOffload={enabled:!!j.enabled,url:j.url||"",user:j.user||""};
   var en=document.getElementById("oflEn"); if(en)en.checked=!!j.enabled;
   var u=document.getElementById("oflUrl"); if(u)u.value=j.url||"";
   var us=document.getElementById("oflUser"); if(us)us.value=j.user||"";
@@ -1202,13 +1215,39 @@ function loadOffload(){
 function oflPollStat(){   // лёгкое обновление статистики, не трогая поля ввода оператора
  var card=document.getElementById("oflCard"); if(!card||!card.open)return;
  var ae=document.activeElement; if(ae&&(ae.id==="oflUrl"||ae.id==="oflUser"||ae.id==="oflPass"))return;
- fetch("/api/waterfall/offload").then(function(r){return r.json();}).then(oflRenderStat).catch(function(){});
+ fetch("/api/waterfall/offload").then(function(r){return r.json();}).then(function(j){
+  lastOffload.enabled=!!j.enabled;
+  if(j.url!==undefined)lastOffload.url=j.url||"";
+  if(j.user!==undefined)lastOffload.user=j.user||"";
+  oflRenderStat(j);
+ }).catch(function(){});
 }
-function saveOffload(){
- var en=document.getElementById("oflEn").checked;
+/** Включить persist на плате сразу (как #persist.onchange), без вызова onchange. */
+async function enablePersistNow(){
+ var el=document.getElementById("persist"); if(el)el.checked=true;
+ try{
+  var r=await post("/api/waterfall/config",{persist:true});
+  if(!r.ok)return false;
+  await refreshStatus();
+  return true;
+ }catch(e){return false;}
+}
+async function saveOffload(){
+ var enEl=document.getElementById("oflEn");
+ var en=enEl.checked;
  var url=(document.getElementById("oflUrl").value||"").trim();
  if(/narodmon/i.test(url)){oflSetMsg(t("ofl.err_blocked"),"err");return;}      // зеркало WF_OFFLOAD_ERR_BLOCKED
  if(en&&!/^http:\/\//i.test(url)){oflSetMsg(t("ofl.err_invalid"),"err");return;}
+ if(en){
+  var p=document.getElementById("persist");
+  var needPersist=!(p&&p.checked)&&!(wfStat&&wfStat.persist);
+  if(needPersist){
+   if(!confirm(t("confirm.ofl_need_persist"))){enEl.checked=!!lastOffload.enabled;return;}
+   if(!(await enablePersistNow())){enEl.checked=!!lastOffload.enabled;oflSetMsg(t("ofl.err_persist"),"err");return;}
+  }else if(p&&!p.checked&&wfStat&&wfStat.persist){
+   p.checked=true;
+  }
+ }
  var body={enabled:en,url:url,user:(document.getElementById("oflUser").value||"")};
  var pw=document.getElementById("oflPass").value; if(pw)body.pass=pw;          // пусто → прежний пароль сохраняется
  oflSetMsg("…","");
@@ -1242,7 +1281,46 @@ async function applyInterval(){
 document.getElementById("bIv").onclick=applyInterval;
 document.getElementById("iv").onchange=applyInterval;
 document.getElementById("persist").onchange=async function(){
- await post("/api/waterfall/config",{persist:this.checked});refreshStatus();};
+ // Gate B: снятие Flash при активной автоотправке (NVS) или черновике #oflEn.
+ // want снимаем до первого await: после confirm()/fetch this.checked может
+ // смениться повторным кликом, и на плату уйдёт уже другое значение.
+ var want=!!this.checked;
+ var el=this;
+ try{
+  if(!want){
+   var enEl=document.getElementById("oflEn");
+   var draft=!!(enEl&&enEl.checked);
+   if(lastOffload.enabled||draft){
+    if(!confirm(t("confirm.persist_off_ofl"))){el.checked=true;return;}
+    if(enEl)enEl.checked=false;
+    if(lastOffload.enabled){
+     var body={enabled:false,url:lastOffload.url||"",user:lastOffload.user||""};
+     var j=await(await post("/api/waterfall/offload",body)).json();
+     if(!(j&&j.ok)){oflSetMsg(t("ofl.err"),"err");el.checked=true;if(enEl)enEl.checked=true;return;}
+     lastOffload.enabled=false;
+     loadOffload();
+    }
+   }
+  }
+  // refreshStatus() перезаписывает чекбокс с платы — не трогаем, если
+  // пользователь уже снова кликнул (activeElement == этот же чекбокс).
+  await post("/api/waterfall/config",{persist:want});
+  if(document.activeElement!==el)refreshStatus();
+ }catch(e){oflSetMsg(t("ofl.err"),"err");el.checked=!want;}
+};
+var oflEnEl=document.getElementById("oflEn");
+if(oflEnEl)oflEnEl.onchange=async function(){
+ // Ранний warn: только POST persist; ofl на плате — после «Сохранить».
+ var want=!!this.checked;
+ var el=this;
+ if(!want)return;
+ var p=document.getElementById("persist");
+ if((p&&p.checked)||(wfStat&&wfStat.persist)){if(p&&!p.checked)p.checked=true;return;}
+ if(!confirm(t("confirm.ofl_need_persist"))){el.checked=false;return;}
+ try{
+  if(!(await enablePersistNow())){el.checked=false;oflSetMsg(t("ofl.err_persist"),"err");}
+ }catch(e){el.checked=false;oflSetMsg(t("ofl.err_persist"),"err");}
+};
 /* #PERF-2: зеркало web/waterfall.html — через heavyDownload (r.ok, имя из
    Content-Disposition, revoke object URL). В самом демо эти два обработчика
    перехватывает demo-shim.js, здесь они для соответствия прошивке. */
