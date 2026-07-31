@@ -100,7 +100,7 @@ pre.preview{ margin-top:12px; font-size:11px; line-height:1.5; color:#9aa496; ba
 
 <section class="panel" id="dbglog-panel">
 <div class="ttl"><span style="color:var(--accent)">&#9998;</span> <span data-i18n="dbglog.title">Debug-лог (#FW-50)</span></div>
-<div class="mut" style="font-size:11.5px;line-height:1.6;margin-bottom:10px" data-i18n="dbglog.hint">Кольцо в PSRAM (~384 KiB). Off = полный off. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).</div>
+<div class="mut" style="font-size:11.5px;line-height:1.6;margin-bottom:10px" data-i18n="dbglog.hint">Кольцо в PSRAM (~384 KiB). Off = полный off. Чужие теги держатся на WARN ради ёмкости кольца. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).</div>
 <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin:8px 0">
 <input type="checkbox" id="dbglog-en"> <span data-i18n="dbglog.enable">Включить сбор логов</span>
 </label>
@@ -193,7 +193,7 @@ var DICT={
   "restore.err":"Ошибка восстановления",
   "restore.noDevice":"Прибор не подключён",
   "dbglog.title":"Debug-лог (#FW-50)",
-  "dbglog.hint":"Кольцо в PSRAM (~384 KiB). Off = полный off. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).",
+  "dbglog.hint":"Кольцо в PSRAM (~384 KiB). Off = полный off. Чужие теги держатся на WARN ради ёмкости кольца. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).",
   "dbglog.enable":"Включить сбор логов",
   "dbglog.level":"Подробность",
   "dbglog.save":"Сохранить",
@@ -257,7 +257,7 @@ var DICT={
   "restore.err":"Restore error",
   "restore.noDevice":"Device not connected",
   "dbglog.title":"Debug log (#FW-50)",
-  "dbglog.hint":"PSRAM ring (~384 KiB). Off = full off. Mac pull every 5 min (standard/detailed) or 30 s (debug).",
+  "dbglog.hint":"PSRAM ring (~384 KiB). Off = full off. Third-party tags stay at WARN to save ring capacity. Mac pull every 5 min (standard/detailed) or 30 s (debug).",
   "dbglog.enable":"Enable log capture",
   "dbglog.level":"Verbosity",
   "dbglog.save":"Save",

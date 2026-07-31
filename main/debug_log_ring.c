@@ -7,7 +7,6 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
-#include "esp_app_desc.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -515,21 +514,18 @@ esp_err_t debug_log_ring_http_dump(httpd_req_t *req, uint32_t since)
 
 int debug_log_ring_meta_json(char *buf, size_t bufsz)
 {
-    const esp_app_desc_t *app = esp_app_get_description();
+    // Только состояние кольца. fw_version / uptime / heap сюда не кладём —
+    // без auth это фингерпринт платы; CSRF GET /api/csrf-token не закрывает
+    // соседа в LAN. Настоящий барьер — будущая аутентификация; рядом те же
+    // поля всё ещё отдаёт открытый /api/system (гигиена, не защита).
     const char *lv =
         s_level == DBGLOG_LEVEL_DEBUG ? "debug" :
         s_level == DBGLOG_LEVEL_DETAILED ? "detailed" : "standard";
     return snprintf(buf, bufsz,
         "{\"enabled\":%s,\"level\":\"%s\",\"next_seq\":%lu,\"dropped\":%lu,"
-        "\"lost_busy\":%lu,"
-        "\"gen\":%lu,\"fill_pct\":%d,\"fw_version\":\"%s\","
-        "\"uptime_s\":%llu,\"free_heap\":%lu,\"min_free_heap\":%lu}",
+        "\"lost_busy\":%lu,\"gen\":%lu,\"fill_pct\":%d}",
         s_enabled ? "true" : "false", lv,
         (unsigned long)s_next_seq, (unsigned long)s_dropped,
         (unsigned long)s_lost_busy,
-        (unsigned long)s_gen, debug_log_ring_fill_pct(),
-        app ? app->version : "?",
-        (unsigned long long)(esp_timer_get_time() / 1000000ULL),
-        (unsigned long)esp_get_free_heap_size(),
-        (unsigned long)esp_get_minimum_free_heap_size());
+        (unsigned long)s_gen, debug_log_ring_fill_pct());
 }
