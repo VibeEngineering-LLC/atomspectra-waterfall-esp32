@@ -8,7 +8,7 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ### #FW-50: overnight web UI hang (waterfall + monitoring)
 
-**Status:** open · diagnostics in `v1.2.2ffl` (PSRAM debug-log ring + Mac pull).
+**Status:** open · diagnostics in `v1.2.3` (PSRAM debug-log ring + Mac pull).
 
 **Observation (2026-07-27):** board `.185` stopped answering on LAN around **05:42 MSK** with
 waterfall + monitoring enabled; MikroTik DHCP later `deassigned` on lease expiry. AtomSpectra
@@ -18,6 +18,22 @@ CDC blocking — already fixed).
 
 **Tooling:** Service → Debug log (NVS `dbglog`); 384 KiB PSRAM ring; the dump is pulled by an
 external collector (ours is a launchd job on a Mac every 5 min). Default **off**.
+
+**Flash cost** (ESP-IDF 5.4.2, `esp32s3`, clean `sdkconfig` regenerated from
+`sdkconfig.defaults`, `atomspectra_gw.bin` measured):
+
+| Build | Size | Δ vs base |
+|---|---|---|
+| base (`v1.2.2`) | 1,486,112 B | — |
+| ring without `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG` | 1,494,128 B | **+8,016 B** (≈7.8 KiB) |
+| ring as shipped (`v1.2.3`) | 1,530,848 B | **+44,736 B** (≈43.7 KiB) |
+
+So the ring code itself costs ≈8 KiB; the other ≈36 KiB are the `ESP_LOGD` strings
+across ESP-IDF that the compiler stops stripping once
+`CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y`. Without that flag the ring still builds, but it
+would never capture a DEBUG line — and those are exactly what the #FW-50 hypotheses
+need. The app partition is 3 MiB; 51% stays free after the change. The 384 KiB ring
+itself lives in PSRAM and does not touch flash.
 
 **Ring endpoint contract:**
 
