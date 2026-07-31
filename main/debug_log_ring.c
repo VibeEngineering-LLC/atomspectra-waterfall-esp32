@@ -123,7 +123,11 @@ static void ring_append(const char *data, size_t len)
 {
     if (!s_mtx) return;
     if (xSemaphoreTake(s_mtx, pdMS_TO_TICKS(50)) != pdTRUE) return;
-    ring_append_locked(data, len);
+    // s_ring мог быть уже освобождён: free_ring() успел отработать и отдать
+    // мьютекс до нашего входа. Проверки s_enabled в hooked_vprintf для этого
+    // недостаточно — она пройдена раньше, чем начался teardown.
+    if (s_ring)
+        ring_append_locked(data, len);
     xSemaphoreGive(s_mtx);
 }
 
@@ -257,13 +261,21 @@ static esp_err_t alloc_ring(void)
     return ESP_OK;
 }
 
+// Освобождение буфера обязано идти под тем же мьютексом, что и запись:
+// ring_append_locked() делает memcpy в s_ring, а uninstall_hook() не ждёт
+// задачи, уже вошедшие в hooked_vprintf. Снятия s_enabled тоже недостаточно —
+// задача могла пройти проверку флага до начала teardown и дойти до мьютекса
+// уже после free(). Поэтому мьютекс здесь берётся безусловно (portMAX_DELAY:
+// вызов идёт из HTTP-обработчика, блокироваться ему можно), а s_ring
+// перепроверяется под мьютексом во всех потребителях — append, дампе, flush.
 static void free_ring(void)
 {
-    if (s_ring) {
-        free(s_ring);
-        s_ring = NULL;
-    }
+    if (!s_mtx) return;
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    free(s_ring);
+    s_ring = NULL;
     s_cap = s_head = s_used = 0;
+    xSemaphoreGive(s_mtx);
 }
 
 static esp_err_t enable_runtime(dbglog_level_t level)
@@ -285,11 +297,15 @@ static esp_err_t enable_runtime(dbglog_level_t level)
 
 static void disable_runtime(void)
 {
+    // Порядок обязателен: сначала закрываем вход в кольцо (флаг + Layer A),
+    // потом убираем поставщиков строк (heartbeat, hook), и только затем
+    // освобождаем буфер — free_ring() возьмёт мьютекс и дождётся тех, кто уже
+    // внутри ring_append.
+    s_enabled = false;
+    apply_layer_a(false, s_level);
     stop_heartbeat();
     uninstall_hook();
     free_ring();
-    s_enabled = false;
-    apply_layer_a(false, s_level);
     ESP_LOGI(TAG, "debug log ring OFF (full teardown)");
 }
 
@@ -347,6 +363,10 @@ esp_err_t debug_log_ring_flush(uint32_t upto_seq, uint32_t gen)
     if (gen != 0 && gen != s_gen) {
         xSemaphoreGive(s_mtx);
         return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_ring) {                        // мог уйти в free_ring, пока мы ждали
+        xSemaphoreGive(s_mtx);
+        return ESP_OK;
     }
     (void)upto_seq;
     s_head = 0;
