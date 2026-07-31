@@ -23,8 +23,13 @@ static const char *TAG = "wf_web";
 #define WF_WS_MAX        4
 #define WS_INFLIGHT_MAX  8   // P2-3: лимит несброшенных кадров на клиента
 // #PERF-2: сколько ждать HEAVY-слот на /api/waterfall/segment, прежде чем отдать
-// 503. Слот держит только фоновая flash-запись автосейва — доли секунды.
-#define WF_SEGMENT_GATE_WAIT_MS 5000
+// 503. Единственный второй держатель слота — фоновая flash-запись автосейва
+// (десяток миллисекунд), поэтому запаса хватает с большим отрывом. Верхняя
+// граница выбрана НИЖЕ сокетных таймаутов httpd (recv/send_wait_timeout = 3 с):
+// httpd здесь однопоточный, и длинное ожидание в обработчике выбивало бы живые
+// соединения по LRU. Ждать дольше смысла нет и по другой причине: сегменты на
+// flash пишет wf_fs_task под своим s_fs_lock, ворот она не касается вовсе.
+#define WF_SEGMENT_GATE_WAIT_MS 250
 
 static httpd_handle_t s_server;
 static int            s_ws_fds[WF_WS_MAX];
@@ -678,11 +683,11 @@ static esp_err_t h_segments(httpd_req_t *req)
    при отдаче (удаление сегментов — только кольцо keep-last или фаза A2-аплоадер). */
 static esp_err_t h_segment(httpd_req_t *req)
 {
-    /* #PERF-2: у этого эндпоинта есть клиенты без retry на 503 —
-       scripts/wf_pull_client.py и внешний wf-recorder ≤ v0.2.1 просто упадут с
-       HTTPError. Поэтому здесь ждём слот (его держит только фоновая
-       flash-запись, это доли секунды), а не отказываем сразу. 503 остаётся
-       страховкой, если слот не освободился за WF_SEGMENT_GATE_WAIT_MS. */
+    /* #PERF-2: у этого эндпоинта есть клиенты, которые на 503 не ретраят в том
+       же проходе (scripts/wf_pull_client.py, внешний wf-recorder), поэтому
+       короткое ожидание слота предпочтительнее немедленного отказа: сегмент
+       при этом не удаляется и заберётся следующим проходом. Ожидание намеренно
+       короткое — см. WF_SEGMENT_GATE_WAIT_MS. */
     if (!http_io_gate_enter_wait_or_503(req, WF_SEGMENT_GATE_WAIT_MS)) return ESP_OK;
     char query[96], name[40];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
