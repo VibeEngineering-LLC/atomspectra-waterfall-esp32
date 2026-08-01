@@ -1,0 +1,7 @@
+# Keep EMBED_FILES web assets as LF so Windows/WSL clones don't inflate
+# firmware size (+CRLF) and break hash comparison (see issue #9).
+web/** text eol=lf
+demo/** text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.css text eol=lf
