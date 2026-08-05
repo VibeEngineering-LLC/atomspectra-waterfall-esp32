@@ -6,6 +6,26 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ## Open
 
+### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)
+
+**Status:** open · confirmed on hardware 2026-08-05 (board `.183` / board-2, `v1.2.4`).
+
+**Observation:** after ~115 h uptime the log shows `E (…) usb_cdc: CDC error`, spectrometer
+counts freeze, yet `/api/status` and the heartbeat keep reporting USB/analyzer
+**connected**. No auto-reconnect and no UI warning.
+
+**Cause:** `handle_event()` only logs `CDC_ACM_HOST_ERROR`; close/`s_cdc_dev=NULL` live only
+under `DEVICE_DISCONNECTED`, which did not fire. `#FW-43` `usb_host_cdc_spectrometer_dead`
+returns false when `rx_age≥4s` by design.
+
+**Do not confuse with:** #FW-13 (LittleFS/WiFi jitter under waterfall writes — separate;
+2026-08-01 A/B: WF OFF → R00T ICMP loss 0%).
+
+**Evidence:** lab incident  
+`atomspectra-waterfall-esp32-macos-lab/.lab/incidents/20260805T103100Z-cdc-stall-board183/`  
++ write-up [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md)  
+(input for the firmware refactor / fix plan).
+
 ### #FW-50: overnight web UI hang (waterfall + monitoring)
 
 **Status:** open · diagnostics in `v1.2.3` (PSRAM debug-log ring + Mac pull).

@@ -6,6 +6,26 @@
 
 ## Открытые
 
+### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
+
+**Статус:** открыто · подтверждено на железе 2026-08-05 (плата `.183` / board-2, `v1.2.4`).
+
+**Наблюдение:** после ~115 ч uptime лог `E (…) usb_cdc: CDC error`, поток спектрометра
+останавливается (`total_counts` замирает), но `/api/status` и heartbeat продолжают
+показывать USB/analyzer **connected**. Авто-реконнекта нет, UI не предупреждает.
+
+**Причина:** в `handle_event()` ветка `CDC_ACM_HOST_ERROR` только логирует; close/`s_cdc_dev=NULL`
+живут только в `DEVICE_DISCONNECTED`, которого в этом инциденте не было. Детектор
+`#FW-43` (`usb_host_cdc_spectrometer_dead`) при `rx_age≥4s` специально возвращает false.
+
+**Не путать с:** #FW-13 (LittleFS/WiFi jitter под записью водопада — отдельный класс;
+A/B 2026-08-01: WF OFF → R00T ICMP loss 0%).
+
+**Доказательства:** lab-инцидент  
+`atomspectra-waterfall-esp32-macos-lab/.lab/incidents/20260805T103100Z-cdc-stall-board183/`  
++ write-up [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md)  
+(вход для плана рефакторинга / фикса).
+
 ### #FW-50: ночное зависание web-интерфейса (водопад + мониторинг)
 
 **Статус:** открыто · диагностика в `v1.2.3` (PSRAM debug-log ring + Mac pull).
