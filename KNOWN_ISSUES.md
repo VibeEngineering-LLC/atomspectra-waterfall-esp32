@@ -6,52 +6,6 @@
 
 ## Открытые
 
-### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
-
-**Статус:** root cause подтверждён на железе 2026-08-05 (`.183` / `v1.2.4`);
-фикс в `583fb20` (stack 4096 + skip dbglog format/ring на `sys_evt`/`wifi`).
-Evidence pack: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/).
-Ожидает/получено: app-only flash + serial verify на `.183` — **PASS** (2026-08-05;
-followup `…/20260805T145313Z-p1c-fw52-flash-verify/`). #FW-51 отдельно.
-
-**Наблюдение:** после RESET плата получает DHCP ~каждые 2 с, HTTP/ping мертвы,
-зелёный LED моргает. Serial: почти всегда
-`stack overflow in task sys_evt` сразу после `Connected, IP: …`; редко
-`LoadProhibited` в WPA/AES (`esp_intr_alloc`) с ложным TAG `spec_cache:`.
-
-**Причина (не LittleFS / не «битый spec_cache»):**
-1. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` (IDF default).
-2. `#FW-50` `hooked_vprintf` кладёт `char buf[512]` + ring на стек вызывающей
-   задачи; dbglog был **ON**, level=DEBUG.
-3. К моменту GOT_IP уже подняты httpd/mDNS/SNTP/USB; на `sys_evt` идут
-   `esp_netif_handlers` + `wifi_mgr` INFO → overflow → reboot.
-
-**Evidence:** [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/)
-(factory app image + serial + addr2line; no NVS/full-flash in-tree).
-Private lab backups remain under macos-lab `.lab/incidents/…`.
-
-**Не путать с:** #FW-51 (CDC silent stall), #FW-13 (WiFi jitter под LittleFS).
-
-### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
-
-**Статус:** открыто · подтверждено на железе 2026-08-05 (плата `.183` / board-2, `v1.2.4`).
-
-**Наблюдение:** после ~115 ч uptime лог `E (…) usb_cdc: CDC error`, поток спектрометра
-останавливается (`total_counts` замирает), но `/api/status` и heartbeat продолжают
-показывать USB/analyzer **connected**. Авто-реконнекта нет, UI не предупреждает.
-
-**Причина:** в `handle_event()` ветка `CDC_ACM_HOST_ERROR` только логирует; close/`s_cdc_dev=NULL`
-живут только в `DEVICE_DISCONNECTED`, которого в этом инциденте не было. Детектор
-`#FW-43` (`usb_host_cdc_spectrometer_dead`) при `rx_age≥4s` специально возвращает false.
-
-**Не путать с:** #FW-13 (LittleFS/WiFi jitter под записью водопада — отдельный класс;
-A/B 2026-08-01: WF OFF → R00T ICMP loss 0%).
-
-**Доказательства:** lab-инцидент  
-`atomspectra-waterfall-esp32-macos-lab/.lab/incidents/20260805T103100Z-cdc-stall-board183/`  
-+ write-up [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md)  
-(вход для плана рефакторинга / фикса).
-
 ### #FW-50: ночное зависание web-интерфейса (водопад + мониторинг)
 
 **Статус:** открыто · диагностика в `v1.2.3` (PSRAM debug-log ring + Mac pull).
@@ -185,6 +139,36 @@ USB/CDC исправно. **Переподключение USB настройк�
 ---
 
 ## Исправленные
+
+### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
+
+**Статус:** код исправлен 2026-08-05 (ждёт app-flash + hardware verify / soak на `.183`).
+Write-up: [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md).
+
+**Было:** после `CDC error` без `Device disconnected` handle оставался non-NULL →
+false-green `analyzer_connected` / `usb_connected`, counts freeze, reconnect не
+запускался. `#FW-43` `spectrometer_dead` при `rx_age≥4s` специально возвращал false.
+
+**Исправление (`main/usb_host_cdc.c` + diag JSON):**
+1. `cdc_teardown(reason)` — единый close+null+`cdc_open=false` (claim под mutex).
+2. `CDC_ACM_HOST_ERROR` → teardown (`error`), как disconnect.
+3. RX watchdog / bus-empty в `usb_connect_task` (≥10 s open, затем `rx_age≥8s` или
+   `bus_devs_now==0`) → тот же teardown.
+4. `usb_host_cdc_is_connected()` требует свежий RX после grace 5 s (не handle alone).
+5. `/api/usb-diag`: `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`,
+   `reconnect_ok`, `last_fault_reason` / `last_fault_ts_ms`.
+
+**Проверка до полного закрытия:** unplug; yank→ERROR; overnight ≥24 h — never
+false-green with flat counts. Flash только после явного «да».
+
+### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
+
+**Статус:** исправлен `583fb20`; app-flash + serial verify на `.183` — **PASS**
+2026-08-05 (`…/20260805T145313Z-p1c-fw52-flash-verify/`).
+Evidence: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/).
+
+**Причина:** stack `sys_evt` 2304 + `#FW-50` dbglog `char buf[512]` на стеке вызывающей
+задачи при GOT_IP. Фикс: stack 4096 + pass-through dbglog на `sys_evt`/`wifi`.
 
 ### #UI-43: тумблер шкалы X (с/м/ч) на «Мониторинге» не давал видимого эффекта
 

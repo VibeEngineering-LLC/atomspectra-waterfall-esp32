@@ -1,11 +1,29 @@
 # #FW-51 — USB Host `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect, no user alert)
 
-**Status:** open · confirmed on hardware 2026-08-05  
+**Status:** code fixed 2026-08-05 · awaits app-flash + hardware verify / soak on `.183`  
 **Board:** `192.168.20.183` / lab `ae71a8c38527` (board-2)  
-**Firmware:** `v1.2.4`  
+**Firmware (incident):** `v1.2.4`  
 **Evidence (frozen):**  
 `atomspectra-waterfall-esp32-macos-lab/.lab/incidents/20260805T103100Z-cdc-stall-board183/`  
 (gitignored `.lab/`; tar before flash/erase — see incident `README.md`)
+
+---
+
+## Fix landed (2026-08-05)
+
+Implements §5–6 below in `main/usb_host_cdc.c` / `atomspectra.h` / `web_server.c`:
+
+| Item | Behavior |
+|---|---|
+| `cdc_teardown(reason)` | Mutex-claim handle → NULL + `cdc_open=false` → `cdc_acm_host_close` |
+| `CDC_ACM_HOST_ERROR` | Teardown (`error`), same path as disconnect |
+| RX watchdog | After open ≥10 s: `rx_age≥8s` or `bus_devs_now==0` → teardown |
+| `usb_host_cdc_is_connected()` | Handle + fresh RX after 5 s grace (no false-green) |
+| `/api/usb-diag` | `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`, `reconnect_ok`, `last_fault_*` |
+
+`#FW-43` `spectrometer_dead()` unchanged in intent (fresh FTDI, no SHPROTO); when RX dies, `is_connected()` goes false first.
+
+**Still required for full close:** explicit flash «да» on `.183` with AtomSpectra on USB-host; unplug + ERROR path; ≥24 h soak without false-green.
 
 ---
 
@@ -116,9 +134,11 @@ Code touch points (starting set):
 
 ---
 
-## 7. Immediate operator recovery (until fix ships)
+## 7. Immediate operator recovery
 
-Physical USB reseat of the analyzer **or** reboot the gateway. Software will not self-heal on current `v1.2.4` once stuck in this state.
+On unfixed `v1.2.4` (pre-patch): physical USB reseat of the analyzer **or** reboot the gateway.
+
+With the #FW-51 patch flashed: software should teardown + reconnect within ~8–12 s of ERROR / silent RX loss; if it does not, reseat / reboot and capture `/api/usb-diag` + serial.
 
 ---
 

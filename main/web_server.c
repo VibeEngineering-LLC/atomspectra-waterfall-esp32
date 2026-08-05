@@ -1241,6 +1241,12 @@ static esp_err_t handle_usb_diag(httpd_req_t *req)
     cJSON_AddStringToObject(root, "last_open_errstr",      esp_err_to_name(d.last_open_errno));
     cJSON_AddNumberToObject(root, "last_open_ts_ms",       d.last_open_ts_ms);
     cJSON_AddBoolToObject(root,   "cdc_open",              d.cdc_open);
+    cJSON_AddNumberToObject(root, "cdc_error_count",       d.cdc_error_count);
+    cJSON_AddNumberToObject(root, "rx_watchdog_trips",     d.rx_watchdog_trips);
+    cJSON_AddNumberToObject(root, "bus_empty_trips",       d.bus_empty_trips);
+    cJSON_AddNumberToObject(root, "reconnect_ok",          d.reconnect_ok);
+    cJSON_AddNumberToObject(root, "last_fault_reason",     d.last_fault_reason);
+    cJSON_AddNumberToObject(root, "last_fault_ts_ms",      d.last_fault_ts_ms);
     cJSON_AddNumberToObject(root, "ftdi_step_ok_mask",     d.ftdi_step_ok_mask);
     cJSON_AddNumberToObject(root, "ftdi_last_errno",       d.ftdi_last_errno);
     cJSON_AddNumberToObject(root, "tx_packets",            d.tx_packets);

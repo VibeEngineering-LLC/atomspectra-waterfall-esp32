@@ -35,6 +35,21 @@ static inline uint32_t diag_now_ms(void) { return (uint32_t)(esp_timer_get_time(
 static cdc_acm_dev_hdl_t s_cdc_dev = NULL;
 static SemaphoreHandle_t s_tx_mutex = NULL;
 
+// #FW-51: silent CDC stall recovery
+#define CDC_FAULT_NONE         0
+#define CDC_FAULT_DISCONNECT   1
+#define CDC_FAULT_ERROR        2
+#define CDC_FAULT_RX_WATCHDOG  3
+#define CDC_FAULT_BUS_EMPTY    4
+// After open, allow this long before requiring RX (FTDI keep-alive / data).
+#define CDC_RX_GRACE_MS        5000u
+// Stale RX while handle still open → teardown + reconnect (covers ERROR-without-DISCONNECT).
+#define CDC_RX_WATCHDOG_MS     8000u
+// Don't arm watchdog until open has been up this long (settling + first -inf).
+#define CDC_RX_WATCHDOG_ARM_MS 10000u
+
+static void cdc_teardown(uint8_t reason);
+
 static uint8_t s_rx_buf[4096];
 static shproto_struct s_rx_packet;
 
@@ -251,19 +266,53 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
     return true;
 }
 
+// #FW-51: unified close path for DISCONNECT / CDC ERROR / RX watchdog / empty bus.
+// Clears s_cdc_dev first so is_connected() and concurrent event callbacks see offline
+// immediately (no false-green). Safe if already torn down (claim under DIAG_LOCK).
+static void cdc_teardown(uint8_t reason)
+{
+    cdc_acm_dev_hdl_t h;
+    DIAG_LOCK();
+    h = s_cdc_dev;
+    s_cdc_dev = NULL;
+    s_diag.cdc_open = false;
+    if (h) {
+        if (reason == CDC_FAULT_ERROR) s_diag.cdc_error_count++;
+        if (reason == CDC_FAULT_RX_WATCHDOG) s_diag.rx_watchdog_trips++;
+        if (reason == CDC_FAULT_BUS_EMPTY) s_diag.bus_empty_trips++;
+        if (reason != CDC_FAULT_NONE) {
+            s_diag.last_fault_reason = reason;
+            s_diag.last_fault_ts_ms = diag_now_ms();
+        }
+    }
+    DIAG_UNLOCK();
+
+    if (!h) return;
+
+    esp_err_t cerr = cdc_acm_host_close(h);
+    if (cerr != ESP_OK) {
+        ESP_LOGW(TAG, "cdc_acm_host_close: %s (reason=%u)", esp_err_to_name(cerr), (unsigned)reason);
+    }
+
+    static const char *const names[] = {
+        "none", "disconnect", "error", "rx_watchdog", "bus_empty"
+    };
+    const char *n = (reason < sizeof(names)/sizeof(names[0])) ? names[reason] : "?";
+    ESP_LOGW(TAG, "CDC teardown reason=%s (%u) — reconnect armed", n, (unsigned)reason);
+}
+
 static void handle_event(const cdc_acm_host_dev_event_data_t *event, void *user_ctx)
 {
+    (void)user_ctx;
     switch (event->type) {
     case CDC_ACM_HOST_ERROR:
-        ESP_LOGE(TAG, "CDC error");
+        // #FW-51: previously log-only → silent stall with false-green connected.
+        ESP_LOGE(TAG, "CDC error — tearing down for reconnect");
+        cdc_teardown(CDC_FAULT_ERROR);
         break;
     case CDC_ACM_HOST_DEVICE_DISCONNECTED:
         ESP_LOGW(TAG, "Device disconnected");
-        if (s_cdc_dev) {
-            cdc_acm_host_close(s_cdc_dev);
-            s_cdc_dev = NULL;
-        }
-        DIAG_LOCK(); s_diag.cdc_open = false; DIAG_UNLOCK();  // #FW-22
+        cdc_teardown(CDC_FAULT_DISCONNECT);
         break;
     default:
         break;
@@ -358,6 +407,11 @@ static void try_open_device(void)
         return;
     }
 
+    // #FW-51: count successful reconnects (attempt>1 means we opened before or retried).
+    if (s_attempt > 1) {
+        DIAG_LOCK(); s_diag.reconnect_ok++; DIAG_UNLOCK();
+    }
+
     // #FW-22: захват результата каждого FTDI control-request в bitmask
     uint8_t ftdi_mask = 0;
     esp_err_t fe = ESP_OK, flast = ESP_OK;
@@ -435,7 +489,40 @@ void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfal
 
 static void usb_connect_task(void *arg)
 {
+    (void)arg;
     while (1) {
+        // #FW-51: health checks while handle claims open — recover without waiting
+        // for a DISCONNECTED event that never arrives after CDC_ACM_HOST_ERROR.
+        if (s_cdc_dev) {
+            int num_devs = 0;
+            uint8_t dev_addrs[8];
+            usb_host_device_addr_list_fill(sizeof(dev_addrs)/sizeof(dev_addrs[0]),
+                                          dev_addrs, &num_devs);
+            DIAG_LOCK();
+            s_diag.bus_devs_now = (uint8_t)num_devs;
+            s_diag.conn_task_alive_ts_ms = diag_now_ms();
+            uint32_t now = diag_now_ms();
+            uint32_t open_ts = s_diag.last_open_ts_ms;
+            uint32_t rx_ts = s_diag.rx_last_ts_ms;
+            DIAG_UNLOCK();
+
+            uint32_t open_age = now - open_ts;
+            if (open_age >= CDC_RX_WATCHDOG_ARM_MS) {
+                if (num_devs == 0) {
+                    ESP_LOGW(TAG, "bus empty while CDC open (age=%u ms) — teardown",
+                             (unsigned)open_age);
+                    cdc_teardown(CDC_FAULT_BUS_EMPTY);
+                } else {
+                    uint32_t rx_age = (rx_ts >= open_ts) ? (now - rx_ts) : open_age;
+                    if (rx_age >= CDC_RX_WATCHDOG_MS) {
+                        ESP_LOGW(TAG, "RX watchdog: rx_age=%u ms open_age=%u ms — teardown",
+                                 (unsigned)rx_age, (unsigned)open_age);
+                        cdc_teardown(CDC_FAULT_RX_WATCHDOG);
+                    }
+                }
+            }
+        }
+
         try_open_device();
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -511,7 +598,18 @@ void usb_host_cdc_init(void)
 
 bool usb_host_cdc_is_connected(void)
 {
-    return s_cdc_dev != NULL;
+    // #FW-51: handle alone lied for hours after CDC ERROR (bus empty, RX frozen).
+    // Require recent RX after a short post-open grace so UI/HB/status never false-green.
+    if (!s_cdc_dev) return false;
+    DIAG_LOCK();
+    uint32_t open_ts = s_diag.last_open_ts_ms;
+    uint32_t rx_ts = s_diag.rx_last_ts_ms;
+    DIAG_UNLOCK();
+    uint32_t now = diag_now_ms();
+    uint32_t open_age = now - open_ts;
+    if (open_age < CDC_RX_GRACE_MS) return true;
+    if (rx_ts < open_ts) return false;
+    return (now - rx_ts) < CDC_RX_WATCHDOG_MS;
 }
 
 int usb_host_cdc_send(const uint8_t *data, size_t len)
@@ -554,21 +652,20 @@ void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out)
 }
 
 // #FW-43: см. декларацию в atomspectra.h. true = «прибор определился, но не запитан».
-// CDC открыт (usb_host_cdc_is_connected) И FTDI-кадры свежие (rx_last_ts <4с — keep-alive
-// '01 60' идёт, значит это НЕ обычный физ. disconnect) И с момента открытия CDC прошло >6с
-// (дали окно на ответ -inf) И за это время НИ одного SHPROTO-пакета (last_shproto_ts_ms <
-// last_open_ts_ms). Здоровый прибор отвечает на -inf за 1-2с → last_shproto_ts_ms > last_open
-// → false навсегда. На реконнекте last_open_ts_ms обновляется → «молчащий» ловится снова.
+// CDC live (usb_host_cdc_is_connected — #FW-51 fresh RX) И FTDI-кадры свежие И с момента
+// открытия CDC прошло >6с И за это время НИ одного SHPROTO-пакета.
+// #FW-51: when RX itself dies, is_connected() goes false → we return false here (not
+// "dead spectrometer"); teardown/reconnect handles that path instead.
 bool usb_host_cdc_spectrometer_dead(void)
 {
-    if (!usb_host_cdc_is_connected()) return false;   // ничего не открыто → не «мёртвый»
+    if (!usb_host_cdc_is_connected()) return false;   // offline / reconnecting → not «мёртвый»
     DIAG_LOCK();
     uint32_t now      = diag_now_ms();
     uint32_t rx_age   = now - s_diag.rx_last_ts_ms;
     uint32_t open_age = now - s_diag.last_open_ts_ms;
     bool silent_since_open = (s_diag.last_shproto_ts_ms < s_diag.last_open_ts_ms);
     DIAG_UNLOCK();
-    if (rx_age >= 4000) return false;    // FTDI-кадры не идут → обычный disconnect, не наш случай
+    if (rx_age >= 4000) return false;    // FTDI-кадры не идут → disconnect/watchdog territory
     if (open_age < 6000) return false;   // окно на ответ -inf после (ре)открытия CDC
     return silent_since_open;
 }
