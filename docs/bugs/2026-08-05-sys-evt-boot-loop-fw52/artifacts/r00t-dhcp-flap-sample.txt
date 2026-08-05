@@ -1,0 +1,20 @@
+ 2026-08-05 17:17:54 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:17:56 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:17:56 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:17:59 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:17:59 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:01 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:01 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:03 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:03 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:06 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:06 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:09 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:09 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:11 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:11 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:14 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:14 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:16 dhcp,info dhcp_iot deassigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+ 2026-08-05 17:18:16 dhcp,info dhcp_iot assigned 192.168.20.183 for 44:1B:F6:8D:5B:90 atomspectra-gw
+

@@ -9,8 +9,10 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 ### #FW-52: post-RESET boot-loop — `sys_evt` stack overflow (dbglog + GOT_IP)
 
 **Status:** root cause confirmed on hardware 2026-08-05 (`.183` / `v1.2.4`);
-code fix (stack 4096 + skip dbglog format/ring on `sys_evt`/`wifi`) awaits
-build + flash (full flash + NVS backups already frozen).
+fix in `583fb20` (stack 4096 + skip dbglog format/ring on `sys_evt`/`wifi`).
+Evidence: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/).
+Awaiting/received: app-only flash + serial verify on `.183` — **PASS** (2026-08-05;
+followup `…/20260805T145313Z-p1c-fw52-flash-verify/`). #FW-51 remains separate.
 
 **Observation:** after RESET, DHCP assign/deassign ~every 2 s, HTTP/ping dead,
 green LED blinks. Serial: almost always `stack overflow in task sys_evt` right
@@ -24,8 +26,9 @@ after `Connected, IP: …`; rarely WPA/AES `LoadProhibited` with a misleading
 3. By GOT_IP time, httpd/mDNS/SNTP/USB are already up; `esp_netif_handlers` +
    `wifi_mgr` INFO on `sys_evt` overflows → reboot.
 
-**Evidence:** lab incident followups under  
-`…/20260805T103100Z-cdc-stall-board183/followups/` (P1 serial + P1b flash/NVS).
+**Evidence:** [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/)
+(factory app image + serial + addr2line; no NVS/full-flash in-tree).
+Private lab backups remain under macos-lab `.lab/incidents/…`.
 
 **Do not confuse with:** #FW-51 (CDC silent stall), #FW-13 (WiFi jitter under LittleFS).
 

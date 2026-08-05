@@ -9,8 +9,10 @@
 ### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
 
 **Статус:** root cause подтверждён на железе 2026-08-05 (`.183` / `v1.2.4`);
-фикс в коде (stack 4096 + skip dbglog format/ring на `sys_evt`/`wifi`) —
-ожидает сборки и flash (бэкапы flash/NVS уже сняты).
+фикс в `583fb20` (stack 4096 + skip dbglog format/ring на `sys_evt`/`wifi`).
+Evidence pack: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/).
+Ожидает/получено: app-only flash + serial verify на `.183` — **PASS** (2026-08-05;
+followup `…/20260805T145313Z-p1c-fw52-flash-verify/`). #FW-51 отдельно.
 
 **Наблюдение:** после RESET плата получает DHCP ~каждые 2 с, HTTP/ping мертвы,
 зелёный LED моргает. Serial: почти всегда
@@ -24,9 +26,9 @@
 3. К моменту GOT_IP уже подняты httpd/mDNS/SNTP/USB; на `sys_evt` идут
    `esp_netif_handlers` + `wifi_mgr` INFO → overflow → reboot.
 
-**Evidence:**  
-`.lab/incidents/20260805T103100Z-cdc-stall-board183/followups/20260805T141559Z-p1-console-only/`  
-+ `…/20260805T142856Z-p1b-flash-settings-backup/` (full flash + NVS/phy frozen).
+**Evidence:** [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/)
+(factory app image + serial + addr2line; no NVS/full-flash in-tree).
+Private lab backups remain under macos-lab `.lab/incidents/…`.
 
 **Не путать с:** #FW-51 (CDC silent stall), #FW-13 (WiFi jitter под LittleFS).
 
