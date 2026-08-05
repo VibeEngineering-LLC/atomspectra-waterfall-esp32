@@ -6,6 +6,29 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ## Open
 
+### #FW-52: post-RESET boot-loop — `sys_evt` stack overflow (dbglog + GOT_IP)
+
+**Status:** root cause confirmed on hardware 2026-08-05 (`.183` / `v1.2.4`);
+code fix (stack 4096 + skip dbglog format/ring on `sys_evt`/`wifi`) awaits
+build + flash (full flash + NVS backups already frozen).
+
+**Observation:** after RESET, DHCP assign/deassign ~every 2 s, HTTP/ping dead,
+green LED blinks. Serial: almost always `stack overflow in task sys_evt` right
+after `Connected, IP: …`; rarely WPA/AES `LoadProhibited` with a misleading
+`spec_cache:` log TAG.
+
+**Cause (not LittleFS / not a corrupt spectrum HTTP cache):**
+1. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` (IDF default).
+2. `#FW-50` `hooked_vprintf` places a 512-byte format buffer + ring append on the
+   calling task stack; dbglog was **ON** at DEBUG.
+3. By GOT_IP time, httpd/mDNS/SNTP/USB are already up; `esp_netif_handlers` +
+   `wifi_mgr` INFO on `sys_evt` overflows → reboot.
+
+**Evidence:** lab incident followups under  
+`…/20260805T103100Z-cdc-stall-board183/followups/` (P1 serial + P1b flash/NVS).
+
+**Do not confuse with:** #FW-51 (CDC silent stall), #FW-13 (WiFi jitter under LittleFS).
+
 ### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)
 
 **Status:** open · confirmed on hardware 2026-08-05 (board `.183` / board-2, `v1.2.4`).

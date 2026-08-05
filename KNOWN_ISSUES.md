@@ -6,6 +6,30 @@
 
 ## Открытые
 
+### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
+
+**Статус:** root cause подтверждён на железе 2026-08-05 (`.183` / `v1.2.4`);
+фикс в коде (stack 4096 + skip dbglog format/ring на `sys_evt`/`wifi`) —
+ожидает сборки и flash (бэкапы flash/NVS уже сняты).
+
+**Наблюдение:** после RESET плата получает DHCP ~каждые 2 с, HTTP/ping мертвы,
+зелёный LED моргает. Serial: почти всегда
+`stack overflow in task sys_evt` сразу после `Connected, IP: …`; редко
+`LoadProhibited` в WPA/AES (`esp_intr_alloc`) с ложным TAG `spec_cache:`.
+
+**Причина (не LittleFS / не «битый spec_cache»):**
+1. `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` (IDF default).
+2. `#FW-50` `hooked_vprintf` кладёт `char buf[512]` + ring на стек вызывающей
+   задачи; dbglog был **ON**, level=DEBUG.
+3. К моменту GOT_IP уже подняты httpd/mDNS/SNTP/USB; на `sys_evt` идут
+   `esp_netif_handlers` + `wifi_mgr` INFO → overflow → reboot.
+
+**Evidence:**  
+`.lab/incidents/20260805T103100Z-cdc-stall-board183/followups/20260805T141559Z-p1-console-only/`  
++ `…/20260805T142856Z-p1b-flash-settings-backup/` (full flash + NVS/phy frozen).
+
+**Не путать с:** #FW-51 (CDC silent stall), #FW-13 (WiFi jitter под LittleFS).
+
 ### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
 
 **Статус:** открыто · подтверждено на железе 2026-08-05 (плата `.183` / board-2, `v1.2.4`).
