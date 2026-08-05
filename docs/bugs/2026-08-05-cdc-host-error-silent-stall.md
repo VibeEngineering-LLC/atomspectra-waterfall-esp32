@@ -1,8 +1,9 @@
 # #FW-51 — USB Host `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect, no user alert)
 
-**Status:** code fixed 2026-08-05 · awaits app-flash + hardware verify / soak on `.183`  
+**Status:** code + HW verify **PASS** 2026-08-05 · soak 24–48 h on **`v1.2.5`** before upstream PR  
 **Board:** `192.168.20.183` / lab `ae71a8c38527` (board-2)  
-**Firmware (incident):** `v1.2.4`  
+**Firmware (incident):** `v1.2.4` · **fix ship:** `v1.2.5`  
+**Release notes:** [`docs/releases/v1.2.5-fw51-fw43-hotplug.md`](../releases/v1.2.5-fw51-fw43-hotplug.md)  
 **Evidence (frozen):**  
 `atomspectra-waterfall-esp32-macos-lab/.lab/incidents/20260805T103100Z-cdc-stall-board183/`  
 (gitignored `.lab/`; tar before flash/erase — see incident `README.md`)
@@ -11,7 +12,8 @@
 
 ## Fix landed (2026-08-05)
 
-Implements §5–6 below in `main/usb_host_cdc.c` / `atomspectra.h` / `web_server.c`:
+Implements §5–6 below in `main/usb_host_cdc.c` / `atomspectra.h` / `web_server.c`
+(commit `235ee52`, then #FW-43 hotplug follow-on in `v1.2.5`):
 
 | Item | Behavior |
 |---|---|
@@ -20,10 +22,12 @@ Implements §5–6 below in `main/usb_host_cdc.c` / `atomspectra.h` / `web_serve
 | RX watchdog | After open ≥10 s: `rx_age≥8s` or `bus_devs_now==0` → teardown |
 | `usb_host_cdc_is_connected()` | Handle + fresh RX after 5 s grace (no false-green) |
 | `/api/usb-diag` | `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`, `reconnect_ok`, `last_fault_*` |
+| Hotplug follow-on | `cdc_reset_rx_path`, `-inf` retries, deferred `POST /api/usb/recover`, Retry UI |
 
 `#FW-43` `spectrometer_dead()` unchanged in intent (fresh FTDI, no SHPROTO); when RX dies, `is_connected()` goes false first.
 
-**Still required for full close:** explicit flash «да» on `.183` with AtomSpectra on USB-host; unplug + ERROR path; ≥24 h soak without false-green.
+**HW verify done:** unplug/replug CDC; spectrometer USB ~10 s cycle; live recover without reboot.  
+**Still open for full close:** ≥24–48 h soak on `v1.2.5` — never false-green with flat counts.
 
 ---
 

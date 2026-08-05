@@ -145,14 +145,16 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)
 
-**Status:** code fixed 2026-08-05 (awaits app-flash + hardware verify / soak on `.183`).
+**Status:** code + HW verify on `.183` — **PASS** 2026-08-05; **soak 24–48 h** on
+`v1.2.5` before close / upstream PR. Release notes:
+[`docs/releases/v1.2.5-fw51-fw43-hotplug.md`](docs/releases/v1.2.5-fw51-fw43-hotplug.md).
 Write-up: [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md).
 
 **Was:** after `CDC error` without `Device disconnected`, handle stayed non-NULL →
 false-green `analyzer_connected` / `usb_connected`, frozen counts, no reconnect.
 `#FW-43` `spectrometer_dead` returned false when `rx_age≥4s` by design.
 
-**Fix (`main/usb_host_cdc.c` + diag JSON):**
+**Fix (`main/usb_host_cdc.c` + diag JSON; commit `235ee52`):**
 1. `cdc_teardown(reason)` — unified close+null+`cdc_open=false` (mutex claim).
 2. `CDC_ACM_HOST_ERROR` → teardown (`error`), same as disconnect.
 3. RX watchdog / bus-empty in `usb_connect_task` (≥10 s open, then `rx_age≥8s` or
@@ -161,8 +163,14 @@ false-green `analyzer_connected` / `usb_connected`, frozen counts, no reconnect.
 5. `/api/usb-diag`: `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`,
    `reconnect_ok`, `last_fault_reason` / `last_fault_ts_ms`.
 
-**Verify before full close:** unplug; yank→ERROR; overnight ≥24 h — never
-false-green with flat counts. Flash only after explicit «да».
+**HW verify:** unplug → `last_fault=disconnect`, `reconnect_ok≥1`, live again.
+
+**Follow-on (hotplug UX / #FW-43 soft-lock, `v1.2.5`):** after unplug/replug the
+“power-cycle the board” banner + inert Start was a soft false-lock: RX SHPROTO
+not reset, single `-inf`, `POST /api/usb/recover` from httpd → reboot. Fix:
+`cdc_reset_rx_path`, `-inf` retries, deferred teardown on `usb_conn`, banner +
+“Retry link”, `last_shproto_ts_ms`. Soft recover cannot invent a spectrometer
+MCU VBUS edge.
 
 ### #FW-52: post-RESET boot-loop — `sys_evt` stack overflow (dbglog + GOT_IP)
 

@@ -142,14 +142,16 @@ USB/CDC исправно. **Переподключение USB настройк�
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
 
-**Статус:** код исправлен 2026-08-05 (ждёт app-flash + hardware verify / soak на `.183`).
+**Статус:** код + HW verify на `.183` — **PASS** 2026-08-05; **soak 24–48 h** на
+`v1.2.5` перед закрытием / PR upstream. Release notes:
+[`docs/releases/v1.2.5-fw51-fw43-hotplug.md`](docs/releases/v1.2.5-fw51-fw43-hotplug.md).
 Write-up: [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md).
 
 **Было:** после `CDC error` без `Device disconnected` handle оставался non-NULL →
 false-green `analyzer_connected` / `usb_connected`, counts freeze, reconnect не
 запускался. `#FW-43` `spectrometer_dead` при `rx_age≥4s` специально возвращал false.
 
-**Исправление (`main/usb_host_cdc.c` + diag JSON):**
+**Исправление (`main/usb_host_cdc.c` + diag JSON; commit `235ee52`):**
 1. `cdc_teardown(reason)` — единый close+null+`cdc_open=false` (claim под mutex).
 2. `CDC_ACM_HOST_ERROR` → teardown (`error`), как disconnect.
 3. RX watchdog / bus-empty в `usb_connect_task` (≥10 s open, затем `rx_age≥8s` или
@@ -158,8 +160,14 @@ false-green `analyzer_connected` / `usb_connected`, counts freeze, reconnect н�
 5. `/api/usb-diag`: `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`,
    `reconnect_ok`, `last_fault_reason` / `last_fault_ts_ms`.
 
-**Проверка до полного закрытия:** unplug; yank→ERROR; overnight ≥24 h — never
-false-green with flat counts. Flash только после явного «да».
+**HW verify:** unplug → `last_fault=disconnect`, `reconnect_ok≥1`, live again.
+
+**Следом (hotplug UX / #FW-43 soft-lock, `v1.2.5`):** после unplug/replug баннер
+«выключите питание платы» + мёртвый Старт — soft false-lock: RX SHPROTO не
+сбрасывался, `-inf` без retry, `POST /api/usb/recover` из httpd → reboot.
+Фикс: `cdc_reset_rx_path`, retry `-inf`, deferred teardown на `usb_conn`, баннер
++ «Повторить связь», `last_shproto_ts_ms`. Soft recover не заменяет VBUS edge
+на MCU спектрометра.
 
 ### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
 
