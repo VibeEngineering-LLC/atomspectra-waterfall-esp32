@@ -41,6 +41,7 @@ static SemaphoreHandle_t s_tx_mutex = NULL;
 #define CDC_FAULT_ERROR        2
 #define CDC_FAULT_RX_WATCHDOG  3
 #define CDC_FAULT_BUS_EMPTY    4
+#define CDC_FAULT_RECOVER      5  // user/API forced reopen (#FW-43 Retry)
 // After open, allow this long before requiring RX (FTDI keep-alive / data).
 #define CDC_RX_GRACE_MS        5000u
 // Stale RX while handle still open → teardown + reconnect (covers ERROR-without-DISCONNECT).
@@ -49,6 +50,9 @@ static SemaphoreHandle_t s_tx_mutex = NULL;
 #define CDC_RX_WATCHDOG_ARM_MS 10000u
 
 static void cdc_teardown(uint8_t reason);
+// Defer close out of httpd / alien tasks — cdc_acm_host_close from POST /api/usb/recover
+// rebooted the board (observed 2026-08-05: Connection reset + uptime reset).
+static volatile uint8_t s_teardown_req = 0;
 
 static uint8_t s_rx_buf[4096];
 static shproto_struct s_rx_packet;
@@ -266,6 +270,19 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
     return true;
 }
 
+// #FW-51/#FW-43: after unplug/replug the RX SHPROTO state machine can sit mid-frame
+// (partial bytes from the old session). FTDI keep-alive still refreshes rx_last_ts →
+// spectrometer_dead() stays true forever and -inf answers never parse. Reset parser
+// + drain the RX ring on every teardown and before each successful open.
+static void cdc_reset_rx_path(void)
+{
+    shproto_init(&s_rx_packet, s_rx_buf, sizeof(s_rx_buf));
+    s_text_accum_len = 0;
+    if (s_rx_ring) {
+        xStreamBufferReset(s_rx_ring);
+    }
+}
+
 // #FW-51: unified close path for DISCONNECT / CDC ERROR / RX watchdog / empty bus.
 // Clears s_cdc_dev first so is_connected() and concurrent event callbacks see offline
 // immediately (no false-green). Safe if already torn down (claim under DIAG_LOCK).
@@ -287,6 +304,8 @@ static void cdc_teardown(uint8_t reason)
     }
     DIAG_UNLOCK();
 
+    cdc_reset_rx_path();
+
     if (!h) return;
 
     esp_err_t cerr = cdc_acm_host_close(h);
@@ -295,7 +314,7 @@ static void cdc_teardown(uint8_t reason)
     }
 
     static const char *const names[] = {
-        "none", "disconnect", "error", "rx_watchdog", "bus_empty"
+        "none", "disconnect", "error", "rx_watchdog", "bus_empty", "recover"
     };
     const char *n = (reason < sizeof(names)/sizeof(names[0])) ? names[reason] : "?";
     ESP_LOGW(TAG, "CDC teardown reason=%s (%u) — reconnect armed", n, (unsigned)reason);
@@ -426,21 +445,46 @@ static void try_open_device(void)
     ESP_LOGI(TAG, "FTDI configured baud=%u 8N1", ANALYZER_BAUD);
     ESP_LOGI(TAG, "Analyzer connected (VID=%04x PID=%04x)", ANALYZER_VID, ANALYZER_PID);
     s_rx_cb_count = 0;
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // #FW-43 hotplug: purge any mid-frame RX state from the previous session before
+    // we talk to the instrument again.
+    cdc_reset_rx_path();
+    // Give FTDI + MCU UART more settle time after USB re-enum (100 ms was tight on replug).
+    vTaskDelay(pdMS_TO_TICKS(300));
 
-    shproto_init(&s_tx_packet, s_tx_buf, sizeof(s_tx_buf));
-    shproto_packet_start(&s_tx_packet, CMD_TEXT);
-    const char *cmd = "-inf";
-    while (*cmd) shproto_packet_add_data(&s_tx_packet, *cmd++);
-    shproto_packet_add_data(&s_tx_packet, '\0');
-    shproto_packet_complete(&s_tx_packet);
-    esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
-    DIAG_LOCK();
-    s_diag.tx_packets++; s_diag.tx_bytes += s_tx_packet.len;
-    s_diag.last_tx_ts_ms = diag_now_ms(); s_diag.last_tx_errno = (int32_t)txerr;
-    strncpy(s_diag.last_tx_cmd, "-inf", sizeof(s_diag.last_tx_cmd)-1); s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd)-1]='\0';
-    DIAG_UNLOCK();
-    ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s", (unsigned)s_tx_packet.len, esp_err_to_name(txerr));
+    // -inf on open; on reconnect retry a few times — otherwise dead banner sticks while
+    // FTDI keep-alive alone keeps is_connected/spectrometer_dead armed.
+    bool will_be_first = !s_boot_once_done;
+    int tries = will_be_first ? 1 : 4;
+    for (int t = 0; t < tries; t++) {
+        if (t > 0) {
+            vTaskDelay(pdMS_TO_TICKS(400 * t));  // 400, 800, 1200 ms
+            ESP_LOGW(TAG, "retry -inf after reconnect (%d/%d)", t + 1, tries);
+        }
+        shproto_init(&s_tx_packet, s_tx_buf, sizeof(s_tx_buf));
+        shproto_packet_start(&s_tx_packet, CMD_TEXT);
+        const char *cmd = "-inf";
+        while (*cmd) shproto_packet_add_data(&s_tx_packet, *cmd++);
+        shproto_packet_add_data(&s_tx_packet, '\0');
+        shproto_packet_complete(&s_tx_packet);
+        esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
+        DIAG_LOCK();
+        s_diag.tx_packets++; s_diag.tx_bytes += s_tx_packet.len;
+        s_diag.last_tx_ts_ms = diag_now_ms(); s_diag.last_tx_errno = (int32_t)txerr;
+        strncpy(s_diag.last_tx_cmd, "-inf", sizeof(s_diag.last_tx_cmd)-1); s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd)-1]='\0';
+        DIAG_UNLOCK();
+        ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s try=%d", (unsigned)s_tx_packet.len, esp_err_to_name(txerr), t + 1);
+        if (will_be_first) break;
+        // Wait briefly for a CRC-valid SHPROTO (text/-inf answer or hist/stat).
+        vTaskDelay(pdMS_TO_TICKS(500));
+        DIAG_LOCK();
+        uint32_t sh_ts = s_diag.last_shproto_ts_ms;
+        uint32_t open_ts = s_diag.last_open_ts_ms;
+        DIAG_UNLOCK();
+        if (sh_ts >= open_ts) {
+            ESP_LOGI(TAG, "SHPROTO after -inf (sh=%u open=%u) — reconnect alive", (unsigned)sh_ts, (unsigned)open_ts);
+            break;
+        }
+    }
 
     // Однократно отметить, что первый коннект после ребута состоялся: автозапуск
     // (#FW-2) и очистка прибора (#FW-3) применяются ровно один раз за boot, не на
@@ -491,6 +535,14 @@ static void usb_connect_task(void *arg)
 {
     (void)arg;
     while (1) {
+        // Deferred teardown (recover / optionally future callers) — must run here,
+        // not on the httpd task that services POST /api/usb/recover.
+        if (s_teardown_req) {
+            uint8_t reason = s_teardown_req;
+            s_teardown_req = 0;
+            cdc_teardown(reason);
+        }
+
         // #FW-51: health checks while handle claims open — recover without waiting
         // for a DISCONNECTED event that never arrives after CDC_ACM_HOST_ERROR.
         if (s_cdc_dev) {
@@ -617,6 +669,17 @@ int usb_host_cdc_send(const uint8_t *data, size_t len)
     if (!s_cdc_dev) return -1;
     if (xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(500)) != pdTRUE) return -1;
     esp_err_t err = cdc_acm_host_data_tx_blocking(s_cdc_dev, data, len, 1000);
+    DIAG_LOCK();
+    s_diag.tx_packets++;
+    s_diag.tx_bytes += (uint32_t)len;
+    s_diag.last_tx_ts_ms = diag_now_ms();
+    s_diag.last_tx_errno = (int32_t)err;
+    // Best-effort label for UI commands (SHPROTO text payloads start after header).
+    if (len >= 4) {
+        strncpy(s_diag.last_tx_cmd, "pkt", sizeof(s_diag.last_tx_cmd) - 1);
+        s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd) - 1] = '\0';
+    }
+    DIAG_UNLOCK();
     xSemaphoreGive(s_tx_mutex);
     return (err == ESP_OK) ? 0 : -1;
 }
@@ -721,6 +784,8 @@ void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz)
 
 int usb_host_send_text_command(const char *cmd)
 {
+    if (!cmd) return -1;
+    const char *cmd0 = cmd;  // #FW-43: do not advance cmd before strncpy label
     uint8_t pkt_buf[256];
     shproto_struct pkt;
     shproto_init(&pkt, pkt_buf, sizeof(pkt_buf));
@@ -728,5 +793,21 @@ int usb_host_send_text_command(const char *cmd)
     while (*cmd) shproto_packet_add_data(&pkt, *cmd++);
     shproto_packet_add_data(&pkt, '\0');
     shproto_packet_complete(&pkt);
-    return usb_host_cdc_send(pkt.data, pkt.len);
+    int rc = usb_host_cdc_send(pkt.data, pkt.len);
+    if (rc == 0) {
+        DIAG_LOCK();
+        strncpy(s_diag.last_tx_cmd, cmd0, sizeof(s_diag.last_tx_cmd) - 1);
+        s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd) - 1] = '\0';
+        DIAG_UNLOCK();
+    }
+    return rc;
+}
+
+// #FW-43: UI «Повторить связь» — request teardown on usb_conn task (NOT httpd).
+// Direct cdc_teardown() from HTTP caused full board reboot (WiFi drop, uptime reset);
+// banner cleared briefly then dead=1 again after boot.
+void usb_host_cdc_request_recover(void)
+{
+    ESP_LOGW(TAG, "CDC recover requested — defer teardown to usb_conn");
+    s_teardown_req = CDC_FAULT_RECOVER;
 }

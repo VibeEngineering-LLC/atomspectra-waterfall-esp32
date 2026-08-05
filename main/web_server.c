@@ -227,14 +227,9 @@ static esp_err_t handle_command(httpd_req_t *req)
         return ESP_FAIL;
     }
     body[recv_len] = '\0';
-    uint8_t pkt_buf[512];
-    shproto_struct pkt;
-    shproto_init(&pkt, pkt_buf, sizeof(pkt_buf));
-    shproto_packet_start(&pkt, CMD_TEXT);
-    for (int i = 0; i <= recv_len; i++)
-        shproto_packet_add_data(&pkt, body[i]);
-    shproto_packet_complete(&pkt);
-    int ret = usb_host_cdc_send(pkt.data, pkt.len);
+    // UI posts raw text ("-sta"); keep that contract. #FW-43: use send_text so
+    // last_tx_cmd is visible on /api/usb-diag when Start appears to "do nothing".
+    int ret = usb_host_send_text_command(body);
     httpd_resp_sendstr(req, ret == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
     return ESP_OK;
 }
@@ -1213,6 +1208,16 @@ static esp_err_t handle_system(httpd_req_t *req)
     return ESP_OK;
 }
 
+// #FW-43: POST /api/usb/recover — UI «Повторить связь». Teardown CDC; connect task
+// re-opens within ~2s with RX reset + FTDI re-init + -inf retries.
+static esp_err_t handle_usb_recover(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    usb_host_cdc_request_recover();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"reopening\":true}");
+}
+
 // #FW-22: глубокая USB-Host диагностика (read-only JSON снапшота usb_diag_snapshot_t).
 // Инструментация для #FW-43 (hot-plug re-init): enum_cb_count/open_attempts/cdc_open/
 // last_open_errno/rx_cb_count/pkt_hist позволяют увидеть, где рвётся реконнект прибора.
@@ -1265,6 +1270,7 @@ static esp_err_t handle_usb_diag(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "pkt_stat",              d.pkt_stat);
     cJSON_AddNumberToObject(root, "pkt_osc",               d.pkt_osc);
     cJSON_AddNumberToObject(root, "pkt_unknown",           d.pkt_unknown);
+    cJSON_AddNumberToObject(root, "last_shproto_ts_ms",    d.last_shproto_ts_ms);
     cJSON_AddNumberToObject(root, "drv_task_alive_ts_ms",  d.drv_task_alive_ts_ms);
     cJSON_AddNumberToObject(root, "conn_task_alive_ts_ms", d.conn_task_alive_ts_ms);
     cJSON_AddNumberToObject(root, "dma_free_largest",      d.dma_free_largest);
@@ -1873,6 +1879,7 @@ void web_server_init(void)
         {"/api/device",                  HTTP_GET,  handle_device,           NULL},
         {"/api/system",                  HTTP_GET,  handle_system,           NULL},
         {"/api/usb-diag",                HTTP_GET,  handle_usb_diag,         NULL},  // #FW-22
+        {"/api/usb/recover",             HTTP_POST, handle_usb_recover,      NULL},  // #FW-43
         {"/api/reboot-device",           HTTP_POST, handle_reboot_device,    NULL},
         {"/api/wifi/reset",              HTTP_POST, handle_wifi_reset,       NULL},
         {"/api/reboot-esp",              HTTP_POST, handle_reboot_esp,       NULL},

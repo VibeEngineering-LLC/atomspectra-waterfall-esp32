@@ -81,6 +81,8 @@ bool usb_host_cdc_is_connected(void);
 int  usb_host_cdc_send(const uint8_t *data, size_t len);
 void usb_host_cdc_set_raw_rx_cb(usb_raw_rx_cb_t cb);
 int  usb_host_send_text_command(const char *cmd);
+// #FW-43: force CDC teardown → connect-task reopen (Retry link / silent MCU after hotplug)
+void usb_host_cdc_request_recover(void);
 // #FW-2/#FW-3: настройки автозапуска/очистки при старте платы. Вызвать ОДИН раз
 // ДО usb_host_cdc_init() — флаги применяются однократно при первом USB-коннекте.
 void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfall, bool clear_spectrum);
@@ -138,7 +140,7 @@ typedef struct {
     uint32_t rx_watchdog_trips;     // teardowns due to stale RX while handle open
     uint32_t bus_empty_trips;       // teardowns due to bus_devs_now==0 while open
     uint32_t reconnect_ok;          // successful opens after a prior open (reconnects)
-    uint8_t  last_fault_reason;     // 0=none 1=disconnect 2=error 3=rx_watchdog 4=bus_empty
+    uint8_t  last_fault_reason;     // 0=none 1=disconnect 2=error 3=rx_watchdog 4=bus_empty 5=recover
     uint32_t last_fault_ts_ms;
     // FTDI init (bitmask 6 бит: RESET/SETBAUD/SETDATA/SETFLOW/SETMODEM/RESET_END)
     uint8_t  ftdi_step_ok_mask;

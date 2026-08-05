@@ -189,7 +189,8 @@ var DICT={
   "status.rebooting":"Перезагрузка...",
   "status.wifiSetup":"Настройка WiFi...",
   "status.nodata":"Нет данных",
-  "dead.warn":"⚠ Спектрометр определился, но не отвечает — нет данных. Скорее всего подключён без питания. Выключите питание платы на ~5 секунд и включите снова, уже с подключённым спектрометром.",
+  "dead.warn":"⚠ Спектрометр на шине (FTDI), но нет ответа по протоколу. Нажмите «Повторить связь» или Старт. Если не поможет — выньте/вставьте USB спектрометра; крайний случай — питание платы ~5 с с уже подключённым прибором.",
+  "dead.retry":"Повторить связь",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 КБ (%3%) &middot; свободно %4 КБ",
   "btn.start":"&#9654; Старт","btn.stop":"&#9632; Стоп","btn.reset":"&#8634; Сброс",
@@ -235,7 +236,8 @@ var DICT={
   "status.rebooting":"Rebooting...",
   "status.wifiSetup":"WiFi setup...",
   "status.nodata":"No data",
-  "dead.warn":"⚠ Spectrometer detected but not responding — no data. It is likely connected without power. Switch the board power off for ~5 seconds, then on again with the spectrometer already connected.",
+  "dead.warn":"⚠ Spectrometer is on the bus (FTDI) but not answering the protocol. Press “Retry link” or Start. If that fails, unplug/replug the spectrometer USB; last resort — power-cycle the board ~5 s with the instrument already connected.",
+  "dead.retry":"Retry link",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 KB (%3%) &middot; free %4 KB",
   "btn.start":"&#9654; Start","btn.stop":"&#9632; Stop","btn.reset":"&#8634; Reset",
@@ -348,7 +350,31 @@ function clearCanvas(){
  X.save();X.translate(12,PT+PH/2);X.rotate(-Math.PI/2);X.textAlign="center";X.fillText(isCps?tr("ax.cps"):tr("ax.cnt"),0,0);X.restore();
 }
 
-function setDeadBanner(on){var b=document.getElementById("dead-banner");if(!b)return;if(on){b.innerHTML=tr("dead.warn");b.style.display="";}else{b.style.display="none";}}  /* #FW-43: баннер «определился, но не запитан» */
+var deadBannerOn=false;
+function setDeadBanner(on){
+  var b=document.getElementById("dead-banner");
+  if(!b)return;
+  if(on){
+    // Do NOT rebuild HTML every poll — that destroys the Retry button mid-click.
+    if(!deadBannerOn){
+      b.innerHTML=tr("dead.warn")+' <button type="button" class="btn sm" id="dead-retry" style="margin-left:8px">'+tr("dead.retry")+'</button>';
+      b.style.display="";
+      var r=document.getElementById("dead-retry");
+      if(r) r.onclick=async function(){
+        r.disabled=true;
+        try{
+          await post("/api/usb/recover");
+          lg(tr("dead.retry"));
+        }catch(e){lg(tfmt("err.prefix",e));}
+        setTimeout(function(){try{r.disabled=false;}catch(x){}},4000);
+      };
+    }
+    deadBannerOn=true;
+  }else{
+    if(deadBannerOn){b.style.display="none";b.innerHTML="";}
+    deadBannerOn=false;
+  }
+}  /* #FW-43: баннер + Retry (hotplug / silent MCU) */
 async function update(){
  try{
   /* #PERF-1: binary bins (32 KiB) + meta JSON — shared 2s server cache */
