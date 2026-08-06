@@ -1,0 +1,38 @@
+Guru PC: 0x42006509
+EXCVADDR: 0x00060923
+
+===== spec_cache LoadProhibited backtrace (17 addrs) =====
+0x42006506: find_desc_for_source at components/esp_hw_support/intr_alloc.c:183
+0x42006656: get_available_int at components/esp_hw_support/intr_alloc.c:351
+0x42006888: esp_intr_alloc_intrstatus at components/esp_hw_support/intr_alloc.c:572
+0x42006ad1: esp_intr_alloc at components/esp_hw_support/intr_alloc.c:697
+0x4206499f: esp_aes_intr_alloc at components/mbedtls/port/aes/dma/esp_aes_dma_core.c:100
+0x4205ea9b: esp_aes_init at components/mbedtls/port/aes/esp_aes_common.c:46
+0x42054c9c: aes_crypt_init at components/wpa_supplicant/esp_supplicant/src/crypto/crypto_mbedtls.c:413
+0x42054dc5: aes_decrypt_init at components/wpa_supplicant/esp_supplicant/src/crypto/crypto_mbedtls.c:459
+0x4209e2b1: aes_unwrap at components/wpa_supplicant/src/crypto/aes-unwrap.c:39
+0x4209ad8d: wpa_supplicant_decrypt_key_data at components/wpa_supplicant/src/rsn_supp/wpa.c:1765
+0x4209c406: wpa_sm_rx_eapol at components/wpa_supplicant/src/rsn_supp/wpa.c:2021
+0x420d01f5: sta_rx_eapol at ??:?
+0x40386916: sta_input at ??:?
+0x40386a8d: sta_rx_cb at ??:?
+0x4038974d: ppRxPkt at ??:?
+0x40387682: ppTask at ??:?
+0x4037ec75: vPortTaskWrapper at components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+
+===== spec_cache PC alone (1 addrs) =====
+0x42006509: find_desc_for_source at components/esp_hw_support/intr_alloc.c:184
+
+
+===== sys_evt stack overflow backtrace (may be corrupted) (6 addrs) =====
+0x40375f3d: panic_abort at components/esp_system/panic.c:469
+0x4037e1dd: esp_system_abort at components/esp_system/port/esp_system_chip.c:87
+0x4037f03e: vApplicationStackOverflowHook at components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:563
+0x40380abb: vTaskSwitchContext at components/freertos/FreeRTOS-Kernel/tasks.c:3689 (discriminator 7)
+0x4037f104: _frxt_dispatch at components/freertos/FreeRTOS-Kernel/portable/xtensa/portasm.S:451
+0x4037f0fa: _frxt_int_exit at components/freertos/FreeRTOS-Kernel/portable/xtensa/portasm.S:246
+
+
+ELF_SHA256=f7b67db2d0de86058a20399f9acb92429affe62e47cf5bd1c2dc429d38013c15
+ELF_PREFIX=f7b67db2d (crash log said f7b67db2d)

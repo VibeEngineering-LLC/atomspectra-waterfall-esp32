@@ -1,0 +1,20 @@
+ 2026-08-05 17:17:54 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:17:56 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:17:56 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:17:59 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:17:59 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:01 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:01 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:03 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:03 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:06 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:06 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:09 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:09 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:11 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:11 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:14 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:14 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:16 dhcp,info deassigned <lan-ip> for <MAC> <hostname>
+ 2026-08-05 17:18:16 dhcp,info assigned <lan-ip> for <MAC> <hostname>
+

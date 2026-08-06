@@ -143,6 +143,15 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### #FW-52: post-RESET boot-loop — `sys_evt` stack overflow (dbglog + GOT_IP)
+
+**Status:** fixed; app-flash + serial verify — **PASS** 2026-08-05.
+Evidence: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/).
+
+**Cause:** `sys_evt` stack 2304 + `#FW-50` dbglog 512-byte buffer on caller stack at
+GOT_IP. Fix: stack 4096 + dbglog pass-through on `sys_evt`/`wifi`.
+
+
 ### #UI-43: X-axis scale toggle (s/m/h) on "Monitoring" had no visible effect
 
 **Status:** fixed, firmware [`firmware-v1.0.11`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/firmware-v1.0.11).

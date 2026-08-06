@@ -1,0 +1,16 @@
+{
+  "bug_id": "FW-52",
+  "title": "sys_evt stack overflow boot-loop with dbglog vprintf hook",
+  "firmware_under_test": "v1.2.4",
+  "elf_sha256_prefix": "f7b67db2d",
+  "factory_app_file": "artifacts/factory-app-v1.2.4-pre-fw52.bin",
+  "factory_app_sha256": "3ce540003d93722a9dcc7e0431c066000abe6740e81a26f9f52143c486ce4850",
+  "factory_app_size": 1500976,
+  "serial_log_sha256": "271fa32fad027227e7d3316ac2b358b164a630e36462d5294da01a3fa808ce0d",
+  "published": {
+    "nvs": false,
+    "full_16mib_flash": false,
+    "wifi_password": false,
+    "board_identity": false
+  }
+}
