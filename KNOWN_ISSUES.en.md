@@ -143,6 +143,34 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)
+
+**Status:** code + HW verify — **PASS** 2026-08-05; soak on `v1.2.5`. Release notes:
+[`docs/releases/v1.2.5-fw51-fw43-hotplug.md`](docs/releases/v1.2.5-fw51-fw43-hotplug.md).
+Write-up: [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md).
+
+**Was:** after `CDC error` without `Device disconnected`, handle stayed non-NULL →
+false-green `analyzer_connected` / `usb_connected`, frozen counts, no reconnect.
+`#FW-43` `spectrometer_dead` returned false when `rx_age≥4s` by design.
+
+**Fix (`main/usb_host_cdc.c` + diag JSON):**
+1. `cdc_teardown(reason)` — unified close+null+`cdc_open=false` (mutex claim).
+2. `CDC_ACM_HOST_ERROR` → teardown (`error`), same as disconnect.
+3. RX watchdog / bus-empty in `usb_connect_task` (arm window, then stale RX or
+   `bus_devs_now==0`) → same teardown. ARM (10 s) must be **&lt;** WD (15 s).
+4. `usb_host_cdc_is_connected()` requires fresh RX after 5 s grace (not handle alone).
+5. `/api/usb-diag`: `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`,
+   `reconnect_ok`, `last_fault_reason` / `last_fault_ts_ms`.
+
+**HW verify:** unplug → `last_fault=disconnect`, `reconnect_ok≥1`, live again.
+
+**Follow-on (hotplug UX / #FW-43 soft-lock, `v1.2.5`):** after unplug/replug the
+“power-cycle the board” banner + inert Start was a soft false-lock: RX SHPROTO
+not reset, single `-inf`, `POST /api/usb/recover` from httpd → reboot. Fix:
+RX reset on worker, `-inf` retries under `s_tx_mutex`, deferred teardown on
+`usb_conn`, banner + “Retry link”, `last_shproto_ts_ms`. Soft recover cannot
+invent a spectrometer MCU VBUS edge.
+
 ### #FW-52: post-RESET boot-loop — `sys_evt` stack overflow (dbglog + GOT_IP)
 
 **Status:** fixed; app-flash + serial verify — **PASS** 2026-08-05.
@@ -150,7 +178,6 @@ Evidence: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-
 
 **Cause:** `sys_evt` stack 2304 + `#FW-50` dbglog 512-byte buffer on caller stack at
 GOT_IP. Fix: stack 4096 + dbglog pass-through on `sys_evt`/`wifi`.
-
 
 ### #UI-43: X-axis scale toggle (s/m/h) on "Monitoring" had no visible effect
 

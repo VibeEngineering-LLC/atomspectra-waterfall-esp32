@@ -75,10 +75,14 @@ typedef struct {
 typedef void (*usb_raw_rx_cb_t)(const uint8_t *data, size_t len);
 
 void usb_host_cdc_init(void);
+// #FW-51: "live USB path" — handle open AND recent FTDI/RX (not handle alone).
+// Grace window after open before RX is required. Drives UI/HB/status false-green fix.
 bool usb_host_cdc_is_connected(void);
 int  usb_host_cdc_send(const uint8_t *data, size_t len);
 void usb_host_cdc_set_raw_rx_cb(usb_raw_rx_cb_t cb);
 int  usb_host_send_text_command(const char *cmd);
+// #FW-43: force CDC teardown → connect-task reopen (Retry link / silent MCU after hotplug)
+void usb_host_cdc_request_recover(void);
 // #FW-2/#FW-3: настройки автозапуска/очистки при старте платы. Вызвать ОДИН раз
 // ДО usb_host_cdc_init() — флаги применяются однократно при первом USB-коннекте.
 void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfall, bool clear_spectrum);
@@ -130,7 +134,14 @@ typedef struct {
     uint32_t open_attempts;
     int32_t  last_open_errno;       // esp_err_t (0 = OK)
     uint32_t last_open_ts_ms;
-    bool     cdc_open;              // s_cdc_dev != NULL
+    bool     cdc_open;              // s_cdc_dev != NULL (handle present; may be stale — see #FW-51)
+    // #FW-51: fault / recovery counters (ERROR-without-DISCONNECT + RX watchdog)
+    uint32_t cdc_error_count;       // CDC_ACM_HOST_ERROR events handled
+    uint32_t rx_watchdog_trips;     // teardowns due to stale RX while handle open
+    uint32_t bus_empty_trips;       // teardowns due to bus_devs_now==0 while open
+    uint32_t reconnect_ok;          // successful opens after a prior open (reconnects)
+    uint8_t  last_fault_reason;     // 0=none 1=disconnect 2=error 3=rx_watchdog 4=bus_empty 5=recover
+    uint32_t last_fault_ts_ms;
     // FTDI init (bitmask 6 бит: RESET/SETBAUD/SETDATA/SETFLOW/SETMODEM/RESET_END)
     uint8_t  ftdi_step_ok_mask;
     int32_t  ftdi_last_errno;
