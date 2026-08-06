@@ -140,6 +140,15 @@ USB/CDC исправно. **Переподключение USB настройк�
 
 ## Исправленные
 
+### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
+
+**Статус:** исправлен; app-flash + serial verify — **PASS** 2026-08-05.
+Evidence: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/).
+
+**Причина:** stack `sys_evt` 2304 + `#FW-50` dbglog `char buf[512]` на стеке вызывающей
+задачи при GOT_IP. Фикс: stack 4096 + pass-through dbglog на `sys_evt`/`wifi`.
+
+
 ### #UI-43: тумблер шкалы X (с/м/ч) на «Мониторинге» не давал видимого эффекта
 
 **Статус:** исправлен, прошивка [`firmware-v1.0.11`](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32/releases/tag/firmware-v1.0.11).

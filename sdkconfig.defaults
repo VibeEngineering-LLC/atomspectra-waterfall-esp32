@@ -29,6 +29,11 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # #FW-46: имя платы в DHCP (косметика) — atomspectra-gw вместо дефолтного "espressif".
 CONFIG_LWIP_LOCAL_HOSTNAME="atomspectra-gw"
 
+# #FW-52: default IDF sys_evt stack (2304) overflows on GOT_IP when #FW-50 dbglog
+# vprintf hook is ON (512 B format buf + ring on the event task) and httpd/mDNS/SNTP
+# are already up. Lab board boot-loop evidence 2026-08-05. Keep ≥4096.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
 # #TCP-1: дефолтный TCP send-буфер/окно = 5760 Б (~100 мс потока спектры @ 58 КБ/с).
 # Любой джиттер WiFi 2.4 ГГц >100 мс переполнял его → потеря байт в TCP-мосте.
 # Поднимаем до 64 КБ (максимум без window scaling) — мост терпит секунды задержки.

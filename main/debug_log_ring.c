@@ -171,8 +171,31 @@ void debug_log_ring_write_raw(const char *line)
     ring_append(tmp, n);
 }
 
+static bool task_is_stack_tight(void)
+{
+    // #FW-52: default event loop + WiFi driver run with small stacks. Our hook
+    // normally spends ~512 B on a format buffer before UART; nesting that under
+    // GOT_IP (wifi_mgr + esp_netif_handlers) overflowed sys_evt @ 2304 and
+    // rebooted the lab test board in a loop (2026-08-05). Skip ring + local format.
+    //
+    // Task names "sys_evt" / "wifi" are ESP-IDF v5.4 FreeRTOS conventions, not a
+    // public API contract — if a future IDF renames them, this pass-through silently
+    // stops and the overflow can return. Prefer uxTaskGetStackHighWaterMark if IDF
+    // exposes a stable alternative; until then keep names tied to the pinned IDF.
+    const char *name = pcTaskGetName(NULL);
+    if (!name) return false;
+    return strcmp(name, "sys_evt") == 0 || strcmp(name, "wifi") == 0;
+}
+
 static int hooked_vprintf(const char *fmt, va_list args)
 {
+    // Tight-stack tasks: pass through only (no MAX_LINE frame, no ring). UART
+    // still gets the line via IDF's vprintf; ring loses those few WiFi/IP lines.
+    if (task_is_stack_tight()) {
+        if (s_prev_vprintf) return s_prev_vprintf(fmt, args);
+        return vprintf(fmt, args);
+    }
+
     char buf[MAX_LINE];
     va_list copy;
     va_copy(copy, args);
