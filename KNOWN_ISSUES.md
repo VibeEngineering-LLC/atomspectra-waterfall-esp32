@@ -140,6 +140,34 @@ USB/CDC исправно. **Переподключение USB настройк�
 
 ## Исправленные
 
+### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
+
+**Статус:** код + HW verify — **PASS** 2026-08-05; soak на `v1.2.5`. Release notes:
+[`docs/releases/v1.2.5-fw51-fw43-hotplug.md`](docs/releases/v1.2.5-fw51-fw43-hotplug.md).
+Write-up: [`docs/bugs/2026-08-05-cdc-host-error-silent-stall.md`](docs/bugs/2026-08-05-cdc-host-error-silent-stall.md).
+
+**Было:** после `CDC error` без `Device disconnected` handle оставался non-NULL →
+false-green `analyzer_connected` / `usb_connected`, counts freeze, reconnect не
+запускался. `#FW-43` `spectrometer_dead` при `rx_age≥4s` специально возвращал false.
+
+**Исправление (`main/usb_host_cdc.c` + diag JSON):**
+1. `cdc_teardown(reason)` — единый close+null+`cdc_open=false` (claim под mutex).
+2. `CDC_ACM_HOST_ERROR` → teardown (`error`), как disconnect.
+3. RX watchdog / bus-empty в `usb_connect_task` (arm window, затем stale RX или
+   `bus_devs_now==0`) → тот же teardown. ARM (10 s) должен быть **&lt;** WD (15 s).
+4. `usb_host_cdc_is_connected()` требует свежий RX после grace 5 s (не handle alone).
+5. `/api/usb-diag`: `cdc_error_count`, `rx_watchdog_trips`, `bus_empty_trips`,
+   `reconnect_ok`, `last_fault_reason` / `last_fault_ts_ms`.
+
+**HW verify:** unplug → `last_fault=disconnect`, `reconnect_ok≥1`, live again.
+
+**Следом (hotplug UX / #FW-43 soft-lock, `v1.2.5`):** после unplug/replug баннер
+«выключите питание платы» + мёртвый Старт — soft false-lock: RX SHPROTO не
+сбрасывался, `-inf` без retry, `POST /api/usb/recover` из httpd → reboot.
+Фикс: RX reset на worker, retry `-inf` под `s_tx_mutex`, deferred teardown на
+`usb_conn`, баннер + «Повторить связь», `last_shproto_ts_ms`. Soft recover не
+заменяет VBUS edge на MCU спектрометра.
+
 ### #FW-52: boot-loop после RESET — `sys_evt` stack overflow (dbglog + GOT_IP)
 
 **Статус:** исправлен; app-flash + serial verify — **PASS** 2026-08-05.
@@ -147,7 +175,6 @@ Evidence: [`docs/bugs/2026-08-05-sys-evt-boot-loop-fw52/`](docs/bugs/2026-08-05-
 
 **Причина:** stack `sys_evt` 2304 + `#FW-50` dbglog `char buf[512]` на стеке вызывающей
 задачи при GOT_IP. Фикс: stack 4096 + pass-through dbglog на `sys_evt`/`wifi`.
-
 
 ### #UI-43: тумблер шкалы X (с/м/ч) на «Мониторинге» не давал видимого эффекта
 

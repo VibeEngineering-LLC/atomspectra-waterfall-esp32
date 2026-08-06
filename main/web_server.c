@@ -220,21 +220,21 @@ static esp_err_t handle_spectrum_json(httpd_req_t *req)
 static esp_err_t handle_command(httpd_req_t *req)
 {
     if (!csrf_check(req)) return ESP_FAIL;
-    char body[256] = {0};
+    // Cap below usb_host_send_text_command pkt_buf[512] headroom (escaped SHPROTO).
+    char body[512] = {0};
     int recv_len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (recv_len <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
         return ESP_FAIL;
     }
+    if (recv_len > 480) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Command too long");
+        return ESP_FAIL;
+    }
     body[recv_len] = '\0';
-    uint8_t pkt_buf[512];
-    shproto_struct pkt;
-    shproto_init(&pkt, pkt_buf, sizeof(pkt_buf));
-    shproto_packet_start(&pkt, CMD_TEXT);
-    for (int i = 0; i <= recv_len; i++)
-        shproto_packet_add_data(&pkt, body[i]);
-    shproto_packet_complete(&pkt);
-    int ret = usb_host_cdc_send(pkt.data, pkt.len);
+    // UI posts raw text ("-sta"); keep that contract. #FW-43: use send_text so
+    // last_tx_cmd is visible on /api/usb-diag when Start appears to "do nothing".
+    int ret = usb_host_send_text_command(body);
     httpd_resp_sendstr(req, ret == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
     return ESP_OK;
 }
@@ -1213,6 +1213,16 @@ static esp_err_t handle_system(httpd_req_t *req)
     return ESP_OK;
 }
 
+// #FW-43: POST /api/usb/recover — UI «Повторить связь». Teardown CDC; connect task
+// re-opens within ~2s with RX reset + FTDI re-init + -inf retries.
+static esp_err_t handle_usb_recover(httpd_req_t *req)
+{
+    if (!csrf_check(req)) return ESP_FAIL;
+    usb_host_cdc_request_recover();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"reopening\":true}");
+}
+
 // #FW-22: глубокая USB-Host диагностика (read-only JSON снапшота usb_diag_snapshot_t).
 // Инструментация для #FW-43 (hot-plug re-init): enum_cb_count/open_attempts/cdc_open/
 // last_open_errno/rx_cb_count/pkt_hist позволяют увидеть, где рвётся реконнект прибора.
@@ -1241,6 +1251,12 @@ static esp_err_t handle_usb_diag(httpd_req_t *req)
     cJSON_AddStringToObject(root, "last_open_errstr",      esp_err_to_name(d.last_open_errno));
     cJSON_AddNumberToObject(root, "last_open_ts_ms",       d.last_open_ts_ms);
     cJSON_AddBoolToObject(root,   "cdc_open",              d.cdc_open);
+    cJSON_AddNumberToObject(root, "cdc_error_count",       d.cdc_error_count);
+    cJSON_AddNumberToObject(root, "rx_watchdog_trips",     d.rx_watchdog_trips);
+    cJSON_AddNumberToObject(root, "bus_empty_trips",       d.bus_empty_trips);
+    cJSON_AddNumberToObject(root, "reconnect_ok",          d.reconnect_ok);
+    cJSON_AddNumberToObject(root, "last_fault_reason",     d.last_fault_reason);
+    cJSON_AddNumberToObject(root, "last_fault_ts_ms",      d.last_fault_ts_ms);
     cJSON_AddNumberToObject(root, "ftdi_step_ok_mask",     d.ftdi_step_ok_mask);
     cJSON_AddNumberToObject(root, "ftdi_last_errno",       d.ftdi_last_errno);
     cJSON_AddNumberToObject(root, "tx_packets",            d.tx_packets);
@@ -1259,6 +1275,7 @@ static esp_err_t handle_usb_diag(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "pkt_stat",              d.pkt_stat);
     cJSON_AddNumberToObject(root, "pkt_osc",               d.pkt_osc);
     cJSON_AddNumberToObject(root, "pkt_unknown",           d.pkt_unknown);
+    cJSON_AddNumberToObject(root, "last_shproto_ts_ms",    d.last_shproto_ts_ms);
     cJSON_AddNumberToObject(root, "drv_task_alive_ts_ms",  d.drv_task_alive_ts_ms);
     cJSON_AddNumberToObject(root, "conn_task_alive_ts_ms", d.conn_task_alive_ts_ms);
     cJSON_AddNumberToObject(root, "dma_free_largest",      d.dma_free_largest);
@@ -1867,6 +1884,7 @@ void web_server_init(void)
         {"/api/device",                  HTTP_GET,  handle_device,           NULL},
         {"/api/system",                  HTTP_GET,  handle_system,           NULL},
         {"/api/usb-diag",                HTTP_GET,  handle_usb_diag,         NULL},  // #FW-22
+        {"/api/usb/recover",             HTTP_POST, handle_usb_recover,      NULL},  // #FW-43
         {"/api/reboot-device",           HTTP_POST, handle_reboot_device,    NULL},
         {"/api/wifi/reset",              HTTP_POST, handle_wifi_reset,       NULL},
         {"/api/reboot-esp",              HTTP_POST, handle_reboot_esp,       NULL},

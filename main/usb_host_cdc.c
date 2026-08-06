@@ -35,6 +35,31 @@ static inline uint32_t diag_now_ms(void) { return (uint32_t)(esp_timer_get_time(
 static cdc_acm_dev_hdl_t s_cdc_dev = NULL;
 static SemaphoreHandle_t s_tx_mutex = NULL;
 
+// #FW-51: silent CDC stall recovery
+#define CDC_FAULT_NONE         0
+#define CDC_FAULT_DISCONNECT   1
+#define CDC_FAULT_ERROR        2
+#define CDC_FAULT_RX_WATCHDOG  3
+#define CDC_FAULT_BUS_EMPTY    4
+#define CDC_FAULT_RECOVER      5  // user/API forced reopen (#FW-43 Retry)
+// After open, allow this long before requiring RX (FTDI keep-alive / data).
+#define CDC_RX_GRACE_MS        5000u
+// Stale RX while handle still open → teardown + reconnect (covers ERROR-without-DISCONNECT).
+// ARM must be < WD: after arming at 10 s, require ≥15 s silence (not immediate teardown).
+#define CDC_RX_WATCHDOG_MS     15000u
+// Don't arm watchdog until open has been up this long (settling + first -inf).
+#define CDC_RX_WATCHDOG_ARM_MS 10000u
+// Honest is_connected freshness (independent of teardown WD).
+#define CDC_RX_STALE_MS         8000u
+
+static void cdc_teardown(uint8_t reason);
+// Defer close out of httpd / alien tasks — cdc_acm_host_close from POST /api/usb/recover
+// rebooted the board (observed 2026-08-05: Connection reset + uptime reset).
+static volatile uint8_t s_teardown_req = 0;
+// Defer RX ring/parser reset to usb_rx_worker — xStreamBufferReset from alien tasks
+// while Receive is blocked returns pdFAIL and leaves stale bytes / races SHPROTO state.
+static volatile uint8_t s_rx_reset_req = 0;
+
 static uint8_t s_rx_buf[4096];
 static shproto_struct s_rx_packet;
 
@@ -204,6 +229,13 @@ static void usb_rx_worker(void *arg)
     static uint8_t chunk[2048];
     while (1) {
         if (!s_rx_ring) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        // Apply deferred RX path reset only on this task (owns Receive + SHPROTO feed).
+        if (s_rx_reset_req) {
+            s_rx_reset_req = 0;
+            shproto_init(&s_rx_packet, s_rx_buf, sizeof(s_rx_buf));
+            s_text_accum_len = 0;
+            (void)xStreamBufferReset(s_rx_ring);
+        }
         size_t n = xStreamBufferReceive(s_rx_ring, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
         if (n == 0) continue;                 // таймаут, данных нет
         if (s_raw_rx_cb) s_raw_rx_cb(chunk, n);   // порядок как раньше: raw → parser
@@ -251,19 +283,76 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
     return true;
 }
 
+// #FW-51/#FW-43: after unplug/replug the RX SHPROTO state machine can sit mid-frame
+// (partial bytes from the old session). FTDI keep-alive still refreshes rx_last_ts →
+// spectrometer_dead() stays true forever and -inf answers never parse. Reset parser
+// + drain the RX ring on every teardown and before each successful open.
+static void cdc_reset_rx_path(void)
+{
+    // Signal usb_rx_worker; do not reset the stream buffer from teardown/open
+    // (alien task vs blocked Receive → pdFAIL / stale mid-frame).
+    s_rx_reset_req = 1;
+}
+
+// Wait briefly for worker to apply s_rx_reset_req (open path before -inf).
+static void cdc_wait_rx_path_reset(void)
+{
+    for (int i = 0; i < 30 && s_rx_reset_req; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// #FW-51: unified close path for DISCONNECT / CDC ERROR / RX watchdog / empty bus.
+// Clears s_cdc_dev first so is_connected() and concurrent event callbacks see offline
+// immediately (no false-green). Safe if already torn down (claim under DIAG_LOCK).
+static void cdc_teardown(uint8_t reason)
+{
+    cdc_acm_dev_hdl_t h;
+    DIAG_LOCK();
+    h = s_cdc_dev;
+    s_cdc_dev = NULL;
+    s_diag.cdc_open = false;
+    if (h) {
+        if (reason == CDC_FAULT_ERROR) s_diag.cdc_error_count++;
+        if (reason == CDC_FAULT_RX_WATCHDOG) s_diag.rx_watchdog_trips++;
+        if (reason == CDC_FAULT_BUS_EMPTY) s_diag.bus_empty_trips++;
+        if (reason != CDC_FAULT_NONE) {
+            s_diag.last_fault_reason = reason;
+            s_diag.last_fault_ts_ms = diag_now_ms();
+        }
+    }
+    DIAG_UNLOCK();
+
+    // Close first, then reset RX: if reset precedes close, IDF may still deliver
+    // late IN bytes into s_rx_ring after the worker has already drained the flag.
+    if (h) {
+        esp_err_t cerr = cdc_acm_host_close(h);
+        if (cerr != ESP_OK) {
+            ESP_LOGW(TAG, "cdc_acm_host_close: %s (reason=%u)", esp_err_to_name(cerr), (unsigned)reason);
+        }
+    }
+
+    cdc_reset_rx_path();
+
+    static const char *const names[] = {
+        "none", "disconnect", "error", "rx_watchdog", "bus_empty", "recover"
+    };
+    const char *n = (reason < sizeof(names)/sizeof(names[0])) ? names[reason] : "?";
+    ESP_LOGW(TAG, "CDC teardown reason=%s (%u) — reconnect armed", n, (unsigned)reason);
+}
+
 static void handle_event(const cdc_acm_host_dev_event_data_t *event, void *user_ctx)
 {
+    (void)user_ctx;
     switch (event->type) {
     case CDC_ACM_HOST_ERROR:
-        ESP_LOGE(TAG, "CDC error");
+        // #FW-51: previously log-only → silent stall with false-green connected.
+        ESP_LOGE(TAG, "CDC error — tearing down for reconnect");
+        cdc_teardown(CDC_FAULT_ERROR);
         break;
     case CDC_ACM_HOST_DEVICE_DISCONNECTED:
         ESP_LOGW(TAG, "Device disconnected");
-        if (s_cdc_dev) {
-            cdc_acm_host_close(s_cdc_dev);
-            s_cdc_dev = NULL;
-        }
-        DIAG_LOCK(); s_diag.cdc_open = false; DIAG_UNLOCK();  // #FW-22
+        cdc_teardown(CDC_FAULT_DISCONNECT);
         break;
     default:
         break;
@@ -358,6 +447,11 @@ static void try_open_device(void)
         return;
     }
 
+    // #FW-51: count successful reconnects (attempt>1 means we opened before or retried).
+    if (s_attempt > 1) {
+        DIAG_LOCK(); s_diag.reconnect_ok++; DIAG_UNLOCK();
+    }
+
     // #FW-22: захват результата каждого FTDI control-request в bitmask
     uint8_t ftdi_mask = 0;
     esp_err_t fe = ESP_OK, flast = ESP_OK;
@@ -372,21 +466,59 @@ static void try_open_device(void)
     ESP_LOGI(TAG, "FTDI configured baud=%u 8N1", ANALYZER_BAUD);
     ESP_LOGI(TAG, "Analyzer connected (VID=%04x PID=%04x)", ANALYZER_VID, ANALYZER_PID);
     s_rx_cb_count = 0;
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // #FW-43 hotplug: purge any mid-frame RX state from the previous session before
+    // we talk to the instrument again.
+    cdc_reset_rx_path();
+    cdc_wait_rx_path_reset();
+    // Give FTDI + MCU UART more settle time after USB re-enum (100 ms was tight on replug).
+    vTaskDelay(pdMS_TO_TICKS(300));
 
-    shproto_init(&s_tx_packet, s_tx_buf, sizeof(s_tx_buf));
-    shproto_packet_start(&s_tx_packet, CMD_TEXT);
-    const char *cmd = "-inf";
-    while (*cmd) shproto_packet_add_data(&s_tx_packet, *cmd++);
-    shproto_packet_add_data(&s_tx_packet, '\0');
-    shproto_packet_complete(&s_tx_packet);
-    esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
-    DIAG_LOCK();
-    s_diag.tx_packets++; s_diag.tx_bytes += s_tx_packet.len;
-    s_diag.last_tx_ts_ms = diag_now_ms(); s_diag.last_tx_errno = (int32_t)txerr;
-    strncpy(s_diag.last_tx_cmd, "-inf", sizeof(s_diag.last_tx_cmd)-1); s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd)-1]='\0';
-    DIAG_UNLOCK();
-    ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s", (unsigned)s_tx_packet.len, esp_err_to_name(txerr));
+    // -inf on open; on reconnect retry a few times — otherwise dead banner sticks while
+    // FTDI keep-alive alone keeps is_connected/spectrometer_dead armed.
+    bool will_be_first = !s_boot_once_done;
+    int tries = will_be_first ? 1 : 4;
+    for (int t = 0; t < tries; t++) {
+        if (t > 0) {
+            vTaskDelay(pdMS_TO_TICKS(400 * t));  // 400, 800, 1200 ms
+            ESP_LOGW(TAG, "retry -inf after reconnect (%d/%d)", t + 1, tries);
+        }
+        // Take mutex BEFORE touching s_tx_packet/s_tx_buf — a parallel sender holding
+        // the mutex must not see shproto_init mid-flight.
+        if (s_tx_mutex && xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+            ESP_LOGW(TAG, "-inf skipped: tx mutex busy");
+            break;
+        }
+        shproto_init(&s_tx_packet, s_tx_buf, sizeof(s_tx_buf));
+        shproto_packet_start(&s_tx_packet, CMD_TEXT);
+        const char *cmd = "-inf";
+        while (*cmd) shproto_packet_add_data(&s_tx_packet, *cmd++);
+        shproto_packet_add_data(&s_tx_packet, '\0');
+        shproto_packet_complete(&s_tx_packet);
+        esp_err_t txerr = cdc_acm_host_data_tx_blocking(s_cdc_dev, s_tx_packet.data, s_tx_packet.len, 1000);
+        DIAG_LOCK();
+        s_diag.tx_packets++; s_diag.tx_bytes += s_tx_packet.len;
+        s_diag.last_tx_ts_ms = diag_now_ms(); s_diag.last_tx_errno = (int32_t)txerr;
+        strncpy(s_diag.last_tx_cmd, "-inf", sizeof(s_diag.last_tx_cmd)-1); s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd)-1]='\0';
+        DIAG_UNLOCK();
+        ESP_LOGI(TAG, "Sent -inf (%u bytes) rc=%s try=%d", (unsigned)s_tx_packet.len, esp_err_to_name(txerr), t + 1);
+        if (will_be_first) {
+            if (s_tx_mutex) xSemaphoreGive(s_tx_mutex);
+            break;
+        }
+        // Wait briefly for a CRC-valid SHPROTO (text/-inf answer or hist/stat).
+        // Mutex stays held so /api/command cannot TX during this window.
+        vTaskDelay(pdMS_TO_TICKS(500));
+        DIAG_LOCK();
+        uint32_t sh_ts = s_diag.last_shproto_ts_ms;
+        uint32_t open_ts = s_diag.last_open_ts_ms;
+        DIAG_UNLOCK();
+        bool alive = (sh_ts >= open_ts);
+        if (s_tx_mutex) xSemaphoreGive(s_tx_mutex);
+        if (alive) {
+            ESP_LOGI(TAG, "SHPROTO after -inf (sh=%u open=%u) — reconnect alive", (unsigned)sh_ts, (unsigned)open_ts);
+            break;
+        }
+    }
 
     // Однократно отметить, что первый коннект после ребута состоялся: автозапуск
     // (#FW-2) и очистка прибора (#FW-3) применяются ровно один раз за boot, не на
@@ -435,7 +567,47 @@ void usb_host_cdc_set_autostart(bool autostart_spectrum, bool autostart_waterfal
 
 static void usb_connect_task(void *arg)
 {
+    (void)arg;
     while (1) {
+        // Deferred teardown (recover / optionally future callers) — must run here,
+        // not on the httpd task that services POST /api/usb/recover.
+        {
+            uint8_t reason = __atomic_exchange_n(&s_teardown_req, 0, __ATOMIC_ACQ_REL);
+            if (reason) cdc_teardown(reason);
+        }
+
+        // #FW-51: health checks while handle claims open — recover without waiting
+        // for a DISCONNECTED event that never arrives after CDC_ACM_HOST_ERROR.
+        if (s_cdc_dev) {
+            int num_devs = 0;
+            uint8_t dev_addrs[8];
+            usb_host_device_addr_list_fill(sizeof(dev_addrs)/sizeof(dev_addrs[0]),
+                                          dev_addrs, &num_devs);
+            DIAG_LOCK();
+            s_diag.bus_devs_now = (uint8_t)num_devs;
+            s_diag.conn_task_alive_ts_ms = diag_now_ms();
+            uint32_t now = diag_now_ms();
+            uint32_t open_ts = s_diag.last_open_ts_ms;
+            uint32_t rx_ts = s_diag.rx_last_ts_ms;
+            DIAG_UNLOCK();
+
+            uint32_t open_age = now - open_ts;
+            if (open_age >= CDC_RX_WATCHDOG_ARM_MS) {
+                if (num_devs == 0) {
+                    ESP_LOGW(TAG, "bus empty while CDC open (age=%u ms) — teardown",
+                             (unsigned)open_age);
+                    cdc_teardown(CDC_FAULT_BUS_EMPTY);
+                } else {
+                    uint32_t rx_age = (rx_ts >= open_ts) ? (now - rx_ts) : open_age;
+                    if (rx_age >= CDC_RX_WATCHDOG_MS) {
+                        ESP_LOGW(TAG, "RX watchdog: rx_age=%u ms open_age=%u ms — teardown",
+                                 (unsigned)rx_age, (unsigned)open_age);
+                        cdc_teardown(CDC_FAULT_RX_WATCHDOG);
+                    }
+                }
+            }
+        }
+
         try_open_device();
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -511,7 +683,18 @@ void usb_host_cdc_init(void)
 
 bool usb_host_cdc_is_connected(void)
 {
-    return s_cdc_dev != NULL;
+    // #FW-51: handle alone lied for hours after CDC ERROR (bus empty, RX frozen).
+    // Require recent RX after a short post-open grace so UI/HB/status never false-green.
+    if (!s_cdc_dev) return false;
+    DIAG_LOCK();
+    uint32_t open_ts = s_diag.last_open_ts_ms;
+    uint32_t rx_ts = s_diag.rx_last_ts_ms;
+    DIAG_UNLOCK();
+    uint32_t now = diag_now_ms();
+    uint32_t open_age = now - open_ts;
+    if (open_age < CDC_RX_GRACE_MS) return true;
+    if (rx_ts < open_ts) return false;
+    return (now - rx_ts) < CDC_RX_STALE_MS;
 }
 
 int usb_host_cdc_send(const uint8_t *data, size_t len)
@@ -519,6 +702,18 @@ int usb_host_cdc_send(const uint8_t *data, size_t len)
     if (!s_cdc_dev) return -1;
     if (xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(500)) != pdTRUE) return -1;
     esp_err_t err = cdc_acm_host_data_tx_blocking(s_cdc_dev, data, len, 1000);
+    DIAG_LOCK();
+    s_diag.tx_packets++;
+    s_diag.tx_bytes += (uint32_t)len;
+    s_diag.last_tx_ts_ms = diag_now_ms();
+    s_diag.last_tx_errno = (int32_t)err;
+    // Best-effort placeholder — usb_host_send_text_command overwrites with the
+    // real text after return. A /api/usb-diag reader may briefly see "pkt".
+    if (len >= 4) {
+        strncpy(s_diag.last_tx_cmd, "pkt", sizeof(s_diag.last_tx_cmd) - 1);
+        s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd) - 1] = '\0';
+    }
+    DIAG_UNLOCK();
     xSemaphoreGive(s_tx_mutex);
     return (err == ESP_OK) ? 0 : -1;
 }
@@ -554,21 +749,20 @@ void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out)
 }
 
 // #FW-43: см. декларацию в atomspectra.h. true = «прибор определился, но не запитан».
-// CDC открыт (usb_host_cdc_is_connected) И FTDI-кадры свежие (rx_last_ts <4с — keep-alive
-// '01 60' идёт, значит это НЕ обычный физ. disconnect) И с момента открытия CDC прошло >6с
-// (дали окно на ответ -inf) И за это время НИ одного SHPROTO-пакета (last_shproto_ts_ms <
-// last_open_ts_ms). Здоровый прибор отвечает на -inf за 1-2с → last_shproto_ts_ms > last_open
-// → false навсегда. На реконнекте last_open_ts_ms обновляется → «молчащий» ловится снова.
+// CDC live (usb_host_cdc_is_connected — #FW-51 fresh RX) И FTDI-кадры свежие И с момента
+// открытия CDC прошло >6с И за это время НИ одного SHPROTO-пакета.
+// #FW-51: when RX itself dies, is_connected() goes false → we return false here (not
+// "dead spectrometer"); teardown/reconnect handles that path instead.
 bool usb_host_cdc_spectrometer_dead(void)
 {
-    if (!usb_host_cdc_is_connected()) return false;   // ничего не открыто → не «мёртвый»
+    if (!usb_host_cdc_is_connected()) return false;   // offline / reconnecting → not «мёртвый»
     DIAG_LOCK();
     uint32_t now      = diag_now_ms();
     uint32_t rx_age   = now - s_diag.rx_last_ts_ms;
     uint32_t open_age = now - s_diag.last_open_ts_ms;
     bool silent_since_open = (s_diag.last_shproto_ts_ms < s_diag.last_open_ts_ms);
     DIAG_UNLOCK();
-    if (rx_age >= 4000) return false;    // FTDI-кадры не идут → обычный disconnect, не наш случай
+    if (rx_age >= 4000) return false;    // FTDI-кадры не идут → disconnect/watchdog territory
     if (open_age < 6000) return false;   // окно на ответ -inf после (ре)открытия CDC
     return silent_since_open;
 }
@@ -624,12 +818,35 @@ void usb_host_cdc_devlog_json(uint32_t since, char *out, size_t outsz)
 
 int usb_host_send_text_command(const char *cmd)
 {
-    uint8_t pkt_buf[256];
+    if (!cmd) return -1;
+    const char *cmd0 = cmd;  // #FW-43: do not advance cmd before strncpy label
+    // pkt_buf[512] on stack; shproto_packet_add_data silently truncates when full
+    // (add_escaped checks buf_size) — reject oversize input instead of sending a
+    // partial SHPROTO frame. Leave headroom for start/esc/crc/finish (~16 B).
+    uint8_t pkt_buf[512];
+    size_t in_len = strnlen(cmd, sizeof(pkt_buf) - 16);
+    if (cmd[in_len] != '\0') return -1;
     shproto_struct pkt;
     shproto_init(&pkt, pkt_buf, sizeof(pkt_buf));
     shproto_packet_start(&pkt, CMD_TEXT);
-    while (*cmd) shproto_packet_add_data(&pkt, *cmd++);
+    for (size_t i = 0; i < in_len; i++) shproto_packet_add_data(&pkt, (uint8_t)cmd[i]);
     shproto_packet_add_data(&pkt, '\0');
     shproto_packet_complete(&pkt);
-    return usb_host_cdc_send(pkt.data, pkt.len);
+    int rc = usb_host_cdc_send(pkt.data, pkt.len);
+    if (rc == 0) {
+        DIAG_LOCK();
+        strncpy(s_diag.last_tx_cmd, cmd0, sizeof(s_diag.last_tx_cmd) - 1);
+        s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd) - 1] = '\0';
+        DIAG_UNLOCK();
+    }
+    return rc;
+}
+
+// #FW-43: UI «Повторить связь» — request teardown on usb_conn task (NOT httpd).
+// Direct cdc_teardown() from HTTP caused full board reboot (WiFi drop, uptime reset);
+// banner cleared briefly then dead=1 again after boot.
+void usb_host_cdc_request_recover(void)
+{
+    ESP_LOGW(TAG, "CDC recover requested — defer teardown to usb_conn");
+    s_teardown_req = CDC_FAULT_RECOVER;
 }
