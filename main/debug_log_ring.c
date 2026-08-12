@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <inttypes.h>
 
 static const char *TAG = "dbglog";
 
@@ -257,10 +258,13 @@ static void heartbeat_task(void *arg)
         uint32_t rej = http_io_gate_reject_count();
 
         const spectrum_data_t *sp = spectrum_get_current();
-        char line[320];
+        uint32_t hok = 0, hd = 0;
+        spectrum_get_hist_stats(&hok, &hd);
+        char line[384];
         snprintf(line, sizeof(line),
                  "HB up=%llu free=%lu min=%lu fill=%d%% drop=%lu gen=%lu "
-                 "rssi=%d wifi=%s usb=%s cps=%lu t1=%lu heavy=%d wait=%d rej=%lu",
+                 "rssi=%d wifi=%s usb=%s cps=%lu t1=%lu heavy=%d wait=%d rej=%lu "
+                 "hok=%" PRIu32 " hd=%" PRIu32 " rxe=%" PRIu32 " rrd=%" PRIu32,
                  (unsigned long long)(esp_timer_get_time() / 1000000ULL),
                  (unsigned long)free_h, (unsigned long)min_h,
                  debug_log_ring_fill_pct(),
@@ -270,7 +274,10 @@ static void heartbeat_task(void *arg)
                  usb_host_cdc_is_connected() ? "1" : "0",
                  sp ? (unsigned long)sp->cps : 0UL,
                  sp ? (unsigned long)sp->total_time_sec : 0UL,
-                 heavy ? 1 : 0, waiters, (unsigned long)rej);
+                 heavy ? 1 : 0, waiters, (unsigned long)rej,
+                 hok, hd,
+                 usb_host_cdc_rx_errors(),
+                 usb_host_cdc_rx_ring_drops());
         debug_log_ring_write_raw(line);
 
         for (int i = 0; i < HEARTBEAT_MS / 200 && s_hb_run; i++)

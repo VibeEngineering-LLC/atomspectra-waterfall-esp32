@@ -74,16 +74,19 @@ static bool build_json_full(const spectrum_data_t *sp, char **out, size_t *out_l
     uint32_t hist_ok = 0, hist_drop = 0;
     spectrum_get_hist_stats(&hist_ok, &hist_drop);
     int dead = usb_host_cdc_spectrometer_dead() ? 1 : 0;
+    int as_age = spectrum_autosave_age_sec();
+    int as_streak = spectrum_autosave_fail_streak();
     if (!append_fmt(&buf, &len, &cap,
         "],\"total\":%" PRIu32 ",\"cpu\":%u,\"cps\":%" PRIu32 ",\"lost\":%" PRIu32
         ",\"time\":%" PRIu32 ",\"live\":%.1f,"
         "\"bridge_drop\":%" PRIu32 ",\"usb_rx_err\":%" PRIu32 ",\"rx_ring_drops\":%" PRIu32 ","
         "\"hist_ok\":%" PRIu32 ",\"hist_drop\":%" PRIu32 ","
+        "\"autosave_age_sec\":%d,\"autosave_fail_streak\":%d,"
         "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\",\"dead\":%d",
         sp->total_counts, (unsigned)sp->cpu_load, sp->cps, sp->lost_impulses,
         sp->total_time_sec, compute_live_time(sp),
         tcp_bridge_dropped_bytes(), usb_host_cdc_rx_errors(), usb_host_cdc_rx_ring_drops(),
-        hist_ok, hist_drop,
+        hist_ok, hist_drop, as_age, as_streak,
         sp->temperature[0], sp->temperature[1], sp->temperature[2],
         sp->serial_number[0] ? sp->serial_number : "", dead)) goto fail;
     if (sp->calib_valid) {
@@ -109,16 +112,19 @@ static bool build_json_meta(const spectrum_data_t *sp, char **out, size_t *out_l
     uint32_t hist_ok = 0, hist_drop = 0;
     spectrum_get_hist_stats(&hist_ok, &hist_drop);
     int dead = usb_host_cdc_spectrometer_dead() ? 1 : 0;
+    int as_age = spectrum_autosave_age_sec();
+    int as_streak = spectrum_autosave_fail_streak();
     if (!append_fmt(&buf, &len, &cap,
         "{\"total\":%" PRIu32 ",\"cpu\":%u,\"cps\":%" PRIu32 ",\"lost\":%" PRIu32
         ",\"time\":%" PRIu32 ",\"live\":%.1f,"
         "\"bridge_drop\":%" PRIu32 ",\"usb_rx_err\":%" PRIu32 ",\"rx_ring_drops\":%" PRIu32 ","
         "\"hist_ok\":%" PRIu32 ",\"hist_drop\":%" PRIu32 ","
+        "\"autosave_age_sec\":%d,\"autosave_fail_streak\":%d,"
         "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\",\"dead\":%d,\"channels\":%d",
         sp->total_counts, (unsigned)sp->cpu_load, sp->cps, sp->lost_impulses,
         sp->total_time_sec, compute_live_time(sp),
         tcp_bridge_dropped_bytes(), usb_host_cdc_rx_errors(), usb_host_cdc_rx_ring_drops(),
-        hist_ok, hist_drop,
+        hist_ok, hist_drop, as_age, as_streak,
         sp->temperature[0], sp->temperature[1], sp->temperature[2],
         sp->serial_number[0] ? sp->serial_number : "", dead, SPECTRUM_CHANNELS)) goto fail;
     if (sp->calib_valid) {
