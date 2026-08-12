@@ -14,7 +14,7 @@
 водопаде и мониторинге; позже истёк dhcp lease from ap. AtomSpectra по USB не
 перезагружали — спектр на приборе сохранился. Другие клиенты той же сети были живы →
 не AP. Гипотезы: soft-lock без WDT, HEAVY/httpd, USB Host + WiFi soak; **не** путать
-с уже закрытым **#FW-13** (LittleFS autosave freeze / UART CDC blocking — зашито ранее).
+с уже закрытым **#FW-13** (LittleFS autosave freeze / UART CDC blocking — зашито ранее)
 и с закрытым **#FW-8 residual** (гистограммные drops от autosave — sliced quiet write, 2026-08-12).
 
 **Инструмент:** Сервис → Debug-лог (NVS `dbglog`); кольцо 384 KiB PSRAM; забор дампа
@@ -151,10 +151,11 @@ Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2
 (FTDI FIFO overrun, `rx_ring_drops=0`).
 
 **Стало:** запись `current.bin.tmp` слайсами 4 KiB только пока остаётся
-`FLASH_QUIET_BUDGET_MS` (+ guard ~180 мс) после коммита свипа; на live USB нет
-`fsync` и нет записи на commit-wait timeout; fopen tmp и WF rollover ждут тихое
-окно; baseline/строки водопада — тот же бюджет. Lab: class A ≈0; rollover без
-пачки drops.
+`FLASH_QUIET_BUDGET_MS` (+ guard ~180 мс) после коммита свипа (путь
+`HIST_DROP_I3_SLICED=1`); offline / `fail_streak≥5` → one-shot; на live USB нет
+batch-`fsync` строк, но **`seg_finalize` всегда sync**; yield (не discard tmp) на
+commit-wait×3; `make_room` не крутится при defer unlink; writer-lock 500 мс.
+Lab: class A ≈0; rollover без пачки drops.
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
 

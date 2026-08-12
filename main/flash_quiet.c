@@ -1,7 +1,11 @@
 #include "flash_quiet.h"
+#include "flash_quiet_math.h"
+#include "atomspectra.h"
 #include "esp_timer.h"
+#include "freertos/portmacro.h"
 
-static volatile int64_t s_commit_us;
+static int64_t s_commit_us;
+static portMUX_TYPE s_commit_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_writer;
 
 void flash_quiet_init(void)
@@ -12,31 +16,46 @@ void flash_quiet_init(void)
 
 void flash_quiet_note_commit(void)
 {
-    s_commit_us = esp_timer_get_time();
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_commit_mux);
+    s_commit_us = now;
+    portEXIT_CRITICAL(&s_commit_mux);
+}
+
+static int64_t commit_us_load(void)
+{
+    int64_t v;
+    portENTER_CRITICAL(&s_commit_mux);
+    v = s_commit_us;
+    portEXIT_CRITICAL(&s_commit_mux);
+    return v;
 }
 
 int64_t flash_quiet_remaining_us(void)
 {
-    if (s_commit_us <= 0) return 0;
-    int64_t elapsed = esp_timer_get_time() - s_commit_us;
-    int64_t budget_us = (int64_t)FLASH_QUIET_BUDGET_MS * 1000;
-    if (elapsed >= budget_us) return 0;
-    return budget_us - elapsed;
+    return flash_quiet_calc_remaining_us(commit_us_load(), esp_timer_get_time(),
+                                         FLASH_QUIET_BUDGET_MS,
+                                         usb_host_cdc_is_connected());
 }
 
 bool flash_quiet_can_write(int64_t min_us)
 {
-    return flash_quiet_remaining_us() >= min_us;
+    return flash_quiet_calc_can_write(commit_us_load(), esp_timer_get_time(),
+                                      FLASH_QUIET_BUDGET_MS,
+                                      usb_host_cdc_is_connected(), min_us);
 }
 
 bool flash_quiet_can_start_slice(void)
 {
-    return flash_quiet_can_write(FLASH_QUIET_SLICE_GUARD_US);
+    return flash_quiet_calc_can_start_slice(commit_us_load(), esp_timer_get_time(),
+                                            FLASH_QUIET_BUDGET_MS,
+                                            usb_host_cdc_is_connected());
 }
 
 bool flash_quiet_writer_lock(TickType_t wait_ticks)
 {
     if (!s_writer) flash_quiet_init();
+    if (!s_writer) return false;
     return xSemaphoreTake(s_writer, wait_ticks) == pdTRUE;
 }
 

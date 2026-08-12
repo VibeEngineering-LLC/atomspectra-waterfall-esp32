@@ -1,27 +1,21 @@
 #pragma once
 // #FW-8 residual F1: shared quiet-window budget after a histogram commit.
 // Write LittleFS only while remaining quiet budget > guard (USB between 1 Hz bursts).
+// Offline (no USB analyzer) → budget is treated as full so writers always complete.
 #include <stdint.h>
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-
-#ifndef FLASH_QUIET_BUDGET_MS
-#define FLASH_QUIET_BUDGET_MS 300
-#endif
+#include "flash_quiet_math.h"
 
 /** Bytes to prefer per slice (4 KiB ≈ one NOR erase page class). */
 #ifndef FLASH_QUIET_SLICE_BYTES
 #define FLASH_QUIET_SLICE_BYTES 4096
 #endif
 
-/**
- * Minimum remaining quiet budget before starting a LittleFS write slice.
- * Erase cliffs are 150–340 ms; starting with only a few ms rem overruns into
- * the next 1 Hz hist burst (class A/B). Leave this much headroom.
- */
-#ifndef FLASH_QUIET_SLICE_GUARD_US
-#define FLASH_QUIET_SLICE_GUARD_US 180000
+/** Writer-lock wait: must exceed documented erase/hold cliffs (150–340 ms). */
+#ifndef FLASH_QUIET_WRITER_LOCK_MS
+#define FLASH_QUIET_WRITER_LOCK_MS 500
 #endif
 
 void flash_quiet_init(void);
@@ -49,4 +43,8 @@ static inline int flash_quiet_budget_ms(void) { return FLASH_QUIET_BUDGET_MS; }
 static inline int64_t flash_quiet_slice_guard_us(void)
 {
     return (int64_t)FLASH_QUIET_SLICE_GUARD_US;
+}
+static inline TickType_t flash_quiet_writer_lock_ticks(void)
+{
+    return pdMS_TO_TICKS(FLASH_QUIET_WRITER_LOCK_MS);
 }

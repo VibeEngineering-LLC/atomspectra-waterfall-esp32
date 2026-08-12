@@ -140,24 +140,29 @@ void app_main(void)
             if (!http_io_gate_busy() && http_io_gate_try_enter()) {
 #if HIST_DROP_I3_SLICED
                 /* #FW-8 F1a: sliced write in post-commit quiet windows.
-                 * Offline / silent USB → one-shot full write (no 1 Hz burst). */
-                if (!usb_host_cdc_is_connected()) {
+                 * Offline / silent USB → one-shot full write (no 1 Hz burst).
+                 * After fail_streak≥5 → force one-shot (one hist-drop) instead of
+                 * unbounded deferral. */
+                if (!usb_host_cdc_is_connected() || spectrum_autosave_fail_streak() >= 5) {
+                    if (spectrum_autosave_in_progress())
+                        spectrum_autosave_abort();
                     hist_drop_diag_autosave_begin(true);
                     int64_t t0 = esp_timer_get_time();
                     spectrum_autosave();
                     int64_t dt_us = esp_timer_get_time() - t0;
                     hist_drop_diag_autosave_end();
-                    ESP_LOGI(TAG, "LittleFS autosave took %lld us (offline one-shot)",
-                             (long long)dt_us);
+                    ESP_LOGI(TAG, "LittleFS autosave took %lld us (%s)",
+                             (long long)dt_us,
+                             usb_host_cdc_is_connected() ? "force one-shot" : "offline one-shot");
                 } else {
                     /* Begin must land in quiet (fopen ~100–160 ms). Retry a few
-                     * commits if headroom was already gone. */
+                     * commits if headroom was already gone. Resume after yield. */
                     int pumps = 0;
                     int wait_fail = 0;
                     int begin_tries = 0;
-                    while (!spectrum_autosave_in_progress() && begin_tries < 4) {
+                    while (begin_tries < 4) {
                         begin_tries++;
-                        if (autosave_sig) {
+                        if (autosave_sig && !spectrum_autosave_in_progress()) {
                             if (xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500)) != pdTRUE) {
                                 if (++wait_fail >= 3) break;
                                 continue;
@@ -165,8 +170,10 @@ void app_main(void)
                         }
                         wait_fail = 0;
                         if (spectrum_autosave_begin()) break;
+                        if (spectrum_autosave_in_progress()) break; /* yielded, snap held */
                     }
                     if (!spectrum_autosave_in_progress()) {
+                        spectrum_autosave_note_fail();
                         ESP_LOGI(TAG, "LittleFS autosave begin deferred (no quiet headroom)");
                     }
                     while (spectrum_autosave_in_progress()) {
@@ -185,15 +192,22 @@ void app_main(void)
 #endif
                         if (wait_timed_out) {
                             if (++wait_fail >= 3) {
-                                spectrum_autosave_abort();
+                                /* Soft yield: keep tmp+offset for next cycle. */
+                                spectrum_autosave_yield();
+                                spectrum_autosave_note_fail();
                                 ESP_LOGI(TAG,
-                                         "LittleFS autosave aborted (commit wait_timeout x3, USB live)");
+                                         "LittleFS autosave yielded (commit wait_timeout x3, USB live)");
                                 break;
                             }
                             ESP_LOGW(TAG, "autosave wait_timeout (retry %d)", wait_fail);
                             continue;
                         }
                         wait_fail = 0;
+                        if (!spectrum_autosave_begin()) {
+                            /* Could not reopen after yield — try next tick. */
+                            spectrum_autosave_note_fail();
+                            break;
+                        }
                         hist_drop_diag_autosave_begin(false);
                         spectrum_autosave_pump();
                         hist_drop_diag_autosave_end();
@@ -213,6 +227,7 @@ void app_main(void)
                 }
 #endif
                 if (wait_timed_out && usb_host_cdc_is_connected()) {
+                    spectrum_autosave_note_fail();
                     ESP_LOGI(TAG, "LittleFS autosave skipped (commit wait_timeout, USB live)");
                 } else {
                     hist_drop_diag_autosave_begin(wait_timed_out);

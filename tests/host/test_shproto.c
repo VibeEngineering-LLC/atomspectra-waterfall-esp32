@@ -18,6 +18,8 @@ void nettime_suite(void);
 void dbglog_filter_suite(void);
 // #FW-8 residual: staging gap continuity from test_hist_stage.c
 void hist_stage_suite(void);
+// #FW-8 residual: quiet-budget math from test_flash_quiet.c
+void flash_quiet_suite(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -171,6 +173,7 @@ int main(void)
     nettime_suite();
     dbglog_filter_suite();
     hist_stage_suite();
+    flash_quiet_suite();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);

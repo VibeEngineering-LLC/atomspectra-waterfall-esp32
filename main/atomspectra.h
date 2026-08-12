@@ -218,10 +218,19 @@ void spectrum_set_calibration(const double *coeffs, int order);
 void spectrum_save_calibration(void);
 void spectrum_load_calibration(void);
 void spectrum_autosave(void);
-/** #FW-8 F1a: begin sliced quiet-window autosave (tmp file). false = nothing to do. */
+/** #FW-8 F1a: begin sliced quiet-window autosave (tmp file). false = nothing to do.
+ *  Also resumes a yielded mid-write (reopens tmp for append). */
 bool spectrum_autosave_begin(void);
 bool spectrum_autosave_in_progress(void);
 /** Write slices until quiet budget exhausted or file complete (rename to current.bin). */
 void spectrum_autosave_pump(void);
+/** Hard cancel: discard tmp + snap (spectrum_reset / force one-shot). */
 void spectrum_autosave_abort(void);
+/** Soft yield: close FP, keep tmp+offset for resume (commit-wait timeout). */
+void spectrum_autosave_yield(void);
+void spectrum_autosave_note_fail(void);
+void spectrum_autosave_note_ok(void);
+int  spectrum_autosave_fail_streak(void);
+/** Seconds since last successful autosave; -1 if never. */
+int  spectrum_autosave_age_sec(void);
 void spectrum_restore_autosave(void);

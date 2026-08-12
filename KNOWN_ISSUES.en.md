@@ -14,7 +14,8 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 waterfall + monitoring enabled; later the dhcp lease from ap expired. AtomSpectra
 USB was not power-cycled — instrument spectrum preserved. Other clients on the same
 network stayed up → not an AP failure. Do **not** confuse with closed **#FW-13**
-(LittleFS autosave freeze / UART CDC blocking — already fixed).
+(LittleFS autosave freeze / UART CDC blocking — already fixed) or closed
+**#FW-8 residual** (histogram drops from autosave — sliced quiet write, 2026-08-12).
 
 **Tooling:** Service → Debug log (NVS `dbglog`); 384 KiB PSRAM ring; the dump is pulled by an
 external collector (ours is a launchd job on a Mac every 5 min). Default **off**.
@@ -153,9 +154,10 @@ Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2
 1 Hz burst (FTDI FIFO overrun, `rx_ring_drops=0`).
 
 **Now:** write `current.bin.tmp` in 4 KiB slices only while
-`FLASH_QUIET_BUDGET_MS` (+ ~180 ms start guard) remains after a hist commit;
-skip live-USB `fsync` and skip autosave on commit-wait timeout; gate tmp `fopen`
-and WF rollover on quiet windows; WF baseline/rows share the same budget. Lab:
+`FLASH_QUIET_BUDGET_MS` (+ ~180 ms start guard) remains after a hist commit
+(`HIST_DROP_I3_SLICED=1` path); offline / `fail_streak≥5` → one-shot; skip live-USB
+**batch** row `fsync`, but **`seg_finalize` always syncs**; yield (keep tmp) on
+commit-wait×3; `make_room` breaks on deferred unlink; writer-lock 500 ms. Lab:
 class A ≈0; rollovers without drop packs.
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)

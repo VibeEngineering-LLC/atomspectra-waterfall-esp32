@@ -481,6 +481,7 @@ void spectrum_reset(void)
     s_stage_next = UINT32_MAX;
     s_stage_ok = false;
     s_stat_stage.fresh = false;
+    spectrum_autosave_abort();
     SPEC_LOCK();
     memset(s_spectrum.bins, 0, sizeof(s_spectrum.bins));
     s_spectrum.total_counts = 0;
@@ -656,6 +657,8 @@ static size_t s_as_off;
 static size_t s_as_total;
 static int s_as_slices;
 static int64_t s_as_t0;
+static int s_as_fail_streak;
+static int64_t s_as_last_ok_us;
 
 static void autosave_cleanup_failed(void)
 {
@@ -664,6 +667,31 @@ static void autosave_cleanup_failed(void)
     if (s_as_snap) { free(s_as_snap); s_as_snap = NULL; }
     s_as_off = s_as_total = 0;
     s_as_slices = 0;
+}
+
+void spectrum_autosave_note_fail(void)
+{
+    if (s_as_fail_streak < 1000000) s_as_fail_streak++;
+}
+
+void spectrum_autosave_note_ok(void)
+{
+    s_as_fail_streak = 0;
+    s_as_last_ok_us = esp_timer_get_time();
+}
+
+int spectrum_autosave_fail_streak(void)
+{
+    return s_as_fail_streak;
+}
+
+int spectrum_autosave_age_sec(void)
+{
+    if (s_as_last_ok_us <= 0) return -1;
+    int64_t age = (esp_timer_get_time() - s_as_last_ok_us) / 1000000;
+    if (age < 0) return -1;
+    if (age > 86400 * 365) return (int)(86400 * 365);
+    return (int)age;
 }
 
 bool spectrum_autosave_in_progress(void)
@@ -678,13 +706,40 @@ void spectrum_autosave_abort(void)
     autosave_cleanup_failed();
 }
 
+void spectrum_autosave_yield(void)
+{
+    if (!s_as_snap) return;
+    if (s_as_fp) {
+        fflush(s_as_fp);
+        fclose(s_as_fp);
+        s_as_fp = NULL;
+    }
+    ESP_LOGI(TAG, "autosave yielded (off=%zu/%zu, tmp kept)", s_as_off, s_as_total);
+}
+
 bool spectrum_autosave_begin(void)
 {
 #if HIST_DROP_E1_NO_AUTOSAVE
     ESP_LOGI(TAG, "autosave skipped (HIST_DROP_E1_NO_AUTOSAVE)");
     return false;
 #endif
-    if (spectrum_autosave_in_progress()) return true; /* already going */
+    /* Resume after yield: reopen tmp for append, keep snap/offset. */
+    if (s_as_snap && s_as_fp) return true;
+    if (s_as_snap && !s_as_fp) {
+        if (usb_host_cdc_is_connected() && !flash_quiet_can_start_slice())
+            return false;
+        if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks()))
+            return false;
+        FILE *f = fopen(AUTOSAVE_TMP_FILE, "ab");
+        if (!f) {
+            flash_quiet_writer_unlock();
+            ESP_LOGE(TAG, "Autosave tmp reopen failed");
+            return false;
+        }
+        flash_quiet_writer_unlock();
+        s_as_fp = f;
+        return true;
+    }
     /* fopen/unlink of tmp can take 100–160 ms — only in post-commit quiet. */
     if (usb_host_cdc_is_connected() && !flash_quiet_can_start_slice())
         return false;
@@ -695,7 +750,7 @@ bool spectrum_autosave_begin(void)
     memcpy(snap, &s_spectrum, sizeof(*snap));
     SPEC_UNLOCK();
 
-    if (!flash_quiet_writer_lock(pdMS_TO_TICKS(200))) {
+    if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks())) {
         free(snap);
         return false;
     }
@@ -756,6 +811,7 @@ void spectrum_autosave_pump(void)
         s_as_snap = NULL;
         s_as_off = s_as_total = 0;
         s_as_slices = 0;
+        spectrum_autosave_note_ok();
         return;
     }
 
@@ -830,6 +886,8 @@ void spectrum_autosave(void)
 #endif
     if (cl != 0 || wr != 1)
         ESP_LOGE(TAG, "Autosave write failed (wr=%zu)", wr);
+    else
+        spectrum_autosave_note_ok();
     free(snap);
 }
 

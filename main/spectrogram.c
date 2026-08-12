@@ -111,15 +111,23 @@ static void wait_flash_quiet(void)
     }
 }
 
-/** fwrite in quiet-budget slices; returns false on I/O error. */
+/** fwrite in quiet-budget slices; returns false on I/O error or hard stall.
+ *  Steady-state respects can_start_slice; after 4 idle rounds forces one slice
+ *  (same as seg_open_new baseline) so USB-offline / silent-commit cannot hang. */
 static bool fwrite_quiet_slices(FILE *f, const uint8_t *src, size_t len)
 {
     size_t off = 0;
+    int idle_rounds = 0;
+    size_t max_rounds = (len / FLASH_QUIET_SLICE_BYTES) + 8;
+    size_t rounds = 0;
     while (off < len) {
+        if (++rounds > max_rounds) return false;
         wait_flash_quiet();
-        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(200))) return false;
-        /* Multiple slices in one quiet window while guard remains. */
-        while (off < len && flash_quiet_can_start_slice()) {
+        if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks())) return false;
+        size_t before = off;
+        bool force = (idle_rounds >= 4);
+        /* Multiple slices in one quiet window while guard remains (or one forced). */
+        while (off < len && (force || flash_quiet_can_start_slice())) {
             size_t n = len - off;
             if (n > FLASH_QUIET_SLICE_BYTES) n = FLASH_QUIET_SLICE_BYTES;
             size_t wr = fwrite(src + off, 1, n, f);
@@ -128,9 +136,14 @@ static bool fwrite_quiet_slices(FILE *f, const uint8_t *src, size_t len)
                 return false;
             }
             off += wr;
+            force = false; /* at most one forced slice per outer round */
             if (!flash_quiet_can_start_slice()) break;
         }
         flash_quiet_writer_unlock();
+        if (off == before)
+            idle_rounds++;
+        else
+            idle_rounds = 0;
     }
     return true;
 }
@@ -154,7 +167,7 @@ static void wait_after_seg_close(void)
 
 static void wf_task(void *arg);
 static void wf_fs_task(void *arg);                            // #FW-6 consumer
-static void seg_write_row(const uint8_t *row, uint16_t dur, float temp);  // #FW-6/#FW-41 (под s_fs_lock сам)
+static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp);  // #FW-6/#FW-41 (под s_fs_lock сам); false = retry row
 
 // #REC-6: переживает ребут/сбой питания. Пишется на start/stop/clear; читается
 // на boot в spectrogram_restore(). Решает, возобновлять ли запись.
@@ -421,11 +434,11 @@ static void seg_finalize(void)
         // Конвенция: saved_rows=0 в шапке = «строк — из размера файла».
         // Все потребители и так выводят rows из payload/stride: вьюер
         // (waterfall_viewer.html:162), /api/waterfall/segments, boot-reconcile.
-        // Финализация = fflush+fclose; skip fsync while USB live (same residual
-        // as autosave — fsync overruns quiet into the next hist burst).
+        // Финализация = fflush+fsync+fclose. fsync here is once per ≤64 rows /
+        // age rollover (not the class-B per-row metronome). Unconditional so a
+        // live-USB power loss does not leave size=0 → reconcile unlink.
         fflush(s_seg_fp);
-        if (!usb_host_cdc_is_connected())
-            fsync(fileno(s_seg_fp));
+        fsync(fileno(s_seg_fp));
         fclose(s_seg_fp);
         s_seg_fp = NULL;
         flash_quiet_writer_unlock();
@@ -511,7 +524,7 @@ static bool seg_open_new(void)
         size_t off = 0;
         while (left > 0) {
             wait_flash_quiet();
-            if (!flash_quiet_writer_lock(pdMS_TO_TICKS(200))) {
+            if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks())) {
                 ESP_LOGE(TAG, "baseline lock failed %s", p);
                 fclose(f); unlink(p);
                 hist_drop_diag_wf_flash_end();
@@ -533,10 +546,10 @@ static bool seg_open_new(void)
         }
     }
     wait_flash_quiet();
-    if (flash_quiet_writer_lock(pdMS_TO_TICKS(200))) {
+    if (flash_quiet_writer_lock(flash_quiet_writer_lock_ticks())) {
         fflush(f);
-        /* Skip fsync on open — same residual as autosave: fsync overruns quiet into
-         * the next hist burst. Row fsync batch + finalize still sync periodically. */
+        /* Skip fsync on open — open is frequent with live USB; finalize always
+         * fsyncs. Row batch fsync remains offline-only. */
         flash_quiet_writer_unlock();
     }
     s_seg_fp        = f;
@@ -570,19 +583,22 @@ static uint32_t seg_oldest_completed(void)
 }
 
 /** Unlink a completed segment only in a post-commit quiet window.
- *  ~1 MiB LittleFS unlink freezes SPI the same way as a fat fwrite (class B). */
-static void quiet_unlink_path(const char *p)
+ *  ~1 MiB LittleFS unlink freezes SPI the same way as a fat fwrite (class B).
+ *  Returns true only if the file was actually removed. */
+static bool quiet_unlink_path(const char *p)
 {
     wait_flash_quiet();
     wait_after_seg_close();
     if (!flash_quiet_writer_lock(pdMS_TO_TICKS(2000))) {
         ESP_LOGW(TAG, "unlink deferred (no writer lock): %s", p);
-        return;
+        return false;
     }
     hist_drop_diag_wf_flash_begin("unlink");
-    if (unlink(p) != 0) ESP_LOGW(TAG, "unlink failed: %s", p);
+    bool ok = (unlink(p) == 0);
+    if (!ok) ESP_LOGW(TAG, "unlink failed: %s", p);
     hist_drop_diag_wf_flash_end();
     flash_quiet_writer_unlock();
+    return ok;
 }
 
 // Кольцо keep-last: пока на Flash меньше need байт — удалять старейший
@@ -594,7 +610,11 @@ static void make_room(uint32_t need)
         if (oldest == 0xFFFFFFFFu) break;        // только открытый/пусто — выйти
         char p[64];
         seg_path(p, sizeof(p), oldest);
-        quiet_unlink_path(p);
+        /* Release FS lock across quiet wait + unlink (can take seconds). */
+        FSUNLOCK();
+        bool removed = quiet_unlink_path(p);
+        FSLOCK();
+        if (!removed) break;                     // same oldest would spin forever
         LOCK();
         s_status.seg_dropped++;
         if (s_status.seg_count) s_status.seg_count--;
@@ -774,7 +794,9 @@ void spectrogram_init(void)
 // удержанных локов — берёт s_fs_lock сам. Логика идентична прежнему inline-блоку
 // wf_task: финализация по лимиту строк/возраста, кольцо keep-last, ленивое
 // открытие сегмента, запись 16384 Б спектра + 2 Б длительности (uint16 LE) + fsync.
-static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
+// Returns false if the row should be retried (writer-lock contention after a
+// successful fwrite) — caller must NOT advance s_fs_flushed.
+static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
 {
     FSLOCK();
     // #FW-14: здесь только ролловер по строкам; возрастной (10 мин,
@@ -841,35 +863,55 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
             ok = fwrite_quiet_slices(s_seg_fp, pack, po);
             free(pack);
         }
-        wait_flash_quiet();
-        bool locked = flash_quiet_writer_lock(pdMS_TO_TICKS(200));
-        if (!ok || !locked || fflush(s_seg_fp) != 0) {
+        if (!ok) {
             ESP_LOGE(TAG, "seg row write failed — drop segment");
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
-            if (locked) flash_quiet_writer_unlock();
-        } else {
+            FSUNLOCK();
+            return true; /* consume row; segment discarded */
+        }
+        /* fwrite already landed in the FILE buffer. Never re-fwrite on lock
+         * contention (would duplicate the row) — only retry fflush. */
+        bool locked = false;
+        for (int attempt = 0; attempt < 4 && !locked; attempt++) {
+            wait_flash_quiet();
+            locked = flash_quiet_writer_lock(flash_quiet_writer_lock_ticks());
+        }
+        if (!locked) {
+            ESP_LOGW(TAG, "seg row fflush deferred (writer lock) — row kept buffered");
             s_seg_rows++;
             LOCK(); s_status.flash_rows++; UNLOCK();
-            /* Skip periodic fsync while USB analyzer is live — fflush is enough
-             * for size-derived rows; fsync is the class-B metronome with WF ON. */
-            if (s_seg_rows % WF_FSYNC_BATCH == 0 && !usb_host_cdc_is_connected()) {
-                fsync(fileno(s_seg_fp));
-            }
+            FSUNLOCK();
+            return true;
+        }
+        if (fflush(s_seg_fp) != 0) {
+            ESP_LOGE(TAG, "seg row fflush failed — drop segment");
+            fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
             flash_quiet_writer_unlock();
-            // #FW-8: место под хвост текущего сегмента + весь следующий освобождаем
-            // ЗАРАНЕЕ, в середине сегмента. Иначе unlink 1МБ кольцом (десятки секунд
-            // стираний Flash с заморозкой кэша) фазово совпадал с ролловером
-            // finalize+create → USB-приём терял секундный пакет прибора → строки
-            // границы сегмента получали dur 4/6 вместо 5 (тёмные полосы каждые
-            // 64 строки, #VIEW-9). Разнос по фазе дробит burst; недобор среза в
-            // середине, если и случится, честно ложится в поле dur (v2).
-            if (s_seg_rows == WF_SEG_PREP_ROW) {
-                uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
-                make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
-            }
+            FSUNLOCK();
+            return true;
+        }
+        s_seg_rows++;
+        LOCK(); s_status.flash_rows++; UNLOCK();
+        /* Skip periodic fsync while USB analyzer is live — fflush is enough
+         * for size-derived rows mid-segment; finalize always fsyncs. */
+        if (s_seg_rows % WF_FSYNC_BATCH == 0 && !usb_host_cdc_is_connected()) {
+            fsync(fileno(s_seg_fp));
+        }
+        flash_quiet_writer_unlock();
+        // #FW-8: место под хвост текущего сегмента + весь следующий освобождаем
+        // ЗАРАНЕЕ, в середине сегмента. Иначе unlink 1МБ кольцом (десятки секунд
+        // стираний Flash с заморозкой кэша) фазово совпадал с ролловером
+        // finalize+create → USB-приём терял секундный пакет прибора → строки
+        // границы сегмента получали dur 4/6 вместо 5 (тёмные полосы каждые
+        // 64 строки, #VIEW-9). Разнос по фазе дробит burst; недобор среза в
+        // середине, если и случится, честно ложится в поле dur (v2).
+        if (s_seg_rows == WF_SEG_PREP_ROW) {
+            uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
+            make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
         }
     }
     FSUNLOCK();
+    return true;
 }
 
 static void wf_task(void *arg)
@@ -967,7 +1009,10 @@ static void wf_fs_task(void *arg)
             UNLOCK();
             if (!have) break;
             if (lost) { LOCK(); s_fs_flushed = total - s_capacity; UNLOCK(); continue; }
-            if (pst) seg_write_row(s_fs_buf, s_fs_dur, s_fs_temp);
+            if (pst) {
+                if (!seg_write_row(s_fs_buf, s_fs_dur, s_fs_temp))
+                    break; /* rare: leave row for next tick (should not happen after P0-4) */
+            }
             LOCK(); s_fs_flushed++; UNLOCK();
         }
         // #FW-14: финализация по возрасту — 64 строки ИЛИ 10 мин (WATERFALL.md),
@@ -1330,9 +1375,9 @@ void spectrogram_offload_done(uint32_t idx)
         seg_path(p, sizeof(p), idx);
         /* Release FS lock around quiet wait + unlink — can take seconds. */
         FSUNLOCK();
-        quiet_unlink_path(p);
+        bool removed = quiet_unlink_path(p);
         FSLOCK();
-        if (idx == s_seg_pinned) {
+        if (removed && idx == s_seg_pinned) {
             LOCK();
             if (s_status.seg_count) s_status.seg_count--;
             s_status.flash_full = false;
@@ -1369,9 +1414,9 @@ bool spectrogram_seg_delete(uint32_t idx)
         struct stat sb;
         if (stat(p, &sb) == 0) {
             FSUNLOCK();
-            quiet_unlink_path(p);
+            bool removed = quiet_unlink_path(p);
             FSLOCK();
-            if (stat(p, &sb) != 0) {
+            if (removed && stat(p, &sb) != 0) {
                 LOCK();
                 if (s_status.seg_count) s_status.seg_count--;
                 s_status.flash_full = false;
