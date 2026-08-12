@@ -1,5 +1,6 @@
 #include "atomspectra.h"
 #include "spectrogram.h"
+#include "hist_drop_diag.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_littlefs.h"
@@ -351,6 +352,7 @@ static bool seg_write_full_header(FILE *f)
 static void seg_finalize(void)
 {
     if (!s_seg_fp) return;
+    hist_drop_diag_wf_flash_begin("finalize");
     if (s_seg_rows > 0) {
         // #FW-8/#FW-14: шапку НЕ патчить НИКОГДА. LittleFS хранит файл
         // обратно-связанным CTZ-списком: запись в offset 14/34 = copy-on-write
@@ -376,6 +378,7 @@ static void seg_finalize(void)
     }
     s_seg_cur  = 0xFFFFFFFFu;
     s_seg_rows = 0;
+    hist_drop_diag_wf_flash_end();
 }
 
 // Открыть новый сегмент (rows=0). mkdir + 1 повтор при отсутствии каталога.
@@ -383,6 +386,7 @@ static void seg_finalize(void)
 static bool seg_open_new(void)
 {
     int64_t t0 = esp_timer_get_time();
+    hist_drop_diag_wf_flash_begin("open");
     char p[64];
     seg_path(p, sizeof(p), s_seg_next);
     // #FW-14: "wb" — шапка после открытия не читается и не патчится
@@ -391,7 +395,11 @@ static bool seg_open_new(void)
     if (!f) {
         mkdir(WF_SEG_DIR, 0777);
         f = fopen(p, "wb");
-        if (!f) { ESP_LOGE(TAG, "cannot open %s", p); return false; }
+        if (!f) {
+            ESP_LOGE(TAG, "cannot open %s", p);
+            hist_drop_diag_wf_flash_end();
+            return false;
+        }
     }
     long now = (long)time(NULL);
     // #DATA-1b/1c: снимок метаданных сегмента ДО сборки шапки (оба идут в JSON).
@@ -415,13 +423,17 @@ static bool seg_open_new(void)
     seg_header_build(0, 0, now);
     if (!seg_write_full_header(f)) {
         ESP_LOGE(TAG, "header write failed %s", p);
-        fclose(f); unlink(p); return false;
+        fclose(f); unlink(p);
+        hist_drop_diag_wf_flash_end();
+        return false;
     }
     // v3: baseline секция (WF_CHANNELS×uint32 LE) между header и payload
     if (s_baseline) {
         if (fwrite(s_baseline, 4, WF_CHANNELS, f) != (size_t)WF_CHANNELS) {
             ESP_LOGE(TAG, "baseline write failed %s", p);
-            fclose(f); unlink(p); return false;
+            fclose(f); unlink(p);
+            hist_drop_diag_wf_flash_end();
+            return false;
         }
     } else {
         // s_baseline не выделен (OOM) — пишем нули (32 КБ по 128 Б за раз)
@@ -429,7 +441,9 @@ static bool seg_open_new(void)
         for (int c = 0; c < WF_BASELINE_BYTES / (int)sizeof(zeroes); c++) {
             if (fwrite(zeroes, 1, sizeof(zeroes), f) != sizeof(zeroes)) {
                 ESP_LOGE(TAG, "baseline zeros write failed %s", p);
-                fclose(f); unlink(p); return false;
+                fclose(f); unlink(p);
+                hist_drop_diag_wf_flash_end();
+                return false;
             }
         }
     }
@@ -441,6 +455,7 @@ static bool seg_open_new(void)
     s_seg_next++;
     ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf opened in %lld us", s_seg_cur,
              (long long)(esp_timer_get_time() - t0));
+    hist_drop_diag_wf_flash_end();
     return true;
 }
 

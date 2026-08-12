@@ -141,6 +141,26 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ---
 
+### #FW-8 residual: `histogram sweep dropped` ≈ 1/min (LittleFS autosave)
+
+**Status:** open · root-caused 2026-08-12 · fix not merged.
+Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md).
+
+**Observation:** WARN `spectrum: histogram sweep dropped (gap in chunks)` roughly
+once per minute (plus short bursts on waterfall segment rollover). #FW-8 staging
+does not publish torn sweeps (live spectrum stays coherent) but ~1 s of histogram
+is lost per minute.
+
+**Cause:** LittleFS writes (`spectrum_autosave` ~60 s, ~0.45 s) and segment
+finalize/open freeze the flash cache → FTDI FIFO overrun → channel-offset gap.
+#FW-13 phases autosave into the post-commit quiet window, but write duration
+consumes the budget before the next 1 Hz burst. With waterfall OFF the rate is
+still ≈70/h (autosave-only); `rx_ring_drops` stays 0.
+
+**Do not confuse** with #FW-50 (UI soft-lock) or #FW-51 (CDC silent stall).
+
+---
+
 ## Fixed
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)

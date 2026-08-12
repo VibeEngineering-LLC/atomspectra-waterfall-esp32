@@ -6,6 +6,7 @@
 #include "net_time.h"     // #FIELD-5: источник времени (SNTP/браузер/ручной)
 #include "http_io_gate.h" // #PERF-2: skip autosave while HEAVY I/O busy
 #include "debug_log_ring.h"
+#include "hist_drop_diag.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include <inttypes.h>
@@ -131,23 +132,32 @@ void app_main(void)
             info_tick = 0;
             usb_host_send_text_command("-inf");
         }
-        if (++autosave_tick >= 6) {
+        if (++autosave_tick >= HIST_DROP_E3_AUTOSAVE_TICKS) {
             autosave_tick = 0;
             // #PERF-2: не писать LittleFS, пока HEAVY download/export держит слот
             if (!http_io_gate_busy()) {
+                bool wait_timed_out = false;
+#if !HIST_DROP_E4_NO_WAIT_COMMIT
                 if (autosave_sig) {
                     xSemaphoreTake(autosave_sig, 0);                    // сброс протухшего сигнала
-                    xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500));  // ждём свежий коммит
+                    wait_timed_out = (xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500)) != pdTRUE);
                 }
+#else
+                wait_timed_out = true;  // E4: forced mid-phase write (no quiet wait)
+#endif
                 // За время ожидания сигнала HEAVY-запрос мог стартовать, поэтому
                 // саму запись делаем, заняв слот, а не по результату busy() выше:
                 // проверка там осталась только как дешёвый ранний выход.
                 if (http_io_gate_try_enter()) {
+                    hist_drop_diag_autosave_begin(wait_timed_out);
                     int64_t t0 = esp_timer_get_time();
                     spectrum_autosave();
                     int64_t dt_us = esp_timer_get_time() - t0;
+                    hist_drop_diag_autosave_end();
                     http_io_gate_leave();
-                    ESP_LOGI(TAG, "LittleFS autosave took %lld us", (long long)dt_us);
+                    ESP_LOGI(TAG, "LittleFS autosave took %lld us%s",
+                             (long long)dt_us,
+                             wait_timed_out ? " (wait_timeout)" : "");
                 }
             }
         }

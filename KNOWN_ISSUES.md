@@ -138,6 +138,25 @@ USB/CDC исправно. **Переподключение USB настройк�
 
 ---
 
+### #FW-8 residual: `histogram sweep dropped` ≈ 1/мин (autosave LittleFS)
+
+**Статус:** открыто · root-cause 2026-08-12 · фикс не вмержен.
+Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md).
+
+**Наблюдение:** WARN `spectrum: histogram sweep dropped (gap in chunks)` roughly
+раз в минуту (+ короткие пачки на ролловере сегмента водопада). Staging #FW-8
+не публикует рваный свип (живой спектр цел), но теряется ~1 с гистограммы/мин.
+
+**Причина:** запись LittleFS (`spectrum_autosave` ~60 с, ~0.45 с) и flash на
+finalize/open сегмента замораживают кэш → FTDI FIFO overrun → gap по offset.
+#FW-13 фазирует autosave в «тихое» окно после коммита, но длительность записи
+съедает бюджет до следующего 1 Hz burst. С водопадом OFF частота ≈70/ч
+(только autosave); `rx_ring_drops` при этом 0.
+
+**Не путать** с #FW-50 (soft-lock UI) и #FW-51 (CDC silent stall).
+
+---
+
 ## Исправленные
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)

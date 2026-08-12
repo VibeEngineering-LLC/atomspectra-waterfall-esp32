@@ -1,4 +1,5 @@
 ﻿#include "atomspectra.h"
+#include "hist_drop_diag.h"
 #include "esp_log.h"
 #include <inttypes.h>
 #include "esp_littlefs.h"
@@ -153,6 +154,18 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
         s_stage_next = 0;
         s_stage_ok = true;
     } else if ((uint32_t)offset != s_stage_next) {
+#if HIST_DROP_DIAG
+        if (s_stage_ok) {
+            // First gap in this sweep — once per broken sweep.
+            ESP_LOGW(TAG,
+                     "histogram gap exp=%" PRIu32 " got=%u filled=%" PRIu32
+                     " as=%d wf=%d/%s",
+                     s_stage_next, (unsigned)offset, s_stage_next,
+                     hist_drop_diag_autosave_active() ? 1 : 0,
+                     hist_drop_diag_wf_active() ? 1 : 0,
+                     hist_drop_diag_wf_tag());
+        }
+#endif
         s_stage_ok = false;
     }
     for (size_t i = 0; i < bin_count && (offset + i) < SPECTRUM_CHANNELS; i++) {
@@ -207,12 +220,27 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
             s_spectrum.valid = true;
             SPEC_UNLOCK();
             s_hist_commits++;
+            hist_drop_diag_note_commit();
             // #FW-13 фикс №2: сигнал «burst кончился, тихое окно открыто».
             for (int i = 0; i < COMMIT_LISTENERS_MAX; i++)
                 if (s_commit_listeners[i]) xSemaphoreGive(s_commit_listeners[i]);
         } else {
             s_hist_drops++;
+#if HIST_DROP_DIAG
+            ESP_LOGW(TAG,
+                     "histogram sweep dropped (gap in chunks), drops=%" PRIu32
+                     " ok=%" PRIu32 " dt_commit_ms=%lld dt_as_end_ms=%lld"
+                     " as=%d as_to=%d wf=%d/%s",
+                     s_hist_drops, s_hist_commits,
+                     (long long)hist_drop_diag_ms_since_commit(),
+                     (long long)hist_drop_diag_ms_since_autosave_end(),
+                     hist_drop_diag_autosave_active() ? 1 : 0,
+                     hist_drop_diag_last_wait_timed_out() ? 1 : 0,
+                     hist_drop_diag_wf_active() ? 1 : 0,
+                     hist_drop_diag_wf_tag());
+#else
             ESP_LOGW(TAG, "histogram sweep dropped (gap in chunks), drops=%" PRIu32, s_hist_drops);
+#endif
         }
         s_stage_next = UINT32_MAX;
         s_stage_ok = false;
@@ -603,6 +631,10 @@ void spectrum_load_calibration(void)
 
 void spectrum_autosave(void)
 {
+#if HIST_DROP_E1_NO_AUTOSAVE
+    ESP_LOGI(TAG, "autosave skipped (HIST_DROP_E1_NO_AUTOSAVE)");
+    return;
+#endif
     spectrum_data_t *snap = malloc(sizeof(*snap));
     if (!snap) return;
     SPEC_LOCK();
