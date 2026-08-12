@@ -146,8 +146,9 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ### #FW-8 residual: `histogram sweep dropped` ≈ 1/min (LittleFS autosave) — FIXED
 
-**Status:** fixed 2026-08-12 · F1a sliced quiet-window autosave + F2 WF baseline/fsync.
+**Status:** fixed 2026-08-12 · shipped in **`v1.2.6`** · F1a sliced quiet-window autosave + F2 WF baseline/fsync.
 Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md).
+Release notes: [`docs/releases/v1.2.6-fw8-hist-drop-cdc.md`](docs/releases/v1.2.6-fw8-hist-drop-cdc.md).
 
 **Was:** WARN about once per minute (~70/h with WF OFF) because a single
 `fwrite(~33 KiB)` in the #FW-13 quiet window consumed the budget before the next
