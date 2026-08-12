@@ -1,11 +1,14 @@
 ﻿#include "atomspectra.h"
 #include "hist_drop_diag.h"
+#include "flash_quiet.h"
 #include "esp_log.h"
 #include <inttypes.h>
 #include "esp_littlefs.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <math.h>
 #include <sys/stat.h>   // #FW-24: mkdir SPEC_DIR
 #include "freertos/FreeRTOS.h"
@@ -13,9 +16,10 @@
 #include "esp_heap_caps.h"
 
 static const char *TAG = "spectrum";
-#define AUTOSAVE_FILE STORAGE_PATH "/current.bin"
-#define CALIB_FILE    STORAGE_PATH "/calib.bin"
-#define AUTOSAVE_RESERVE (1024 * 1024)
+#define AUTOSAVE_FILE     STORAGE_PATH "/current.bin"
+#define AUTOSAVE_TMP_FILE STORAGE_PATH "/current.bin.tmp"
+#define CALIB_FILE        STORAGE_PATH "/calib.bin"
+#define AUTOSAVE_RESERVE  (1024 * 1024)
 
 typedef struct {
     char serial[64];
@@ -151,6 +155,7 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
     // #FW-8: сборка свипа в staging. offset==0 — старт нового свипа (официальная
     // спека); разрыв непрерывности = потерянный chunk (flash-freeze) → свип битый.
     if (offset == 0) {
+        hist_drop_diag_note_burst_start();
         s_stage_next = 0;
         s_stage_ok = true;
     } else if ((uint32_t)offset != s_stage_next) {
@@ -220,6 +225,7 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
             s_spectrum.valid = true;
             SPEC_UNLOCK();
             s_hist_commits++;
+            flash_quiet_note_commit();
             hist_drop_diag_note_commit();
             // #FW-13 фикс №2: сигнал «burst кончился, тихое окно открыто».
             for (int i = 0; i < COMMIT_LISTENERS_MAX; i++)
@@ -577,6 +583,9 @@ int spectrum_load_from_flash(int index, spectrum_data_t *out)
 void spectrum_save_calibration(void)
 {
     if (!s_calib_dirty) return;
+    /* Rare dirty flag — still freeze LittleFS; only write in quiet if USB live. */
+    if (usb_host_cdc_is_connected() && !flash_quiet_can_start_slice())
+        return;
     calib_store_t st = {0};
     SPEC_LOCK();
     if (!s_spectrum.calib_valid) { s_calib_dirty = false; SPEC_UNLOCK(); return; }
@@ -586,13 +595,24 @@ void spectrum_save_calibration(void)
     st.valid = 1;
     s_calib_dirty = false;
     SPEC_UNLOCK();
-    FILE *f = fopen(CALIB_FILE, "wb");
-    if (!f) return;
-    size_t wr = fwrite(&st, sizeof(st), 1, f);
-    if (fclose(f) != 0 || wr != 1) {
-        ESP_LOGE(TAG, "Calibration write failed (wr=%zu)", wr);
+    if (!flash_quiet_writer_lock(pdMS_TO_TICKS(200))) {
+        SPEC_LOCK(); s_calib_dirty = true; SPEC_UNLOCK();
         return;
     }
+    FILE *f = fopen(CALIB_FILE, "wb");
+    if (!f) {
+        flash_quiet_writer_unlock();
+        SPEC_LOCK(); s_calib_dirty = true; SPEC_UNLOCK();
+        return;
+    }
+    size_t wr = fwrite(&st, sizeof(st), 1, f);
+    if (fclose(f) != 0 || wr != 1) {
+        flash_quiet_writer_unlock();
+        ESP_LOGE(TAG, "Calibration write failed (wr=%zu)", wr);
+        SPEC_LOCK(); s_calib_dirty = true; SPEC_UNLOCK();
+        return;
+    }
+    flash_quiet_writer_unlock();
     ESP_LOGI(TAG, "Calibration saved for '%s'", st.serial);
 }
 
@@ -629,22 +649,186 @@ void spectrum_load_calibration(void)
     ESP_LOGI(TAG, "Calibration loaded: order=%d serial='%s'", st.calib_order, st.serial);
 }
 
+/* #FW-8 residual F1a: sliced LittleFS autosave across post-commit quiet windows. */
+static spectrum_data_t *s_as_snap;
+static FILE *s_as_fp;
+static size_t s_as_off;
+static size_t s_as_total;
+static int s_as_slices;
+static int64_t s_as_t0;
+
+static void autosave_cleanup_failed(void)
+{
+    if (s_as_fp) { fclose(s_as_fp); s_as_fp = NULL; }
+    unlink(AUTOSAVE_TMP_FILE);
+    if (s_as_snap) { free(s_as_snap); s_as_snap = NULL; }
+    s_as_off = s_as_total = 0;
+    s_as_slices = 0;
+}
+
+bool spectrum_autosave_in_progress(void)
+{
+    return s_as_snap != NULL || s_as_fp != NULL;
+}
+
+void spectrum_autosave_abort(void)
+{
+    if (!spectrum_autosave_in_progress()) return;
+    ESP_LOGW(TAG, "autosave aborted mid-write (tmp discarded)");
+    autosave_cleanup_failed();
+}
+
+bool spectrum_autosave_begin(void)
+{
+#if HIST_DROP_E1_NO_AUTOSAVE
+    ESP_LOGI(TAG, "autosave skipped (HIST_DROP_E1_NO_AUTOSAVE)");
+    return false;
+#endif
+    if (spectrum_autosave_in_progress()) return true; /* already going */
+    /* fopen/unlink of tmp can take 100–160 ms — only in post-commit quiet. */
+    if (usb_host_cdc_is_connected() && !flash_quiet_can_start_slice())
+        return false;
+    spectrum_data_t *snap = malloc(sizeof(*snap));
+    if (!snap) return false;
+    SPEC_LOCK();
+    if (!s_spectrum.valid) { SPEC_UNLOCK(); free(snap); return false; }
+    memcpy(snap, &s_spectrum, sizeof(*snap));
+    SPEC_UNLOCK();
+
+    if (!flash_quiet_writer_lock(pdMS_TO_TICKS(200))) {
+        free(snap);
+        return false;
+    }
+    unlink(AUTOSAVE_TMP_FILE);
+    int64_t t_open0 = esp_timer_get_time();
+    FILE *f = fopen(AUTOSAVE_TMP_FILE, "wb");
+    int64_t open_us = esp_timer_get_time() - t_open0;
+    if (!f) {
+        flash_quiet_writer_unlock();
+        ESP_LOGE(TAG, "Autosave tmp open failed");
+        free(snap);
+        return false;
+    }
+    flash_quiet_writer_unlock();
+#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
+    ESP_LOGI(TAG, "autosave begin open_us=%lld bytes=%zu",
+             (long long)open_us, sizeof(*snap));
+#else
+    (void)open_us;
+#endif
+    s_as_snap = snap;
+    s_as_fp = f;
+    s_as_off = 0;
+    s_as_total = sizeof(*snap);
+    s_as_slices = 0;
+    s_as_t0 = esp_timer_get_time();
+    return true;
+}
+
+void spectrum_autosave_pump(void)
+{
+    if (!s_as_fp || !s_as_snap) return;
+
+    /* Dedicated quiet window for close/rename once payload is fully written. */
+    if (s_as_off >= s_as_total) {
+        if (!flash_quiet_can_start_slice()) return;
+        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(50))) return;
+        fflush(s_as_fp);
+        if (fclose(s_as_fp) != 0) {
+            s_as_fp = NULL;
+            flash_quiet_writer_unlock();
+            ESP_LOGE(TAG, "autosave fclose failed");
+            autosave_cleanup_failed();
+            return;
+        }
+        s_as_fp = NULL;
+        if (rename(AUTOSAVE_TMP_FILE, AUTOSAVE_FILE) != 0) {
+            flash_quiet_writer_unlock();
+            ESP_LOGE(TAG, "autosave rename failed");
+            autosave_cleanup_failed();
+            return;
+        }
+        flash_quiet_writer_unlock();
+        int64_t total_us = esp_timer_get_time() - s_as_t0;
+        ESP_LOGI(TAG, "autosave complete slices=%d total_us=%lld",
+                 s_as_slices, (long long)total_us);
+        free(s_as_snap);
+        s_as_snap = NULL;
+        s_as_off = s_as_total = 0;
+        s_as_slices = 0;
+        return;
+    }
+
+    /* At most a few slices per quiet window; require erase-cliff headroom. */
+    while (s_as_off < s_as_total) {
+        if (!flash_quiet_can_start_slice()) break;
+        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(50))) break;
+
+        size_t chunk = FLASH_QUIET_SLICE_BYTES;
+        if (chunk > s_as_total - s_as_off) chunk = s_as_total - s_as_off;
+
+        int64_t t0 = esp_timer_get_time();
+        size_t n = fwrite((const uint8_t *)s_as_snap + s_as_off, 1, chunk, s_as_fp);
+        int64_t dt = esp_timer_get_time() - t0;
+        flash_quiet_writer_unlock();
+        if (n != chunk) {
+            ESP_LOGE(TAG, "autosave slice fwrite failed off=%zu n=%zu", s_as_off, n);
+            autosave_cleanup_failed();
+            return;
+        }
+        s_as_off += n;
+        s_as_slices++;
+#if HIST_DROP_DIAG
+        ESP_LOGI(TAG, "autosave slice n=%zu off=%zu/%zu dt_us=%lld rem_us=%lld",
+                 n, s_as_off, s_as_total, (long long)dt,
+                 (long long)flash_quiet_remaining_us());
+#else
+        (void)dt;
+#endif
+        /* One slice that burned the guard → wait for next commit. */
+        if (!flash_quiet_can_start_slice()) break;
+    }
+}
+
 void spectrum_autosave(void)
 {
 #if HIST_DROP_E1_NO_AUTOSAVE
     ESP_LOGI(TAG, "autosave skipped (HIST_DROP_E1_NO_AUTOSAVE)");
     return;
 #endif
+    /* One-shot full write — safe when USB analyzer is silent/disconnected
+     * (no 1 Hz burst). Used by offline path and as I2 timing baseline. */
     spectrum_data_t *snap = malloc(sizeof(*snap));
     if (!snap) return;
     SPEC_LOCK();
     if (!s_spectrum.valid) { SPEC_UNLOCK(); free(snap); return; }
     memcpy(snap, &s_spectrum, sizeof(*snap));
     SPEC_UNLOCK();
+
+#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
+    int64_t t_open0 = esp_timer_get_time();
+#endif
     FILE *f = fopen(AUTOSAVE_FILE, "wb");
+#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
+    int64_t open_us = esp_timer_get_time() - t_open0;
+#endif
     if (!f) { ESP_LOGE(TAG, "Autosave open failed"); free(snap); return; }
+
+#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
+    int64_t t_wr0 = esp_timer_get_time();
+#endif
     size_t wr = fwrite(snap, sizeof(*snap), 1, f);
-    if (fclose(f) != 0 || wr != 1)
+#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
+    int64_t write_us = esp_timer_get_time() - t_wr0;
+    int64_t t_cl0 = esp_timer_get_time();
+#endif
+    int cl = fclose(f);
+#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
+    int64_t close_us = esp_timer_get_time() - t_cl0;
+    ESP_LOGI(TAG, "autosave split open_us=%lld write_us=%lld close_us=%lld wr=%zu",
+             (long long)open_us, (long long)write_us, (long long)close_us, wr);
+#endif
+    if (cl != 0 || wr != 1)
         ESP_LOGE(TAG, "Autosave write failed (wr=%zu)", wr);
     free(snap);
 }

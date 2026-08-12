@@ -7,6 +7,7 @@
 #include "http_io_gate.h" // #PERF-2: skip autosave while HEAVY I/O busy
 #include "debug_log_ring.h"
 #include "hist_drop_diag.h"
+#include "flash_quiet.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include <inttypes.h>
@@ -52,6 +53,7 @@ void app_main(void)
     ESP_LOGI(TAG, "boot-config: as_spec=%d as_wf=%d clr_spec=%d clr_wf=%d",
              bc.autostart_spectrum, bc.autostart_waterfall, bc.clear_spectrum, bc.clear_waterfall);
 
+    flash_quiet_init();
     spectrum_init();
     spectrum_restore_autosave();
     spectrum_load_calibration();
@@ -135,30 +137,95 @@ void app_main(void)
         if (++autosave_tick >= HIST_DROP_E3_AUTOSAVE_TICKS) {
             autosave_tick = 0;
             // #PERF-2: не писать LittleFS, пока HEAVY download/export держит слот
-            if (!http_io_gate_busy()) {
-                bool wait_timed_out = false;
-#if !HIST_DROP_E4_NO_WAIT_COMMIT
-                if (autosave_sig) {
-                    xSemaphoreTake(autosave_sig, 0);                    // сброс протухшего сигнала
-                    wait_timed_out = (xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500)) != pdTRUE);
+            if (!http_io_gate_busy() && http_io_gate_try_enter()) {
+#if HIST_DROP_I3_SLICED
+                /* #FW-8 F1a: sliced write in post-commit quiet windows.
+                 * Offline / silent USB → one-shot full write (no 1 Hz burst). */
+                if (!usb_host_cdc_is_connected()) {
+                    hist_drop_diag_autosave_begin(true);
+                    int64_t t0 = esp_timer_get_time();
+                    spectrum_autosave();
+                    int64_t dt_us = esp_timer_get_time() - t0;
+                    hist_drop_diag_autosave_end();
+                    ESP_LOGI(TAG, "LittleFS autosave took %lld us (offline one-shot)",
+                             (long long)dt_us);
+                } else {
+                    /* Begin must land in quiet (fopen ~100–160 ms). Retry a few
+                     * commits if headroom was already gone. */
+                    int pumps = 0;
+                    int wait_fail = 0;
+                    int begin_tries = 0;
+                    while (!spectrum_autosave_in_progress() && begin_tries < 4) {
+                        begin_tries++;
+                        if (autosave_sig) {
+                            if (xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500)) != pdTRUE) {
+                                if (++wait_fail >= 3) break;
+                                continue;
+                            }
+                        }
+                        wait_fail = 0;
+                        if (spectrum_autosave_begin()) break;
+                    }
+                    if (!spectrum_autosave_in_progress()) {
+                        ESP_LOGI(TAG, "LittleFS autosave begin deferred (no quiet headroom)");
+                    }
+                    while (spectrum_autosave_in_progress()) {
+                        bool wait_timed_out = false;
+#if HIST_DROP_DIAG && HIST_DROP_E4_NO_WAIT_COMMIT
+                        wait_timed_out = true;
+#else
+                        if (autosave_sig) {
+                            /* Do NOT Take(0)-clear here: a Give may have arrived
+                             * during the previous pump's flash work. Clearing it
+                             * forces a 1.5 s wait that times out if sweeps were
+                             * dropped by that same freeze → abort mid-file. */
+                            wait_timed_out =
+                                (xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500)) != pdTRUE);
+                        }
+#endif
+                        if (wait_timed_out) {
+                            if (++wait_fail >= 3) {
+                                spectrum_autosave_abort();
+                                ESP_LOGI(TAG,
+                                         "LittleFS autosave aborted (commit wait_timeout x3, USB live)");
+                                break;
+                            }
+                            ESP_LOGW(TAG, "autosave wait_timeout (retry %d)", wait_fail);
+                            continue;
+                        }
+                        wait_fail = 0;
+                        hist_drop_diag_autosave_begin(false);
+                        spectrum_autosave_pump();
+                        hist_drop_diag_autosave_end();
+                        pumps++;
+                    }
+                    if (pumps > 0 && !spectrum_autosave_in_progress())
+                        ESP_LOGI(TAG, "LittleFS autosave sliced pumps=%d", pumps);
                 }
 #else
-                wait_timed_out = true;  // E4: forced mid-phase write (no quiet wait)
+                bool wait_timed_out = false;
+#if HIST_DROP_DIAG && HIST_DROP_E4_NO_WAIT_COMMIT
+                wait_timed_out = true;
+#else
+                if (autosave_sig) {
+                    xSemaphoreTake(autosave_sig, 0);
+                    wait_timed_out = (xSemaphoreTake(autosave_sig, pdMS_TO_TICKS(1500)) != pdTRUE);
+                }
 #endif
-                // За время ожидания сигнала HEAVY-запрос мог стартовать, поэтому
-                // саму запись делаем, заняв слот, а не по результату busy() выше:
-                // проверка там осталась только как дешёвый ранний выход.
-                if (http_io_gate_try_enter()) {
+                if (wait_timed_out && usb_host_cdc_is_connected()) {
+                    ESP_LOGI(TAG, "LittleFS autosave skipped (commit wait_timeout, USB live)");
+                } else {
                     hist_drop_diag_autosave_begin(wait_timed_out);
                     int64_t t0 = esp_timer_get_time();
                     spectrum_autosave();
                     int64_t dt_us = esp_timer_get_time() - t0;
                     hist_drop_diag_autosave_end();
-                    http_io_gate_leave();
                     ESP_LOGI(TAG, "LittleFS autosave took %lld us%s",
                              (long long)dt_us,
                              wait_timed_out ? " (wait_timeout)" : "");
                 }
+#endif
+                http_io_gate_leave();
             }
         }
         // #WF-1: отложенная запись калибровки (s_calib_dirty). Внутри сама берёт

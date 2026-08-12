@@ -141,27 +141,22 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ---
 
-### #FW-8 residual: `histogram sweep dropped` ≈ 1/min (LittleFS autosave)
+## Fixed
 
-**Status:** open · root-caused 2026-08-12 · fix not merged.
+### #FW-8 residual: `histogram sweep dropped` ≈ 1/min (LittleFS autosave) — FIXED
+
+**Status:** fixed 2026-08-12 · F1a sliced quiet-window autosave + F2 WF baseline/fsync.
 Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md).
 
-**Observation:** WARN `spectrum: histogram sweep dropped (gap in chunks)` roughly
-once per minute (plus short bursts on waterfall segment rollover). #FW-8 staging
-does not publish torn sweeps (live spectrum stays coherent) but ~1 s of histogram
-is lost per minute.
+**Was:** WARN about once per minute (~70/h with WF OFF) because a single
+`fwrite(~33 KiB)` in the #FW-13 quiet window consumed the budget before the next
+1 Hz burst (FTDI FIFO overrun, `rx_ring_drops=0`).
 
-**Cause:** LittleFS writes (`spectrum_autosave` ~60 s, ~0.45 s) and segment
-finalize/open freeze the flash cache → FTDI FIFO overrun → channel-offset gap.
-#FW-13 phases autosave into the post-commit quiet window, but write duration
-consumes the budget before the next 1 Hz burst. With waterfall OFF the rate is
-still ≈70/h (autosave-only); `rx_ring_drops` stays 0.
-
-**Do not confuse** with #FW-50 (UI soft-lock) or #FW-51 (CDC silent stall).
-
----
-
-## Fixed
+**Now:** write `current.bin.tmp` in 4 KiB slices only while
+`FLASH_QUIET_BUDGET_MS` (+ ~180 ms start guard) remains after a hist commit;
+skip live-USB `fsync` and skip autosave on commit-wait timeout; gate tmp `fopen`
+and WF rollover on quiet windows; WF baseline/rows share the same budget. Lab:
+class A ≈0; rollovers without drop packs.
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)
 

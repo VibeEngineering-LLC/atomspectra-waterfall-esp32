@@ -15,6 +15,7 @@
 перезагружали — спектр на приборе сохранился. Другие клиенты той же сети были живы →
 не AP. Гипотезы: soft-lock без WDT, HEAVY/httpd, USB Host + WiFi soak; **не** путать
 с уже закрытым **#FW-13** (LittleFS autosave freeze / UART CDC blocking — зашито ранее).
+и с закрытым **#FW-8 residual** (гистограммные drops от autosave — sliced quiet write, 2026-08-12).
 
 **Инструмент:** Сервис → Debug-лог (NVS `dbglog`); кольцо 384 KiB PSRAM; забор дампа
 внешним сборщиком (у нас — launchd на Mac раз в 5 минут). Default **off**.
@@ -138,26 +139,22 @@ USB/CDC исправно. **Переподключение USB настройк�
 
 ---
 
-### #FW-8 residual: `histogram sweep dropped` ≈ 1/мин (autosave LittleFS)
+## Исправленные
 
-**Статус:** открыто · root-cause 2026-08-12 · фикс не вмержен.
+### #FW-8 residual: `histogram sweep dropped` ≈ 1/мин (autosave LittleFS) — ИСПРАВЛЕНО
+
+**Статус:** исправлено 2026-08-12 · F1a sliced quiet-window autosave + F2 WF baseline/fsync.
 Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md).
 
-**Наблюдение:** WARN `spectrum: histogram sweep dropped (gap in chunks)` roughly
-раз в минуту (+ короткие пачки на ролловере сегмента водопада). Staging #FW-8
-не публикует рваный свип (живой спектр цел), но теряется ~1 с гистограммы/мин.
+**Было:** WARN раз в минуту (~70/ч при WF OFF) из-за одного `fwrite(~33 KiB)` в
+«тихом» окне #FW-13; длительность записи съедала бюджет до следующего 1 Hz burst
+(FTDI FIFO overrun, `rx_ring_drops=0`).
 
-**Причина:** запись LittleFS (`spectrum_autosave` ~60 с, ~0.45 с) и flash на
-finalize/open сегмента замораживают кэш → FTDI FIFO overrun → gap по offset.
-#FW-13 фазирует autosave в «тихое» окно после коммита, но длительность записи
-съедает бюджет до следующего 1 Hz burst. С водопадом OFF частота ≈70/ч
-(только autosave); `rx_ring_drops` при этом 0.
-
-**Не путать** с #FW-50 (soft-lock UI) и #FW-51 (CDC silent stall).
-
----
-
-## Исправленные
+**Стало:** запись `current.bin.tmp` слайсами 4 KiB только пока остаётся
+`FLASH_QUIET_BUDGET_MS` (+ guard ~180 мс) после коммита свипа; на live USB нет
+`fsync` и нет записи на commit-wait timeout; fopen tmp и WF rollover ждут тихое
+окно; baseline/строки водопада — тот же бюджет. Lab: class A ≈0; rollover без
+пачки drops.
 
 ### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
 

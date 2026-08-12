@@ -218,4 +218,10 @@ void spectrum_set_calibration(const double *coeffs, int order);
 void spectrum_save_calibration(void);
 void spectrum_load_calibration(void);
 void spectrum_autosave(void);
+/** #FW-8 F1a: begin sliced quiet-window autosave (tmp file). false = nothing to do. */
+bool spectrum_autosave_begin(void);
+bool spectrum_autosave_in_progress(void);
+/** Write slices until quiet budget exhausted or file complete (rename to current.bin). */
+void spectrum_autosave_pump(void);
+void spectrum_autosave_abort(void);
 void spectrum_restore_autosave(void);

@@ -10,7 +10,8 @@ CC ?= gcc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O2 -I../../components/shproto/include -I../../main
 SRCS = test_shproto.c test_roundtrip.c ../../components/shproto/shproto.c \
        test_net_time.c ../../main/net_time.c \
-       test_debug_log_filter.c
+       test_debug_log_filter.c \
+       test_hist_stage.c ../../main/spectrum_hist_stage.c
 
 test: $(SRCS) test_util.h
 	$(CC) $(CFLAGS) -o test_runner $(SRCS)
