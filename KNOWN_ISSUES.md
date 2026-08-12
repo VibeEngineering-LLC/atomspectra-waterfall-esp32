@@ -145,7 +145,7 @@ USB/CDC исправно. **Переподключение USB настройк�
 
 **Статус:** исправлено 2026-08-12 · shipped in **`v1.2.6`** · F1a sliced quiet-window autosave + F2 WF baseline/fsync.
 Write-up: [`docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md`](docs/bugs/2026-08-12-histogram-sweep-drops-autosave.md).
-Release notes: [`docs/releases/v1.2.6-fw8-hist-drop-cdc.md`](docs/releases/v1.2.6-fw8-hist-drop-cdc.md).
+Release notes: [`docs/releases/v1.2.6-fw8-hist-drop.md`](docs/releases/v1.2.6-fw8-hist-drop.md).
 
 **Было:** WARN раз в минуту (~70/ч при WF OFF) из-за одного `fwrite(~33 KiB)` в
 «тихом» окне #FW-13; длительность записи съедала бюджет до следующего 1 Hz burst
