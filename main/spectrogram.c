@@ -75,6 +75,8 @@ static uint32_t  s_seg_next;               // следующий индекс д
 static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
 static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
 static uint32_t  s_seg_pinned = 0xFFFFFFFFu; // #REC-11-A2: сегмент в процессе выгрузки (claim) — кольцо его не трогает
+static uint32_t  s_seg_zombie = 0xFFFFFFFFu; // AUD-ASW126 #2: delivered, unlink deferred
+static uint32_t  s_wf_epoch;                 // AUD-ASW126 #3: start/clear vs make_room window
 static uint32_t  s_seg_seq;                // #DATA-1b: глоб. монотонный номер сегмента (NVS-персист, переживает clear/ребут)
 static uint32_t  s_seg_total_at_open;      // #DATA-1c: device cumulative total на момент открытия текущего сегмента
 static char      s_hdr[WF_HDR_RESERVE];    // буфер сборки шапки (только под s_fs_lock)
@@ -88,17 +90,25 @@ static SemaphoreHandle_t s_fs_sig;     // будит consumer на новую с
 static SemaphoreHandle_t s_commit_sig;
 // #FW-8 F2: отдельный listener для wf_fs_task — ждать quiet между слайсами baseline/fsync.
 static SemaphoreHandle_t s_fs_quiet_sig;
+static TaskHandle_t      s_wf_fs_task;
 static uint32_t          s_fs_flushed; // глоб. индекс следующей строки к записи на флеш
 static uint8_t          *s_fs_buf;     // PSRAM-буфер строки для consumer (16384 Б)
+static uint8_t          *s_row_pack;   // PSRAM pack WF_ROW_STRIDE (16410) — one writer
 static uint16_t          s_fs_dur;     // длительность копируемой строки (только в consumer)
 static float             s_fs_temp;    // #FW-41: t1 копируемой строки (только в consumer)
+
+static bool wait_flash_quiet_can_take(void)
+{
+    return s_fs_quiet_sig && s_wf_fs_task &&
+           xTaskGetCurrentTaskHandle() == s_wf_fs_task;
+}
 
 /** Block until post-commit quiet budget has slice headroom (or give up). */
 static void wait_flash_quiet(void)
 {
     const int64_t need = flash_quiet_slice_guard_us();
     if (flash_quiet_can_write(need)) return;
-    if (!s_fs_quiet_sig) {
+    if (!wait_flash_quiet_can_take()) {
         for (int i = 0; i < 40 && !flash_quiet_can_write(need); i++)
             vTaskDelay(pdMS_TO_TICKS(50));
         return;
@@ -152,7 +162,7 @@ static bool fwrite_quiet_slices(FILE *f, const uint8_t *src, size_t len)
 static void wait_after_seg_close(void)
 {
     for (int i = 0; i < 2; i++) {
-        if (s_fs_quiet_sig)
+        if (wait_flash_quiet_can_take())
             (void)xSemaphoreTake(s_fs_quiet_sig, pdMS_TO_TICKS(1500));
         wait_flash_quiet();
     }
@@ -167,7 +177,7 @@ static void wait_after_seg_close(void)
 
 static void wf_task(void *arg);
 static void wf_fs_task(void *arg);                            // #FW-6 consumer
-static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp);  // #FW-6/#FW-41 (под s_fs_lock сам); false = retry row
+static void seg_write_row(const uint8_t *row, uint16_t dur, float temp);  // #FW-6/#FW-41 (под s_fs_lock сам)
 
 // #REC-6: переживает ребут/сбой питания. Пишется на start/stop/clear; читается
 // на boot в spectrogram_restore(). Решает, возобновлять ли запись.
@@ -565,7 +575,7 @@ static bool seg_open_new(void)
 
 // Минимальный индекс среди ЗАВЕРШЁННЫХ сегментов (≠ текущего открытого).
 // 0xFFFFFFFF — нечего удалять. (под s_fs_lock)
-static uint32_t seg_oldest_completed(void)
+static uint32_t seg_oldest_completed(bool skip_zombie)
 {
     DIR *d = opendir(WF_SEG_DIR);
     if (!d) return 0xFFFFFFFFu;
@@ -576,6 +586,7 @@ static uint32_t seg_oldest_completed(void)
         if (!seg_name_index(e->d_name, &idx)) continue;
         if (s_seg_fp && idx == s_seg_cur) continue;  // открытый — пропустить
         if (idx == s_seg_pinned) continue;           // #REC-11-A2: выгружается прямо сейчас — не удалять
+        if (skip_zombie && idx == s_seg_zombie) continue;
         if (idx < best) best = idx;
     }
     closedir(d);
@@ -606,7 +617,7 @@ static bool quiet_unlink_path(const char *p)
 static void make_room(uint32_t need)
 {
     while (flash_free_bytes() < need) {
-        uint32_t oldest = seg_oldest_completed();
+        uint32_t oldest = seg_oldest_completed(false); /* ring may delete zombie */
         if (oldest == 0xFFFFFFFFu) break;        // только открытый/пусто — выйти
         char p[64];
         seg_path(p, sizeof(p), oldest);
@@ -615,6 +626,7 @@ static void make_room(uint32_t need)
         bool removed = quiet_unlink_path(p);
         FSLOCK();
         if (!removed) break;                     // same oldest would spin forever
+        if (oldest == s_seg_zombie) s_seg_zombie = 0xFFFFFFFFu;
         LOCK();
         s_status.seg_dropped++;
         if (s_status.seg_count) s_status.seg_count--;
@@ -757,6 +769,7 @@ void spectrogram_init(void)
     s_snap     = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
     s_wf_snap  = heap_caps_malloc(sizeof(spectrum_data_t), MALLOC_CAP_SPIRAM);
     s_fs_buf   = heap_caps_malloc(WF_ROW_BYTES, MALLOC_CAP_SPIRAM);   // #FW-6 consumer
+    s_row_pack = heap_caps_malloc(WF_ROW_STRIDE, MALLOC_CAP_SPIRAM);  // AUD-ASW126 #5
     // v3: baseline (32 КБ) — не критично, пишем нули если нет PSRAM
     s_baseline = heap_caps_calloc(WF_CHANNELS, sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     if (!s_baseline) ESP_LOGW(TAG, "baseline alloc failed — zeros on start");
@@ -764,7 +777,7 @@ void spectrogram_init(void)
     s_dose_lut = heap_caps_malloc(WF_CHANNELS * sizeof(float), MALLOC_CAP_SPIRAM);
     if (!s_dose_lut) ESP_LOGW(TAG, "dose_lut alloc failed — curve disabled");
 
-    if (!s_ring || !s_dur || !s_temp || !s_prev || !s_row || !s_snap || !s_wf_snap || !s_fs_buf) {
+    if (!s_ring || !s_dur || !s_temp || !s_prev || !s_row || !s_snap || !s_wf_snap || !s_fs_buf || !s_row_pack) {
         ESP_LOGE(TAG, "PSRAM alloc failed");
         s_status.ready = false;
         return;
@@ -784,7 +797,7 @@ void spectrogram_init(void)
     if (s_fs_quiet_sig) spectrum_add_commit_listener(s_fs_quiet_sig);
     // wf_fs_task (consumer, prio 2 < producer): весь flash-I/O (opendir/readdir +
     // snprintf шапки на стеке → 8192). Producer prio 3 всегда вытесняет — такт точнее.
-    xTaskCreatePinnedToCore(wf_fs_task, "wf_fs", 8192, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(wf_fs_task, "wf_fs", 8192, NULL, 2, &s_wf_fs_task, 1);
     // stack 8192: producer теперь без FS, но оставляем запас (snapshot + row_cb).
     xTaskCreatePinnedToCore(wf_task, "wf", 8192, NULL, 3, NULL, 1);
     spectrogram_load_dose_curve(); // попытка; FS смонтирована в main до вызова init()
@@ -794,11 +807,11 @@ void spectrogram_init(void)
 // удержанных локов — берёт s_fs_lock сам. Логика идентична прежнему inline-блоку
 // wf_task: финализация по лимиту строк/возраста, кольцо keep-last, ленивое
 // открытие сегмента, запись 16384 Б спектра + 2 Б длительности (uint16 LE) + fsync.
-// Returns false if the row should be retried (writer-lock contention after a
-// successful fwrite) — caller must NOT advance s_fs_flushed.
-static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
+// Always consumes the row (caller advances s_fs_flushed).
+static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
 {
     FSLOCK();
+    uint32_t epoch = s_wf_epoch;
     // #FW-14: здесь только ролловер по строкам; возрастной (10 мин,
     // WF_SEG_MAX_AGE_SEC) живёт в цикле wf_fs_task — при interval > возраста
     // проверка в write-пути ждала бы следующей строки часами, файл висел открытым.
@@ -811,6 +824,7 @@ static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         wait_after_seg_close();
     }
     make_room((uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);   // страховка (обычно место уже есть — #FW-8)
+    if (s_wf_epoch != epoch) { FSUNLOCK(); return; }
     if (!s_seg_fp) seg_open_new();
     if (s_seg_fp) {
         uint8_t durle[WF_DUR_BYTES] = { (uint8_t)(dur & 0xFF), (uint8_t)(dur >> 8) };
@@ -851,23 +865,18 @@ static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         uint8_t crcle[WF_CRC_BYTES] = {
             (uint8_t)(crc), (uint8_t)(crc >> 8), (uint8_t)(crc >> 16), (uint8_t)(crc >> 24)
         };
-        /* One contiguous payload → quiet-sliced once (avoid per-tail waits). */
-        uint8_t *pack = heap_caps_malloc(WF_ROW_STRIDE, MALLOC_CAP_SPIRAM);
-        bool ok = false;
-        if (pack) {
-            size_t po = 0;
-            memcpy(pack + po, row, WF_ROW_BYTES); po += WF_ROW_BYTES;
-            memcpy(pack + po, durle, WF_DUR_BYTES); po += WF_DUR_BYTES;
-            memcpy(pack + po, v3tail, sizeof(v3tail)); po += sizeof(v3tail);
-            memcpy(pack + po, crcle, WF_CRC_BYTES); po += WF_CRC_BYTES;
-            ok = fwrite_quiet_slices(s_seg_fp, pack, po);
-            free(pack);
-        }
+        /* Static pack buffer — no per-row malloc (AUD-ASW126 #5). */
+        size_t po = 0;
+        memcpy(s_row_pack + po, row, WF_ROW_BYTES); po += WF_ROW_BYTES;
+        memcpy(s_row_pack + po, durle, WF_DUR_BYTES); po += WF_DUR_BYTES;
+        memcpy(s_row_pack + po, v3tail, sizeof(v3tail)); po += sizeof(v3tail);
+        memcpy(s_row_pack + po, crcle, WF_CRC_BYTES); po += WF_CRC_BYTES;
+        bool ok = fwrite_quiet_slices(s_seg_fp, s_row_pack, po);
         if (!ok) {
             ESP_LOGE(TAG, "seg row write failed — drop segment");
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
             FSUNLOCK();
-            return true; /* consume row; segment discarded */
+            return;
         }
         /* fwrite already landed in the FILE buffer. Never re-fwrite on lock
          * contention (would duplicate the row) — only retry fflush. */
@@ -881,14 +890,14 @@ static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
             s_seg_rows++;
             LOCK(); s_status.flash_rows++; UNLOCK();
             FSUNLOCK();
-            return true;
+            return;
         }
         if (fflush(s_seg_fp) != 0) {
             ESP_LOGE(TAG, "seg row fflush failed — drop segment");
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
             flash_quiet_writer_unlock();
             FSUNLOCK();
-            return true;
+            return;
         }
         s_seg_rows++;
         LOCK(); s_status.flash_rows++; UNLOCK();
@@ -908,10 +917,10 @@ static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         if (s_seg_rows == WF_SEG_PREP_ROW) {
             uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
             make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
+            (void)s_wf_epoch; /* epoch change here is fine: row already consumed */
         }
     }
     FSUNLOCK();
-    return true;
 }
 
 static void wf_task(void *arg)
@@ -1010,8 +1019,7 @@ static void wf_fs_task(void *arg)
             if (!have) break;
             if (lost) { LOCK(); s_fs_flushed = total - s_capacity; UNLOCK(); continue; }
             if (pst) {
-                if (!seg_write_row(s_fs_buf, s_fs_dur, s_fs_temp))
-                    break; /* rare: leave row for next tick (should not happen after P0-4) */
+                seg_write_row(s_fs_buf, s_fs_dur, s_fs_temp);
             }
             LOCK(); s_fs_flushed++; UNLOCK();
         }
@@ -1155,6 +1163,7 @@ int spectrogram_start(void)
     s_status.started_at = time(NULL);
     s_started_uptime_us = esp_timer_get_time();  // #FW-21: монотонная база elapsed_sec
     s_status.recording  = true;            // старые сегменты НЕ трогаем (монотонный индекс)
+    s_wf_epoch++;
     UNLOCK();
     FSUNLOCK();
 
@@ -1195,6 +1204,7 @@ int spectrogram_clear(void)
     FSLOCK();
     LOCK();
     if (s_status.recording) { UNLOCK(); FSUNLOCK(); return -1; }
+    s_wf_epoch++;
     s_head              = 0;
     s_count             = 0;
     s_status.ring_count = 0;
@@ -1210,6 +1220,7 @@ int spectrogram_clear(void)
     if (s_seg_fp) { fclose(s_seg_fp); s_seg_fp = NULL; }
     s_seg_cur    = 0xFFFFFFFFu;
     s_seg_pinned = 0xFFFFFFFFu;   // #REC-11-A2: индексы сбрасываются (next=0) — снять устаревший пин
+    s_seg_zombie = 0xFFFFFFFFu;
     s_seg_rows = 0;
     seg_delete_all();
     s_seg_next = 0;
@@ -1347,8 +1358,24 @@ bool spectrogram_offload_claim(uint32_t *idx_out, char *name_out, size_t name_ca
 {
     bool got = false;
     FSLOCK();
+    if (s_seg_zombie != 0xFFFFFFFFu) {
+        uint32_t z = s_seg_zombie;
+        char zp[80];
+        seg_path(zp, sizeof(zp), z);
+        FSUNLOCK();
+        bool removed = quiet_unlink_path(zp);
+        FSLOCK();
+        if (removed && s_seg_zombie == z) {
+            LOCK();
+            if (s_status.seg_count) s_status.seg_count--;
+            s_status.flash_full = false;
+            UNLOCK();
+            s_seg_zombie = 0xFFFFFFFFu;
+            ESP_LOGI(TAG, "offload_claim: zombie seg_%05" PRIu32 " unlinked", z);
+        }
+    }
     if (s_seg_pinned == 0xFFFFFFFFu) {                 // не заняты другой выгрузкой
-        uint32_t oldest = seg_oldest_completed();
+        uint32_t oldest = seg_oldest_completed(true);  /* skip zombie — no re-upload */
         if (oldest != 0xFFFFFFFFu) {
             char p[80];
             seg_path(p, sizeof(p), oldest);
@@ -1377,13 +1404,17 @@ void spectrogram_offload_done(uint32_t idx)
         FSUNLOCK();
         bool removed = quiet_unlink_path(p);
         FSLOCK();
-        if (removed && idx == s_seg_pinned) {
+        s_seg_pinned = 0xFFFFFFFFu; /* always unpin — file already on server */
+        if (removed) {
             LOCK();
             if (s_status.seg_count) s_status.seg_count--;
             s_status.flash_full = false;
             UNLOCK();
-            s_seg_pinned = 0xFFFFFFFFu;
+            if (s_seg_zombie == idx) s_seg_zombie = 0xFFFFFFFFu;
             ESP_LOGI(TAG, "offload_done: seg_%05" PRIu32 " removed from flash", idx);
+        } else {
+            s_seg_zombie = idx;
+            ESP_LOGW(TAG, "offload_done: unlink deferred, pin released, zombie=%" PRIu32, idx);
         }
     }
     FSUNLOCK();
@@ -1422,6 +1453,7 @@ bool spectrogram_seg_delete(uint32_t idx)
                 s_status.flash_full = false;
                 UNLOCK();
                 ok = true;
+                if (s_seg_zombie == idx) s_seg_zombie = 0xFFFFFFFFu;
                 ESP_LOGI(TAG, "seg_delete: seg_%05" PRIu32 ".aswf removed (pull-ack)", idx);
             } else {
                 ESP_LOGW(TAG, "seg_delete: unlink seg_%05" PRIu32 " failed", idx);

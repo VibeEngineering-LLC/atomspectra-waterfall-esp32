@@ -1,13 +1,13 @@
 #pragma once
-// #FW-8 residual — histogram sweep drop diagnostics (lab investigation 2026-08-12).
-// Compile defaults ON for local soak builds. Disable: -DHIST_DROP_DIAG=0
+// #FW-8 residual — histogram sweep drop diagnostics.
+// Default OFF (HIST_DROP_DIAG 0). Enable: -DHIST_DROP_DIAG=1
 // Experiment knobs (also -D…):
 //   HIST_DROP_E1_NO_AUTOSAVE=1     — skip spectrum_autosave body (E1)
 //   HIST_DROP_E3_AUTOSAVE_TICKS=N  — default 6 (=60s); 30 → 5 min (E3)
 //   HIST_DROP_E4_NO_WAIT_COMMIT=1  — do not wait commit listener (E4)
 //   HIST_DROP_I2_SPLIT_TIMING=1    — LOGI open/write/close us in autosave (I2)
 //   HIST_DROP_I3_SLICED=1          — write autosave in quiet-budget slices (I3)
-//   HIST_DROP_QUIET_BUDGET_MS=N    — default 200; override after I1 p05
+// Quiet-window budget lives in flash_quiet_math.h (FLASH_QUIET_BUDGET_MS).
 
 #ifndef HIST_DROP_DIAG
 #define HIST_DROP_DIAG 0
@@ -31,10 +31,6 @@
 
 #ifndef HIST_DROP_I3_SLICED
 #define HIST_DROP_I3_SLICED 1
-#endif
-
-#ifndef HIST_DROP_QUIET_BUDGET_MS
-#define HIST_DROP_QUIET_BUDGET_MS 300
 #endif
 
 #include <stdbool.h>

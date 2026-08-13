@@ -161,6 +161,11 @@ Release notes: [`docs/releases/v1.2.6-fw8-hist-drop.md`](docs/releases/v1.2.6-fw
 commit-wait×3; `make_room` breaks on deferred unlink; writer-lock 500 ms. Lab:
 class A ≈0; rollovers without drop packs.
 
+Follow-up (AUD-ASW126, 2026-08-13): Reset/UAF on sliced autosave, zombie-pin after
+failed offload unlink, staging via the host-tested helper, static row pack buffer,
+quiet-sig Taken only by `wf_fs_task`, `http_io_gate` only around I/O. Write-up:
+[`docs/bugs/2026-08-13-asw126-audit-followup.md`](docs/bugs/2026-08-13-asw126-audit-followup.md).
+
 ### #FW-51: `CDC_ACM_HOST_ERROR` → silent analyzer stall (no reconnect / no alert)
 
 **Status:** code + HW verify — **PASS** 2026-08-05; soak on `v1.2.5`. Release notes:

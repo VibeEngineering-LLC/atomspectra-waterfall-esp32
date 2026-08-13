@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'firmware-v*' ]
   pull_request:
 
 jobs:
@@ -16,3 +17,14 @@ jobs:
           esp_idf_version: v5.4
           target: esp32s3
           path: '.'
+      - name: SHA256 firmware bin
+        run: |
+          BIN=build/atomspectra_gw.bin
+          test -f "$BIN"
+          sha256sum "$BIN" | tee SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atomspectra_gw
+          path: |
+            build/atomspectra_gw.bin
+            SHA256.txt

@@ -158,6 +158,11 @@ batch-`fsync` строк, но **`seg_finalize` всегда sync**; yield (не
 commit-wait×3; `make_room` не крутится при defer unlink; writer-lock 500 мс.
 Lab: class A ≈0; rollover без пачки drops.
 
+Follow-up (AUD-ASW126, 2026-08-13): Reset/UAF на автосейве, zombie-pin после
+offload unlink, стейджинг через хелпер, статический pack-буфер строки, quiet-sig
+только у `wf_fs_task`, `http_io_gate` только вокруг I/O. Write-up:
+[`docs/bugs/2026-08-13-asw126-audit-followup.md`](docs/bugs/2026-08-13-asw126-audit-followup.md).
+
 ### #FW-51: `CDC_ACM_HOST_ERROR` → тихий stall анализатора (нет reconnect / нет тревоги)
 
 **Статус:** код + HW verify — **PASS** 2026-08-05; soak на `v1.2.5`. Release notes:
