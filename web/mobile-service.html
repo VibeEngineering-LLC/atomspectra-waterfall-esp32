@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AtomSpectra · Сервис</title>
+<style>
+/* ===== Тема «Мягкий прибор» (мобильный дизайн Atomspectra, #UI-31/#UI-33) ===== */
+:root{
+  --bg:#18221e; --screen:#0b1310; --panel:#0a120f;
+  --card:rgba(255,255,255,.03); --card-line:rgba(111,224,190,.12); --hairline:rgba(111,224,190,.06);
+  --accent:#6fe0be; --accent-dim:rgba(111,224,190,.10); --amber:#e8c766; --red:#e8776b; --blue:#6fbce0;
+  --txt:#eef6f2; --txt-soft:#d3e0da; --dim:#8aa39b; --dim2:#6d827b; --muted:#54655f; --bd:var(--card-line);
+  --font-sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono','Cascadia Mono',Consolas,monospace;
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); }
+body{ color:var(--txt-soft); font-family:var(--font-sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%;
+  min-height:100vh; padding-bottom:88px;
+  background:radial-gradient(130% 90% at 50% 0%,#243530 0%,#1a2723 52%,#151e1b 100%) no-repeat; }
+a{ color:var(--blue); text-decoration:none; }
+button,input{ font-family:inherit; }
+@keyframes blink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* Шапка */
+.app-header{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:20px 18px 12px; }
+.brand{ display:flex; flex-direction:column; gap:2px; font-weight:700; font-size:17px; color:var(--txt); letter-spacing:-.01em; }
+.brand .sub{ font-size:11px; color:var(--accent); font-family:var(--font-mono); font-weight:400; }
+.chips{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+.chip{ background:var(--card); border:1px solid var(--card-line); border-radius:999px; padding:6px 11px; font-size:11.5px; color:var(--dim); }
+.chip.ok,.conn{ display:flex; align-items:center; gap:7px; background:var(--accent-dim); border:1px solid rgba(111,224,190,.22); color:var(--accent); font-weight:600; }
+.chip.lang{ cursor:pointer; color:var(--accent); border-color:rgba(111,224,190,.4); font-weight:600; min-width:30px; text-align:center; }
+.chip.mode{ cursor:pointer; color:var(--amber); border-color:rgba(232,199,102,.4); font-weight:600; }
+.chip:hover{ filter:brightness(1.12); }
+.dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); animation:blink 1.8s infinite; }
+.dot.off{ background:var(--muted); animation:none; }
+
+/* Нижняя таб-панель */
+.tabbar{ position:fixed; left:0; right:0; bottom:0; z-index:50; display:flex; gap:2px;
+  background:var(--panel); border-top:1px solid rgba(111,224,190,.1);
+  padding:8px 6px calc(10px + env(safe-area-inset-bottom,16px)); }
+.tabbar a{ flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; padding:7px 0;
+  border-radius:14px; color:var(--dim2); font-size:10px; font-weight:600; white-space:nowrap; }
+.tabbar a.on{ background:var(--accent-dim); color:var(--accent); }
+.tabbar svg{ width:19px; height:19px; }
+
+/* Разметка */
+.wrap{ max-width:660px; margin:0 auto; padding:6px 16px 8px; display:flex; flex-direction:column; gap:14px; }
+.panel{ background:var(--card); border:1px solid var(--card-line); border-radius:18px; padding:16px; }
+.ttl{ font-size:14px; font-weight:600; color:var(--txt); margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+.mut{ color:var(--dim2); }
+
+/* Кнопки */
+.btn{ border-radius:14px; padding:12px 16px; font-size:14px; font-weight:600; cursor:pointer; background:var(--card); border:1px solid var(--card-line); color:var(--txt-soft); }
+.btn.sm{ padding:9px 13px; font-size:13px; border-radius:12px; }
+.btn.full{ width:100%; margin-top:12px; }
+.btn.green{ background:var(--accent-dim); border:1px solid rgba(111,224,190,.4); color:var(--accent); font-weight:700; }
+.btn.red{ background:rgba(232,119,107,.12); border:1px solid rgba(232,119,107,.4); color:var(--red); }
+.btn:hover:not(:disabled){ filter:brightness(1.08); }
+.btn:disabled{ opacity:.45; cursor:default; filter:none; }
+
+/* Консоль / ввод */
+.console-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.grp{ display:flex; gap:8px; flex:1; }
+.inp{ background:rgba(255,255,255,.04); border:1px solid var(--card-line); color:var(--txt); padding:10px 12px; border-radius:12px; font-size:13px; outline:none; }
+#cmd-log{ font-size:12px; line-height:1.6; color:var(--dim); background:var(--screen); border:1px solid var(--card-line); border-radius:12px; padding:11px 13px; max-height:220px; overflow:auto; white-space:pre; margin-top:12px; }
+
+/* Бэкап / восстановление */
+.fileRow{ display:flex; align-items:center; gap:10px; margin-top:6px; }
+.fileRow input[type=file]{ flex:1; font-size:12px; color:var(--dim); }
+pre.preview{ margin-top:12px; font-size:11.5px; line-height:1.5; color:var(--dim); background:var(--screen); border:1px solid var(--card-line); border-radius:12px; padding:11px 13px; max-height:180px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+.warn-box{ font-size:12px; line-height:1.55; color:var(--amber); background:rgba(232,199,102,.08); border:1px solid rgba(232,199,102,.3); border-radius:12px; padding:11px 13px; margin-top:12px; }
+
+/* Таблица параметров */
+.ptable{ width:100%; border-collapse:collapse; font-size:12px; }
+.ptable th{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--card-line); color:var(--dim); position:sticky; top:0; background:var(--panel); }
+.ptable td{ padding:7px 10px; border-bottom:1px solid var(--hairline); }
+.ptable td.pname{ color:var(--txt-soft); white-space:nowrap; }
+</style>
+</head>
+<body>
+<header class="app-header">
+<div class="brand">AtomSpectra <span class="sub">Gateway&nbsp;&middot;&nbsp;<span id="ip-chip">—</span></span></div>
+<div class="chips">
+<span class="chip mode" id="mode-chip" onclick="toggleMode()" title="Переключить Indoor/Outdoor" style="display:none">&#8646; Indoor</span>
+<span class="chip lang" id="langBtn">EN</span>
+<span class="conn"><span class="dot" id="dev-dot"></span><span id="dev-stat" data-i18n="device">Прибор</span></span>
+</div>
+</header>
+
+<div class="wrap">
+
+<!-- Командная строка прибора -->
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#9998;</span> <span data-i18n="console.title">Командная строка прибора</span></div>
+<div class="console-row">
+<button class="btn sm" onclick="requestInfo()" data-i18n="btn.info">Инфо</button>
+<button class="btn sm" onclick="toggleLogPanel()" data-i18n="btn.log">Лог</button>
+<div class="grp"><input class="inp" id="cmd" data-i18n-placeholder="ph.cmd" placeholder="команда, напр. -inf" style="flex:1;min-width:0"><button class="btn sm green" onclick="sendCmd()" data-i18n="btn.send">Send</button></div>
+</div>
+<pre id="cmd-log" style="display:none"></pre>
+</section>
+
+<!-- Бэкап настроек -->
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#8681;</span> <span data-i18n="backup.title">Бэкап настроек прибора</span></div>
+<div class="mut" style="font-size:12px;line-height:1.6" data-i18n="backup.hint">Считывает текущие настройки прибора (-inf + -tc_pot?) и сохраняет их в текстовый файл — тот же формат, что использует MCA.exe. Не изменяет состояние прибора.</div>
+<button class="btn green full" id="btn-read" onclick="doRead()" data-i18n="backup.read">Считать</button>
+<button class="btn full" id="btn-backup" onclick="doBackup()" data-i18n="backup.download">Скачать бэкап</button>
+<div class="mut" id="backup-status" style="font-size:11.5px;margin-top:9px;text-align:center;min-height:14px"></div>
+</section>
+
+<!-- Восстановление -->
+<section class="panel">
+<div class="ttl"><span style="color:var(--accent)">&#8679;</span> <span data-i18n="restore.title">Восстановление из бэкапа</span></div>
+<div class="mut" style="font-size:12px;line-height:1.6" data-i18n="restore.hint">Загрузите ранее сохранённый файл бэкапа — настройки будут отправлены в прибор командами протокола.</div>
+<div class="fileRow"><input type="file" id="restore-file" accept=".txt,text/plain"></div>
+<pre class="preview" id="restore-preview" style="display:none"></pre>
+<div class="warn-box" data-i18n="restore.warn">⚠ Это изменит физическую конфигурацию прибора (усиление, ВН, компенсация температуры и т.д.). Действие необратимо без отдельного бэкапа текущих настроек.</div>
+<button class="btn red full" id="btn-restore" onclick="doRestore()" disabled data-i18n="restore.button">Восстановить из бэкапа</button>
+<div class="mut" id="restore-status" style="font-size:11.5px;margin-top:9px;text-align:center;min-height:14px"></div>
+</section>
+
+<!-- Параметры прибора -->
+<section class="panel" id="param-panel" style="display:none">
+<div class="ttl"><span style="color:var(--accent)">&#9776;</span> <span data-i18n="param.title">Параметры прибора</span></div>
+<div class="mut" id="param-hint" style="font-size:11.5px;margin-bottom:10px" data-i18n="param.hint">Слева — что прибор отдал прямо сейчас (-inf + -tc_pot?). Если справа появилась колонка «Из бэкапа» — загружен файл в панели восстановления, расхождения подсвечены красным.</div>
+<div style="overflow:auto;max-height:460px">
+<table class="ptable" id="param-table">
+<thead><tr>
+<th data-i18n="param.col.name">Параметр</th>
+<th data-i18n="param.col.live">Сейчас на приборе</th>
+<th id="param-file-col-header" style="display:none" data-i18n="param.col.file">Из бэкапа</th>
+</tr></thead>
+<tbody id="param-tbody"></tbody>
+</table>
+</div>
+</section>
+
+</div>
+
+<script>
+"use strict";
+var DICT={
+ ru:{
+  "device":"Прибор",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitorS":"Монит.","nav.savedS":"Спектры","nav.system":"Система","nav.service":"Сервис",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor",
+  "mode.confirmOut":"Переключить в полевой режим (Outdoor)? Плата перезагрузится, поднимет точку доступа AtomSpectra-Outdoor, текущее подключение прервётся.",
+  "mode.confirmIn":"Вернуться в домашний режим (Indoor)? Плата перезагрузится и подключится к домашней сети.",
+  "dev.chipOk":"Прибор подключён","dev.chipOff":"Нет прибора",
+  "console.title":"Командная строка прибора",
+  "btn.info":"Инфо","btn.log":"Лог","btn.send":"Send",
+  "ph.cmd":"команда, напр. -inf",
+  "log.info":"Info requested","log.sent":"Sent: %1",
+  "backup.title":"Бэкап настроек прибора",
+  "backup.hint":"Считывает текущие настройки прибора (-inf + -tc_pot?) и сохраняет их в текстовый файл — тот же формат, что использует MCA.exe. Не изменяет состояние прибора.",
+  "backup.read":"Считать",
+  "backup.reading":"Считывание...",
+  "backup.readOk":"Считано",
+  "backup.download":"Скачать бэкап",
+  "backup.err":"Ошибка: прибор не отвечает / не подключён",
+  "param.title":"Параметры прибора",
+  "param.hint":"Слева — что прибор отдал прямо сейчас (-inf + -tc_pot?). Если справа появилась колонка «Из бэкапа» — загружен файл в панели восстановления, расхождения подсвечены красным.",
+  "param.col.name":"Параметр","param.col.live":"Сейчас на приборе","param.col.file":"Из бэкапа",
+  "param.VERSION":"VERSION (версия прошивки прибора)",
+  "param.RISE":"RISE (время нарастания)",
+  "param.FALL":"FALL (время спада)",
+  "param.NOISE":"NOISE (порог шума)",
+  "param.F":"F (частота АЦП, Гц)",
+  "param.MAX":"MAX (макс. интеграл)",
+  "param.HYST":"HYST (гистерезис)",
+  "param.MODE":"MODE (режим)",
+  "param.STEP":"STEP (шаг)",
+  "param.t":"t",
+  "param.POT":"POT (высокое напряжение, U)",
+  "param.POT2":"POT2 (усиление, V)",
+  "param.T1":"T1 (температурный датчик 1)",
+  "param.T2":"T2 (температурный датчик 2)",
+  "param.T3":"T3 (температурный датчик 3)",
+  "param.Prise":"Prise",
+  "param.Srise":"Srise",
+  "param.OUT":"OUT",
+  "param.Pfall":"Pfall",
+  "param.Sfall":"Sfall",
+  "param.TC":"TC (термокомпенсация MAX)",
+  "param.TCpot":"TCpot (термокомпенсация baseline)",
+  "param.TP":"TP",
+  "param.PileUpThr":"PileUpThr (порог pile-up)",
+  "param.Tco":"Tco[] (термокомп. MAX, пары темп:значение)",
+  "param.PileUp":"PileUp[] (таблица pile-up)",
+  "param.Tcpot":"Tcpot[] (термокомп. baseline, пары темп:значение)",
+  "restore.title":"Восстановление из бэкапа",
+  "restore.hint":"Загрузите ранее сохранённый файл бэкапа — настройки будут отправлены в прибор командами протокола.",
+  "restore.warn":"⚠ Это изменит физическую конфигурацию прибора (усиление, ВН, компенсация температуры и т.д.). Действие необратимо без отдельного бэкапа текущих настроек.",
+  "restore.button":"Восстановить из бэкапа",
+  "restore.confirm":"Восстановить настройки прибора из этого файла? Текущие настройки будут перезаписаны.",
+  "restore.notBackup":"Файл не похож на бэкап AtomSpectra (нет полей VERSION/RISE)",
+  "restore.applying":"Отправка настроек в прибор...",
+  "restore.ok":"Готово — настройки восстановлены",
+  "restore.err":"Ошибка восстановления",
+  "restore.noDevice":"Прибор не подключён"
+ },
+ en:{
+  "device":"Device",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitorS":"Monit.","nav.savedS":"Saved","nav.system":"System","nav.service":"Service",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor",
+  "mode.confirmOut":"Switch to field mode (Outdoor)? The board will reboot, bring up the AtomSpectra-Outdoor access point, and the current connection will drop.",
+  "mode.confirmIn":"Return to home mode (Indoor)? The board will reboot and connect to the home network.",
+  "dev.chipOk":"Device connected","dev.chipOff":"No device",
+  "console.title":"Device command console",
+  "btn.info":"Info","btn.log":"Log","btn.send":"Send",
+  "ph.cmd":"command, e.g. -inf",
+  "log.info":"Info requested","log.sent":"Sent: %1",
+  "backup.title":"Device settings backup",
+  "backup.hint":"Reads the device's current settings (-inf + -tc_pot?) and saves them to a text file — the same format used by MCA.exe. Does not change device state.",
+  "backup.read":"Read",
+  "backup.reading":"Reading...",
+  "backup.readOk":"Read OK",
+  "backup.download":"Download backup",
+  "backup.err":"Error: device not responding / not connected",
+  "param.title":"Device parameters",
+  "param.hint":"Left — what the device returned just now (-inf + -tc_pot?). If a \"From backup\" column appears on the right, a file is loaded in the restore panel; mismatches are highlighted in red.",
+  "param.col.name":"Parameter","param.col.live":"Live on device","param.col.file":"From backup",
+  "param.VERSION":"VERSION (device firmware version)",
+  "param.RISE":"RISE (rise time)",
+  "param.FALL":"FALL (fall time)",
+  "param.NOISE":"NOISE (noise threshold)",
+  "param.F":"F (ADC sampling frequency, Hz)",
+  "param.MAX":"MAX (max integral)",
+  "param.HYST":"HYST (hysteresis)",
+  "param.MODE":"MODE (mode)",
+  "param.STEP":"STEP (step)",
+  "param.t":"t",
+  "param.POT":"POT (high voltage, U)",
+  "param.POT2":"POT2 (gain, V)",
+  "param.T1":"T1 (temperature sensor 1)",
+  "param.T2":"T2 (temperature sensor 2)",
+  "param.T3":"T3 (temperature sensor 3)",
+  "param.Prise":"Prise",
+  "param.Srise":"Srise",
+  "param.OUT":"OUT",
+  "param.Pfall":"Pfall",
+  "param.Sfall":"Sfall",
+  "param.TC":"TC (MAX temp. compensation)",
+  "param.TCpot":"TCpot (baseline temp. compensation)",
+  "param.TP":"TP",
+  "param.PileUpThr":"PileUpThr (pile-up threshold)",
+  "param.Tco":"Tco[] (MAX temp comp, temp:value pairs)",
+  "param.PileUp":"PileUp[] (pile-up table)",
+  "param.Tcpot":"Tcpot[] (baseline temp comp, temp:value pairs)",
+  "restore.title":"Restore from backup",
+  "restore.hint":"Upload a previously saved backup file — the settings will be sent to the device via protocol commands.",
+  "restore.warn":"⚠ This changes the device's physical configuration (gain, HV, temperature compensation, etc). Not reversible without a separate backup of the current settings.",
+  "restore.button":"Restore from backup",
+  "restore.confirm":"Restore device settings from this file? Current settings will be overwritten.",
+  "restore.notBackup":"File doesn't look like an AtomSpectra backup (VERSION/RISE fields missing)",
+  "restore.applying":"Sending settings to device...",
+  "restore.ok":"Done — settings restored",
+  "restore.err":"Restore error",
+  "restore.noDevice":"Device not connected"
+ }
+};
+var LANG=(function(){try{return localStorage.getItem("aswf-lang")||"ru";}catch(e){return"ru";}})();
+function t(k){var d=DICT[LANG]||DICT.ru;return(d[k]!==undefined)?d[k]:(DICT.ru[k]||k);}
+function tfmt(k){var s=t(k); for(var i=1;i<arguments.length;i++){s=s.replace("%"+i,arguments[i]);} return s;}
+function applyI18n(){
+ document.querySelectorAll("[data-i18n]").forEach(function(el){
+  var k=el.getAttribute("data-i18n"); el.textContent=t(k);
+ });
+ document.querySelectorAll("[data-i18n-placeholder]").forEach(function(el){
+  var k=el.getAttribute("data-i18n-placeholder"); el.placeholder=t(k);
+ });
+ document.documentElement.lang=LANG;
+ var b=document.getElementById("langBtn"); if(b)b.textContent=(LANG==="ru")?"EN":"RU";
+ document.title="AtomSpectra · "+t("nav.service");
+}
+function setLang(l){
+ if(l!=="ru"&&l!=="en")l="ru";
+ LANG=l; try{localStorage.setItem("aswf-lang",l);}catch(e){}
+ applyI18n();
+ refreshSystem();
+ if(lastReadText)renderParamTable(lastReadText,restoreText);
+}
+
+var csrfToken="";
+var devConnected=false;
+async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
+function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
+
+var logEl=document.getElementById("cmd-log");
+var devSeq=0;
+function lg(m){if(!logEl)return;logEl.textContent+=m+"\n";logEl.scrollTop=logEl.scrollHeight}
+async function pollDevLog(){try{var r=await(await fetch("/api/devlog?since="+devSeq)).json();if(r.lines&&r.lines.length){r.lines.forEach(function(e){var tt=(e.text||"").replace(/\n+$/,"");lg("← "+tt)})}if(typeof r.next==="number")devSeq=r.next}catch(e){}}
+async function requestInfo(){await post("/api/command",{body:"-inf"});await post("/api/command",{body:"-cal"});lg(t("log.info"));if(logEl.style.display==="none")toggleLogPanel();setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}
+async function sendCmd(){var c=document.getElementById("cmd").value;if(!c)return;await post("/api/command",{body:c});lg(tfmt("log.sent",c));if(logEl.style.display==="none")toggleLogPanel();setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}
+function toggleLogPanel(){logEl.style.display=logEl.style.display==="none"?"block":"none"}
+document.getElementById("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")sendCmd()});
+
+/* #FIELD-6: индикатор режима Indoor/Outdoor + статус прибора из /api/system */
+async function refreshSystem(){
+ try{
+  var r=await(await fetch("/api/system")).json();
+  var devDot=document.getElementById("dev-dot"), devStat=document.getElementById("dev-stat");
+  devConnected=!!r.usb_connected;
+  if(devConnected){ devDot.classList.remove("off"); devStat.textContent=t("dev.chipOk"); }
+  else{ devDot.classList.add("off"); devStat.textContent=t("dev.chipOff"); }
+  var nm=r.net_mode||"sta"; window._netMode=nm;
+  var mc=document.getElementById("mode-chip");
+  if(mc){
+   mc.style.display="";
+   mc.textContent="⇄ "+((nm==="field_ap")?t("mode.outdoor"):t("mode.indoor"));
+   mc.style.borderColor=(nm==="field_ap")?"#e8c766":"var(--accent)";
+   mc.style.color=(nm==="field_ap")?"#e8c766":"var(--accent)";
+  }
+ }catch(e){}
+}
+async function toggleMode(){
+ var cur=window._netMode||"sta";
+ var toOutdoor=(cur!=="field_ap");
+ if(!confirm(t(toOutdoor?"mode.confirmOut":"mode.confirmIn")))return;
+ try{await post("/api/net-mode",{headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:toOutdoor?"outdoor":"indoor"})});}catch(e){}
+}
+
+async function doBackup(){
+ var s=document.getElementById("backup-status");
+ s.style.color="var(--dim)"; s.textContent="";
+ try{
+  var r=await fetch("/api/settings/backup");
+  if(!r.ok){ s.textContent=t("backup.err"); s.style.color="#e8776b"; return; }
+  var blob=await r.blob();
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=url; a.download="atomspectra_backup.txt";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){URL.revokeObjectURL(url);},2000);
+ }catch(e){ s.textContent=t("backup.err"); s.style.color="#e8776b"; }
+}
+
+function isKvBoundary(c){ return c===undefined||c===" "||c==="\t"||c==="\r"||c==="\n"; }
+function findKV(text,key){
+ var idx=0;
+ while(true){
+  var p=text.indexOf(key,idx);
+  if(p<0) return null;
+  var leftOk=(p===0)||isKvBoundary(text[p-1]);
+  var after=p+key.length;
+  var rightOk=isKvBoundary(text[after]);
+  if(leftOk&&rightOk){
+   var c=text[after];
+   return (c===" "||c==="\t")?after+1:after;
+  }
+  idx=p+1;
+ }
+}
+function kvToken(text,key){
+ var v=findKV(text,key); if(v===null) return null;
+ var m=text.slice(v).match(/^[^\s]*/); return m?m[0]:"";
+}
+function kvArray(text,key){
+ var v=findKV(text,key); if(v===null) return null;
+ var s=text.slice(v).replace(/^\s+/,"");
+ if(s.charAt(0)!=="[") return null;
+ var end=s.indexOf("]"); if(end<0) return null;
+ var inner=s.slice(1,end).trim();
+ return inner?inner.split(/\s+/):[];
+}
+var PARAM_DEFS=[
+ ["VERSION","scalar"],["RISE","scalar"],["FALL","scalar"],["NOISE","scalar"],
+ ["F","scalar"],["MAX","scalar"],["HYST","scalar"],["MODE","scalar"],["STEP","scalar"],
+ ["t","scalar"],["POT","scalar"],["POT2","scalar"],["T1","scalar"],["T2","scalar"],["T3","scalar"],
+ ["Prise","scalar"],["Srise","scalar"],["OUT","scalar"],["Pfall","scalar"],["Sfall","scalar"],
+ ["TC","scalar"],["TCpot","scalar"],["TP","scalar"],["PileUpThr","scalar"],
+ ["Tco","pairs"],["PileUp","flat"],["Tcpot","pairs"]
+];
+function paramLabel(key){ var k="param."+key; var v=t(k); return v!==k?v:key; }
+function fmtArray(kind,arr){
+ if(arr===null) return "—";
+ if(arr.length===0) return "[]";
+ if(kind==="pairs"){
+  var out=[];
+  for(var i=0;i+1<arr.length;i+=2) out.push(arr[i]+":"+arr[i+1]);
+  return out.join(" ");
+ }
+ return arr.join(" ");
+}
+var lastReadText=null;
+function renderParamTable(liveText,fileText){
+ var tbody=document.getElementById("param-tbody");
+ tbody.innerHTML="";
+ var hasFile=!!fileText;
+ document.getElementById("param-file-col-header").style.display=hasFile?"":"none";
+ PARAM_DEFS.forEach(function(def){
+  var key=def[0], kind=def[1];
+  var liveVal,fileVal;
+  if(kind==="scalar"){
+   liveVal=kvToken(liveText,key); liveVal=(liveVal===null||liveVal==="")?"—":liveVal;
+   if(hasFile){ fileVal=kvToken(fileText,key); fileVal=(fileVal===null||fileVal==="")?"—":fileVal; }
+  }else{
+   liveVal=fmtArray(kind,kvArray(liveText,key));
+   if(hasFile) fileVal=fmtArray(kind,kvArray(fileText,key));
+  }
+  var tr=document.createElement("tr");
+  var tdName=document.createElement("td");
+  tdName.className="pname"; tdName.textContent=paramLabel(key);
+  var tdLive=document.createElement("td");
+  tdLive.textContent=liveVal;
+  tr.appendChild(tdName); tr.appendChild(tdLive);
+  if(hasFile){
+   var same=(liveVal===fileVal);
+   var tdFile=document.createElement("td");
+   tdFile.textContent=fileVal;
+   tdFile.style.color=same?"var(--accent)":"#e8776b";
+   tdLive.style.color=same?"var(--accent)":"#e8776b";
+   tr.appendChild(tdFile);
+  }
+  tbody.appendChild(tr);
+ });
+ document.getElementById("param-panel").style.display="";
+}
+async function doRead(){
+ var s=document.getElementById("backup-status");
+ s.style.color="var(--dim)"; s.textContent=t("backup.reading");
+ try{
+  var r=await fetch("/api/settings/backup");
+  if(!r.ok){ s.textContent=t("backup.err"); s.style.color="#e8776b"; return; }
+  var txt=await r.text();
+  lastReadText=txt;
+  renderParamTable(lastReadText,restoreText);
+  s.textContent=t("backup.readOk"); s.style.color="var(--accent)";
+ }catch(e){ s.textContent=t("backup.err"); s.style.color="#e8776b"; }
+}
+
+var restoreText=null;
+document.addEventListener("DOMContentLoaded",function(){
+ document.getElementById("restore-file").addEventListener("change",function(ev){
+  var f=ev.target.files && ev.target.files[0];
+  var btn=document.getElementById("btn-restore");
+  var pv=document.getElementById("restore-preview");
+  var s=document.getElementById("restore-status"); s.textContent="";
+  restoreText=null; btn.disabled=true; pv.style.display="none";
+  if(lastReadText) renderParamTable(lastReadText,null);
+  if(!f) return;
+  var reader=new FileReader();
+  reader.onload=function(){
+   restoreText=String(reader.result||"");
+   pv.textContent=restoreText;
+   pv.style.display="block";
+   var looksValid=restoreText.indexOf("VERSION ")>=0 && restoreText.indexOf("RISE ")>=0;
+   if(!looksValid){ s.textContent=t("restore.notBackup"); s.style.color="#e8776b"; return; }
+   btn.disabled=false;
+   if(lastReadText) renderParamTable(lastReadText,restoreText);
+  };
+  reader.readAsText(f);
+ });
+});
+
+async function doRestore(){
+ var s=document.getElementById("restore-status");
+ if(!restoreText){ return; }
+ if(!devConnected){ s.textContent=t("restore.noDevice"); s.style.color="#e8776b"; return; }
+ if(!confirm(t("restore.confirm"))) return;
+ s.style.color="var(--dim)"; s.textContent=t("restore.applying");
+ document.getElementById("btn-restore").disabled=true;
+ try{
+  var r=await post("/api/settings/restore",{headers:{"Content-Type":"text/plain"},body:restoreText});
+  var j=await r.json().catch(function(){return {};});
+  if(r.ok && j.ok){ s.textContent=t("restore.ok"); s.style.color="var(--accent)"; }
+  else{ s.textContent=t("restore.err"); s.style.color="#e8776b"; }
+ }catch(e){ s.textContent=t("restore.err"); s.style.color="#e8776b"; }
+ document.getElementById("btn-restore").disabled=false;
+}
+
+(async function(){
+ applyI18n();
+ document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
+ document.getElementById("ip-chip").textContent=location.hostname;
+ await loadCsrf();
+ await refreshSystem();
+ setInterval(refreshSystem,3000);
+})();
+</script>
+<script src="/common-time.js"></script>
+<nav class="tabbar">
+<a href="/m"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="2" height="6" rx="1"/><rect x="5" y="4" width="2" height="11" rx="1"/><rect x="9" y="6" width="2" height="9" rx="1"/><rect x="13" y="2" width="2" height="13" rx="1"/></svg><span data-i18n="nav.spectrum">Спектр</span></a>
+<a href="/waterfall"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1" opacity=".55"/><rect x="1" y="9" width="6" height="6" rx="1" opacity=".55"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg><span data-i18n="nav.waterfall">Водопад</span></a>
+<a href="/m-monitor"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="10" r="2"/><circle cx="8" cy="6" r="2"/><circle cx="13" cy="9" r="2"/></svg><span data-i18n="nav.monitorS">Монит.</span></a>
+<a href="/m-saved"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="12" height="12" rx="3"/></svg><span data-i18n="nav.savedS">Спектры</span></a>
+<a href="/m-system"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.7" fill="currentColor" stroke="none"/></svg><span data-i18n="nav.system">Система</span></a>
+<a class="on" href="/m-service"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1 L15 8 L8 15 L1 8 Z"/></svg><span data-i18n="nav.service">Сервис</span></a>
+</nav>
+</body>
+</html>

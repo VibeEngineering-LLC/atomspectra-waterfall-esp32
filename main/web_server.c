@@ -570,6 +570,13 @@ EMBED_HTML_HANDLER(handle_saved_page,   saved_html)
 EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
 EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
+// #UI-33: мобильные страницы (дизайн Atomspectra3). Десктоп остаётся на web/*.html без изменений;
+// мобильные устройства уходят на /m редиректом из index.html. Символ = имя файла, дефис → подчёркивание.
+EMBED_HTML_HANDLER(handle_mobile_page,    mobile_html)          // /m         — Спектр
+EMBED_HTML_HANDLER(handle_mobile_saved,   mobile_saved_html)    // /m-saved   — Сохранённые
+EMBED_HTML_HANDLER(handle_mobile_service, mobile_service_html)  // /m-service — Сервис
+EMBED_HTML_HANDLER(handle_mobile_monitor, mobile_monitor_html)  // /m-monitor — Мониторинг
+EMBED_HTML_HANDLER(handle_mobile_system,  mobile_system_html)   // /m-system  — Система
 EMBED_HTML_HANDLER(handle_captive_page, captive_html)   // #FIELD-10/#FIELD-11: лёгкая captive-landing
 
 // #FIELD-5: общий JS авто-синхронизации времени (application/javascript, не text/html).
@@ -1840,7 +1847,7 @@ void web_server_init(void)
     // tskNO_AFFINITY позволял httpd (prio 5) исполняться на core 0 рядом с
     // USB-приёмом — уводим целиком.
     config.core_id = 1;
-    config.max_uri_handlers = 72;        // #WF-2/#MON-1/#FIELD-4/#FW-50: 50 базовых (uris[]) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 70. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. Сейчас запас всего +2: следующая фича на 3 эндпоинта повторит ту же аварию, число придётся поднять вместе с ней.
+    config.max_uri_handlers = 82;        // #WF-2/#MON-1/#FIELD-4/#FW-50/#UI-33: 56 базовых (uris[]: 51 + 5 мобильных /m*) + 20 waterfall (web_waterfall_register: 19 reg + /ws/waterfall) = 76. Лимит 45 когда-то переполнялся → тихие 404 у последних хэндлеров → цикл reconnect. Поднято 72→82 вместе с #UI-33 (при 72 запас был +2, а фича добавила 5) — запас +7 покрывает шестую мобильную страницу (/m-waterfall) и следующую фичу.
     config.stack_size = 8192;
     config.max_open_sockets = 11;        // из 16 LWIP-сокетов; запас для tcp_bridge + sntp
     config.lru_purge_enable = true;      // при исчерпании пула закрыть LRU-соединение, не отказывать (errno 23)
@@ -1911,6 +1918,11 @@ void web_server_init(void)
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
         {"/service",                     HTTP_GET,  handle_service_page,     NULL},
         {"/monitor",                     HTTP_GET,  handle_monitor_page,     NULL},
+        {"/m",                           HTTP_GET,  handle_mobile_page,      NULL},  // #UI-33 мобильный Спектр
+        {"/m-saved",                     HTTP_GET,  handle_mobile_saved,     NULL},  // #UI-33 мобильные Сохранённые
+        {"/m-service",                   HTTP_GET,  handle_mobile_service,   NULL},  // #UI-33 мобильный Сервис
+        {"/m-monitor",                   HTTP_GET,  handle_mobile_monitor,   NULL},  // #UI-33 мобильный Мониторинг
+        {"/m-system",                    HTTP_GET,  handle_mobile_system,    NULL},  // #UI-33 мобильная Система
         {"/common-time.js",              HTTP_GET,  handle_common_time_js,   NULL},  // #FIELD-5
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };

@@ -3,180 +3,210 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>/* #UI-33: мобильные устройства → отдельная мобильная страница /m (обход: ?pc). ПК-дизайн этой страницы не меняется. */
-(function(){try{if(location.pathname==='/'&&!/[?&]pc\b/.test(location.search)&&window.matchMedia&&window.matchMedia('(pointer:coarse) and (max-width:820px)').matches){location.replace('/m');}}catch(e){}})();</script>
 <title>AtomSpectra · Спектр</title>
 <style>
-:root{ --accent:#34d3c0; --accent-dim:rgba(52,211,192,.12); --bg:#0a0c0a; --panel:#11150f; --bd:#20281e; --dim:#8a9686; --txt:#cfd6cd; }
+/* ===== Тема «Мягкий прибор» (мобильный дизайн Atomspectra, #UI-31) ===== */
+:root{
+  --bg:#18221e; --screen:#0b1310; --panel:#0a120f;
+  --card:rgba(255,255,255,.03); --card-line:rgba(111,224,190,.12); --hairline:rgba(111,224,190,.06);
+  --accent:#6fe0be; --accent-dim:rgba(111,224,190,.10); --amber:#e8c766; --red:#e8776b; --blue:#6fbce0;
+  --txt:#eef6f2; --txt-soft:#d3e0da; --dim:#8aa39b; --dim2:#6d827b; --muted:#54655f; --bd:var(--card-line);
+  --font-sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono','Cascadia Mono',Consolas,monospace;
+}
 *{ box-sizing:border-box; }
 html,body{ margin:0; padding:0; background:var(--bg); }
-body{ color:var(--txt); font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace; -webkit-text-size-adjust:100%; padding-bottom:28px; }
-a{ color:inherit; text-decoration:none; }
+body{ color:var(--txt-soft); font-family:var(--font-sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%;
+  min-height:100vh; padding-bottom:88px;
+  background:radial-gradient(130% 90% at 50% 0%,#243530 0%,#1a2723 52%,#151e1b 100%) no-repeat; }
+a{ color:var(--blue); text-decoration:none; }
 button,input{ font-family:inherit; }
-.wrap{ max-width:none; margin:0; padding:18px 22px 0; display:flex; flex-direction:column; gap:14px; }
-header{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 24px; border-bottom:1px solid #1c241c; }
-.brand{ display:flex; align-items:center; gap:13px; font-weight:700; font-size:16px; color:#e8efe2; }
-.logo{ width:34px; height:34px; border-radius:8px; background:#10140f; border:1px solid #283226; display:flex; align-items:center; justify-content:center; position:relative; }
-.logo i{ width:15px; height:15px; border-radius:50%; border:2px solid var(--accent); }
-.logo b{ position:absolute; width:5px; height:5px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); }
-.chips{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-.chip{ background:#10140f; border:1px solid #243024; border-radius:999px; padding:6px 12px; font-size:11.5px; color:var(--dim); }
-.chip.ok{ color:#aeb6a8; display:flex; align-items:center; gap:7px; }
-.chip.lang{ cursor:pointer; color:var(--accent); border-color:rgba(52,211,192,.4); font-weight:600; padding:3px 8px; font-size:10.5px; line-height:1.2; min-width:28px; text-align:center; }
-.chip.lang:hover{ filter:brightness(1.15); }
-.dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 7px var(--accent); }
-nav{ display:flex; align-items:center; gap:2px; padding:0 20px; border-bottom:1px solid #1c241c; overflow-x:auto; }
-nav a,nav span{ padding:12px 16px; font-size:13px; color:var(--dim); flex-shrink:0; white-space:nowrap; }
-nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); }
-.panel{ background:var(--panel); border:1px solid var(--bd); border-radius:10px; }
-.pad{ padding:13px 16px; }
-.status{ display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); padding:2px; }
-.status .sep{ color:#3a443a; } .status .ac{ color:var(--accent); font-weight:600; } .status .w{ color:var(--txt); } .mut{ color:#6b756a; }
-.bar{ height:8px; border-radius:4px; background:#1b211a; overflow:hidden; } .bar > i{ display:block; height:100%; border-radius:4px; transition:width .3s,background .3s; }
-.row{ display:flex; align-items:center; gap:16px; padding:12px 16px; flex-wrap:wrap; }
-.row + .row{ border-top:1px solid #1b211a; }
-.grp{ display:flex; gap:8px; }
-.btn{ border-radius:8px; padding:9px 16px; font-size:13px; cursor:pointer; background:#161b14; border:1px solid #2a322a; color:var(--txt); }
-.btn.sm{ padding:8px 13px; font-size:12.5px; }
-.btn.green{ background:var(--accent-dim); border-color:rgba(52,211,192,.5); color:var(--accent); font-weight:600; }
-.btn.amber{ background:rgba(240,180,60,.08); border-color:rgba(240,180,60,.45); color:#f0c45a; }
-.btn.red{ background:rgba(240,90,80,.07); border-color:rgba(240,90,80,.45); color:#ff8a82; }
-.btn:hover{ filter:brightness(1.2); }
-.seg{ display:flex; border:1px solid #2a322a; border-radius:7px; overflow:hidden; }
-.seg button{ padding:7px 14px; font-size:12px; cursor:pointer; border:none; background:transparent; color:#9aa496; }
-.seg button.on{ background:var(--accent); color:#0c1206; font-weight:700; }
-.lbl{ font-size:11.5px; color:#6b756a; }
-.big{ font-size:28px; font-weight:600; color:#e8efe2; letter-spacing:1px; }
-.big.ac{ color:var(--accent); font-size:22px; } .big.w{ font-size:22px; }
+@keyframes blink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* Шапка */
+.app-header{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:20px 18px 12px; }
+.brand{ display:flex; flex-direction:column; gap:2px; font-weight:700; font-size:17px; color:var(--txt); letter-spacing:-.01em; }
+.brand .sub{ font-size:11px; color:var(--accent); font-family:var(--font-mono); font-weight:400; }
+.chips{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+.chip{ background:var(--card); border:1px solid var(--card-line); border-radius:999px; padding:6px 11px; font-size:11.5px; color:var(--dim); }
+.chip.ok,.conn{ display:flex; align-items:center; gap:7px; background:var(--accent-dim); border:1px solid rgba(111,224,190,.22); color:var(--accent); font-weight:600; }
+.chip.lang{ cursor:pointer; color:var(--accent); border-color:rgba(111,224,190,.4); font-weight:600; min-width:30px; text-align:center; }
+.chip.mode{ cursor:pointer; color:var(--amber); border-color:rgba(232,199,102,.4); font-weight:600; }
+.chip:hover{ filter:brightness(1.12); }
+.dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); animation:blink 1.8s infinite; }
+
+/* Нижняя таб-панель */
+.tabbar{ position:fixed; left:0; right:0; bottom:0; z-index:50; display:flex; gap:2px;
+  background:var(--panel); border-top:1px solid rgba(111,224,190,.1);
+  padding:8px 6px calc(10px + env(safe-area-inset-bottom,16px)); }
+.tabbar a{ flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; padding:7px 0;
+  border-radius:14px; color:var(--dim2); font-size:10px; font-weight:600; white-space:nowrap; }
+.tabbar a.on{ background:var(--accent-dim); color:var(--accent); }
+.tabbar svg{ width:19px; height:19px; }
+
+/* Разметка */
+.wrap{ max-width:660px; margin:0 auto; padding:6px 16px 8px; display:flex; flex-direction:column; gap:14px; }
+.panel{ background:var(--card); border:1px solid var(--card-line); border-radius:18px; }
+.pad{ padding:16px; }
+.hero{ background:linear-gradient(160deg,#16211c,#0f1814); border:1px solid rgba(111,224,190,.16); border-radius:22px; padding:20px; }
+.substat{ display:flex; gap:22px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(111,224,190,.12); }
+.statgrid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+/* Статус / полосы */
+.status{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); padding:0 2px; }
+.status .sep{ color:#3a443a; } .status .ac{ color:var(--accent); font-weight:600; } .status .w{ color:var(--txt); } .mut{ color:var(--dim2); }
+.bar{ height:10px; border-radius:5px; background:rgba(255,255,255,.06); overflow:hidden; } .bar > i{ display:block; height:100%; border-radius:5px; transition:width .3s,background .3s; }
+
+/* Ряды / группы */
+.row{ display:flex; align-items:center; gap:14px; padding:14px 16px; flex-wrap:wrap; }
+.row + .row{ border-top:1px solid var(--hairline); }
+.grp{ display:flex; gap:10px; }
+
+/* Кнопки */
+.btn{ border-radius:14px; padding:12px 16px; font-size:14px; font-weight:600; cursor:pointer; background:var(--card); border:1px solid var(--card-line); color:var(--txt-soft); }
+.btn.sm{ padding:9px 13px; font-size:13px; border-radius:12px; }
+.btn.green{ background:var(--accent); border:0; color:#08120e; font-weight:700; }
+.btn.amber{ background:rgba(232,199,102,.14); border:0; color:var(--amber); }
+.btn.red{ background:rgba(232,119,107,.12); border:0; color:var(--red); }
+.btn:hover{ filter:brightness(1.08); }
+
+/* Сегменты Lin/Log */
+.seg{ display:flex; border:1px solid var(--card-line); border-radius:12px; overflow:hidden; }
+.seg button{ padding:8px 14px; font-size:12px; cursor:pointer; border:none; background:transparent; color:var(--dim); }
+.seg button.on{ background:var(--accent); color:#08120e; font-weight:700; }
+
+/* Текст / цифры */
+.lbl{ font-size:11.5px; color:var(--dim2); }
+.big{ font-family:var(--font-mono); font-size:22px; font-weight:700; color:var(--txt); }
+.big.ac{ color:var(--accent); } .big.w{ color:var(--txt); }
+.hero-cps{ font-family:var(--font-mono); font-size:60px; font-weight:700; color:var(--accent); line-height:1; }
 .ml{ margin-left:auto; }
-.overlay{ position:absolute; top:10px; right:14px; text-align:right; font-size:11.5px; line-height:1.6; color:#aeb6a8; background:rgba(8,10,8,.55); border:1px solid #283024; border-radius:6px; padding:7px 11px; pointer-events:none; min-width:160px; }
-.inp{ background:#0c0f0b; border:1px solid #283024; color:#e8efe2; padding:9px 12px; border-radius:8px; font-size:12px; outline:none; }
+
+/* Прочее */
+.overlay{ position:absolute; top:10px; right:14px; text-align:right; font-size:11.5px; line-height:1.6; color:var(--txt-soft); background:rgba(5,16,12,.6); border:1px solid var(--card-line); border-radius:10px; padding:8px 12px; pointer-events:none; min-width:160px; }
+.inp{ background:rgba(255,255,255,.04); border:1px solid var(--card-line); color:var(--txt); padding:10px 12px; border-radius:12px; font-size:12px; outline:none; }
 .cal-coef{ display:flex; align-items:center; gap:12px; margin-bottom:8px; }
-.cal-coef span{ font-size:11.5px; color:#8a9686; width:74px; }
-.cal-coef input{ flex:1; background:#0c0f0b; border:1px solid #283024; color:var(--accent); padding:7px 10px; border-radius:7px; font-size:12px; outline:none; }
+.cal-coef span{ font-size:11.5px; color:var(--dim); width:74px; }
+.cal-coef input{ flex:1; background:rgba(255,255,255,.04); border:1px solid var(--card-line); color:var(--accent); padding:8px 10px; border-radius:10px; font-size:12px; outline:none; font-family:var(--font-mono); }
 table.saved{ border-collapse:collapse; width:100%; font-size:12px; }
-table.saved th,table.saved td{ border-bottom:1px solid #1b211a; padding:8px 10px; text-align:left; color:#cfd6cd; }
+table.saved th,table.saved td{ border-bottom:1px solid var(--hairline); padding:9px 10px; text-align:left; color:var(--txt-soft); }
 table.saved th{ color:var(--accent); font-weight:600; font-size:11.5px; }
-table.saved tr.on td{ background:rgba(110,168,255,.07); }
-.empty{ color:#5b655a; font-style:italic; font-size:12.5px; }
-#overlay-label{ color:#f0c45a; font-size:12px; }
-@media (max-width:520px){ .big{ font-size:24px } }
+table.saved tr.on td{ background:var(--accent-dim); }
+.empty{ color:var(--muted); font-style:italic; font-size:12.5px; }
+#overlay-label{ color:var(--amber); font-size:12px; }
+/* Нижний лист экспорта (#UI-31, дизайн Atomspectra3) */
+.sheet-wrap{ position:fixed; inset:0; z-index:60; }
+.sheet-scrim{ position:absolute; inset:0; background:rgba(0,0,0,.55); }
+.sheet{ position:absolute; left:0; right:0; bottom:0; background:#101a16; border-top-left-radius:26px; border-top-right-radius:26px; border-top:1px solid rgba(111,224,190,.18); padding:16px 18px calc(34px + env(safe-area-inset-bottom,0px)); animation:sheetup .28s ease; }
+.sheet-grab{ width:40px; height:5px; border-radius:3px; background:rgba(255,255,255,.18); margin:0 auto 14px; }
+.exp-row{ display:flex; align-items:center; gap:12px; padding:14px; border:1px solid rgba(111,224,190,.14); background:rgba(255,255,255,.02); border-radius:15px; cursor:pointer; text-decoration:none; }
+.exp-row:hover{ background:rgba(111,224,190,.06); }
+.exp-ext{ font-family:var(--font-mono); font-size:12px; font-weight:700; color:var(--accent); background:rgba(111,224,190,.1); padding:5px 8px; border-radius:8px; min-width:52px; text-align:center; }
+.exp-desc{ flex:1; font-size:13px; color:var(--txt-soft); }
+.exp-dl{ color:var(--accent); font-size:16px; }
+@keyframes sheetup{ from{ transform:translateY(100%) } to{ transform:translateY(0) } }
+@media (max-width:520px){ .hero-cps{ font-size:52px } }
 </style>
 </head>
 <body>
-<header>
-<div class="brand"><span class="logo"><i></i><b></b></span>AtomSpectra <span style="color:var(--accent)">&nbsp;Gateway</span></div>
+<header class="app-header">
+<div class="brand">AtomSpectra <span class="sub">Gateway&nbsp;&middot;&nbsp;<span id="ip-chip">—</span></span></div>
 <div class="chips">
-<span class="chip ok"><span class="dot"></span><span id="device-chip" data-i18n="device">Прибор</span></span>
-<span class="chip" id="ip-chip">—</span>
-<span class="chip" id="mode-chip" onclick="toggleMode()" title="Переключить Indoor/Outdoor" style="cursor:pointer;border-color:var(--accent);color:var(--accent)">⇄ Indoor</span>
+<span class="chip mode" id="mode-chip" onclick="toggleMode()" title="Переключить Indoor/Outdoor">&#8646; Indoor</span>
 <span class="chip lang" id="langBtn">EN</span>
+<span class="conn"><span class="dot"></span><span id="device-chip" data-i18n="device">Прибор</span></span>
 </div>
 </header>
-<nav>
-<span class="on" data-i18n="nav.spectrum">Спектр</span>
-<a href="/waterfall" data-i18n="nav.waterfall">Водопад</a>
-<a href="/monitor" data-i18n="nav.monitor">Мониторинг</a>
-<a href="/saved" data-i18n="nav.saved">Сохранённые</a>
-<a href="/system" data-i18n="nav.system">Система</a>
-<a href="/service" data-i18n="nav.service">Сервис</a>
-</nav>
 
 <div class="wrap">
-<div class="status" id="status" data-i18n="status.connecting">Подключение...</div>
-<div id="dead-banner" style="display:none;margin-bottom:10px;padding:11px 14px;border:1px solid #d9634e;border-radius:8px;background:rgba(217,99,78,.12);color:#f0a08e;font-size:13px;line-height:1.5"></div>
+<div id="dead-banner" style="display:none;margin-bottom:2px;padding:11px 14px;border:1px solid var(--red);border-radius:14px;background:rgba(232,119,107,.12);color:#f0a08e;font-size:13px;line-height:1.5"></div>
 
-<section class="panel pad">
-<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px;color:#aeb6a8">
-<span><span style="color:var(--accent);font-weight:600" data-i18n="flash.label">&#9921; Flash LittleFS</span> &nbsp; <span id="flash-text">...</span></span>
+<!-- HERO: счёт в секунду -->
+<section class="hero">
+<div style="display:flex;justify-content:space-between;align-items:flex-start">
+<div style="font-size:12px;color:var(--dim)" data-i18n="hero.cps">Счёт в секунду</div>
+<div style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">&#9679; <span data-i18n="legend.live">живой</span></div>
 </div>
-<div class="bar"><i id="flash-inner" style="width:0%;background:var(--accent);box-shadow:0 0 8px rgba(52,211,192,.4)"></i></div>
+<div class="hero-cps" style="margin-top:6px"><span id="big-cps">0</span></div>
+<div class="substat">
+<div><div class="big w" id="big-time" style="font-size:19px">00:00:00</div><div class="lbl" data-i18n="hero.acc">накопление</div></div>
+<div><div class="big w" style="font-size:19px"><span id="big-total">0</span></div><div class="lbl" data-i18n="hero.counts">импульсов</div></div>
+</div>
 </section>
 
-<section class="panel">
-<div class="row">
+<!-- Старт / Стоп / Сброс -->
 <div class="grp">
-<button class="btn green" onclick="startAcq()" data-i18n-html="btn.start">&#9654; Старт</button>
-<button class="btn amber" onclick="stopAcq()" data-i18n-html="btn.stop">&#9632; Стоп</button>
-<button class="btn red" onclick="resetSpectrum()" data-i18n-html="btn.reset">&#8634; Сброс</button>
+<button class="btn green" style="flex:1.4" onclick="startAcq()" data-i18n-html="btn.start">&#9654; Старт</button>
+<button class="btn amber" style="flex:1" onclick="stopAcq()" data-i18n-html="btn.stop">&#9632; Стоп</button>
+<button class="btn red" style="flex:.6" onclick="resetSpectrum()" data-i18n-html="btn.reset">&#8634;</button>
 </div>
-<div class="ml" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-<span class="big" id="big-time">00:00:00</span><span class="mut">|</span>
-<span class="big ac"><span id="big-cps">0</span><span class="mut" style="font-size:12px"> CPS</span></span><span class="mut">|</span>
-<span class="big w"><span id="big-total">0</span><span class="mut" style="font-size:12px"> counts</span></span>
-<span class="mut" id="big-dose-sep" style="display:none">|</span>
-<span class="big ac" id="big-dose-wrap" style="display:none"><span id="big-dose">0.000</span><span class="mut" style="font-size:12px"> µSv/h</span></span>
-</div>
-</div>
-<div class="row">
-<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.scale">Шкала Y</span><div class="seg" id="seg-scale"><button id="btn-lin" onclick="setLog(false)">Lin</button><button id="btn-log" class="on" onclick="setLog(true)">Log</button></div></div>
-<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.value">Величина</span><div class="seg" id="seg-y"><button id="btn-cnt" onclick="setCps(false)">Counts</button><button id="btn-cps" class="on" onclick="setCps(true)">CPS</button></div></div>
-<div style="display:flex;align-items:center;gap:8px"><span class="lbl" data-i18n="ctl.x">Ось X</span><div class="seg" id="seg-x"><button id="btn-ch" onclick="setKev(false)">Ch</button><button id="btn-kev" class="on" onclick="setKev(true)">keV</button></div></div>
-<!-- #UI-3: оверлей энергетических линий нуклидов -->
-<div style="display:flex;align-items:center;gap:8px;position:relative">
- <button class="btn sm" id="btn-nuc" onclick="toggleNucPanel()" data-i18n-html="nuc.toggle" title="" disabled style="opacity:.5">&#9883; Линии</button>
- <button class="btn sm" id="btn-nuc-vis" onclick="toggleNucVis()" title=""></button><!-- #UI-40 mirror: быстрый on/off видимости, выбор не меняется -->
- <div id="nuc-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:10;background:#0e120d;border:1px solid #2a322a;border-radius:8px;padding:10px 12px;min-width:260px;box-shadow:0 6px 18px rgba(0,0,0,.5)"></div>
-</div>
-<div class="ml" style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#6b756a"><span style="width:18px;height:3px;border-radius:2px;background:var(--accent);display:inline-block"></span><span data-i18n="legend.live">живой</span></div>
-</div>
-</section>
 
+<!-- Нуклиды + Во весь экран -->
+<div class="grp" style="position:relative">
+<button class="btn" style="flex:1.4;opacity:.5" id="btn-nuc" onclick="toggleNucPanel()" data-i18n-html="nuc.toggle" title="" disabled>&#9883; Нуклиды</button>
+<button class="btn" style="flex:1" onclick="var s=document.getElementById('sp');if(s)s.click();"><span data-i18n-html="nuc.fs">&#9974; Во весь экран</span></button>
+<button class="btn sm" id="btn-nuc-vis" onclick="toggleNucVis()" title="" style="display:none"></button>
+<div id="nuc-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:10;background:#0e120d;border:1px solid var(--card-line);border-radius:12px;padding:10px 12px;min-width:260px;box-shadow:0 8px 22px rgba(0,0,0,.55)"></div>
+</div>
+
+<!-- График спектра -->
 <section class="panel pad">
 <div style="position:relative">
 <canvas id="sp" width="1200" height="400" style="width:100%;height:auto;display:block;cursor:crosshair"></canvas>
 <canvas id="spcur" width="1200" height="400" style="position:absolute;left:0;top:0;width:100%;height:auto;pointer-events:none"></canvas>
-<div class="overlay"><div id="cursor-info" data-i18n="cursor.hint" style="color:#5b655a">наведите курсор</div></div>
+<div class="overlay"><div id="cursor-info" data-i18n="cursor.hint" style="color:var(--muted)">наведите курсор</div></div>
 </div>
+<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);padding:6px 2px 0"><span>0</span><span>1500</span><span>3000</span><span>4500 keV</span></div>
 </section>
 
-<div class="row" style="padding:0;gap:8px">
-<button class="btn sm green" onclick="saveSpectrum()" data-i18n-html="btn.save">&#128190; Сохранить</button>
-<button class="btn sm" onclick="exportSpectrum('/api/export.xml')" data-i18n="btn.expXml">Export XML</button>
-<button class="btn sm" onclick="exportSpectrum('/api/export.csv')" data-i18n="btn.expCsv">Export CSV</button>
-<button class="btn sm" onclick="exportSpectrum('/api/export.n42')" data-i18n="btn.expN42">Export N42</button>
-<button class="btn sm" onclick="exportSpectrum('/api/export.spe')" data-i18n="btn.expSpe">Export SPE</button>
-<button class="btn sm" onclick="clearOverlay()" id="btn-clear-ovl" style="display:none" data-i18n="btn.clearOvl">Снять overlay</button>
-<span id="overlay-label"></span>
+<!-- 2x2: времена + температура -->
+<div class="statgrid">
+<div class="panel pad"><div class="lbl" data-i18n="g.live">Живое</div><div class="big w" id="st-live" style="font-size:19px;margin-top:3px">—</div></div>
+<div class="panel pad"><div class="lbl" data-i18n="g.dead">Мёртвое</div><div class="big w" id="st-dead" style="font-size:19px;margin-top:3px">—</div></div>
+<div class="panel pad"><div class="lbl" data-i18n="g.real">Реальное</div><div class="big w" id="st-real" style="font-size:19px;margin-top:3px">—</div></div>
+<div class="panel pad"><div class="lbl" data-i18n="g.temp">Температура</div><div class="big w" id="st-temp" style="font-size:19px;margin-top:3px">—</div></div>
 </div>
 
-<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;font-size:12px;color:#8a9686">
- <span>Префикс файлов:</span>
- <input type="text" id="fx-prefix" maxlength="23" spellcheck="false" autocomplete="off" placeholder="MY1" title="Добавляется в начало имени всех выгрузок этой платы. Латиница, цифры, _ и -." style="width:110px;background:#11150f;color:#cfd6cd;border:1px solid #444;padding:4px 7px;border-radius:4px;font-family:inherit;font-size:12px">
- <button type="button" onclick="savePrefix()" style="cursor:pointer;background:rgba(52,211,192,.12);border:1px solid rgba(52,211,192,.4);color:#34d3c0;border-radius:6px;padding:5px 12px;font-family:inherit;font-size:12px;font-weight:600">Сохранить</button>
- <span id="fx-prefix-st" style="min-width:16px;font-size:14px"></span>
+<!-- Сохранить на плату / Экспорт (дизайн Atomspectra3) -->
+<div class="grp">
+<button class="btn green" style="flex:1.3" onclick="saveSpectrum()" data-i18n-html="btn.saveBoard">&#128190; Сохранить на плату</button>
+<button class="btn" style="flex:1;color:var(--accent);border:1px solid rgba(111,224,190,.25);background:rgba(111,224,190,.06)" onclick="openExport()" data-i18n-html="btn.export">&#8681; Экспорт</button>
 </div>
 
-<section class="panel">
-<div class="row" id="cal-head" style="cursor:pointer;border:none">
-<span id="cal-arrow" style="color:var(--accent)">&#9654;</span>
-<span style="font-size:13px;font-weight:600;color:#e8efe2" data-i18n="cal.title">Калибровка энергии</span>
-<span class="lbl">E(ch) = e + d&middot;ch + c&middot;ch&sup2; + b&middot;ch&sup3; + a&middot;ch&#8308;</span>
-<span class="ml" id="calib-status" data-i18n="cal.unset" style="font-size:11px;color:#5b655a;border:1px solid #2a322a;border-radius:999px;padding:3px 10px">Не задана</span>
+<!-- Нижний лист «Экспорт спектра» — только боевые форматы: N42/SPE/CSV/XML -->
+<div id="export-sheet" class="sheet-wrap" style="display:none">
+<div class="sheet-scrim" onclick="closeExport()"></div>
+<div class="sheet">
+<div class="sheet-grab"></div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+<div style="font-size:18px;font-weight:700;color:var(--txt)" data-i18n="exp.title">Экспорт спектра</div>
+<button onclick="closeExport()" style="border:0;background:rgba(255,255,255,.06);color:var(--txt-soft);width:32px;height:32px;border-radius:50%;font-size:16px;cursor:pointer">&#10005;</button>
 </div>
-<div id="cal-body" style="display:none;padding:0 16px 14px">
-<div style="max-width:460px">
-<div class="cal-coef"><span>a (ch&#8308;)</span><input id="cal-a" type="text" placeholder="0"></div>
-<div class="cal-coef"><span>b (ch&sup3;)</span><input id="cal-b" type="text" placeholder="0"></div>
-<div class="cal-coef"><span>c (ch&sup2;)</span><input id="cal-c" type="text" placeholder="0"></div>
-<div class="cal-coef"><span>d (ch&sup1;)</span><input id="cal-d" type="text" placeholder="0"></div>
-<div class="cal-coef"><span>e (offset)</span><input id="cal-e" type="text" placeholder="0"></div>
-</div>
-<div class="grp" style="margin-top:8px;flex-wrap:wrap">
-<button class="btn sm green" onclick="applyCalib()" data-i18n="cal.apply">Применить</button>
-<button class="btn sm" onclick="clearCalib()" data-i18n="cal.clear">Очистить</button>
-<button class="btn sm" onclick="requestInfo()" data-i18n="cal.read">Считать с прибора</button>
+<div style="font-size:12px;color:var(--dim);margin-bottom:14px" data-i18n="exp.sub">Файл загрузится на устройство в выбранном формате.</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<a class="exp-row" href="/api/export.n42" onclick="closeExport()"><span class="exp-ext">.n42</span><span class="exp-desc" data-i18n="exp.n42">ANSI N42.42 — стандарт спектрометрии</span><span class="exp-dl">&#8681;</span></a>
+<a class="exp-row" href="/api/export.spe" onclick="closeExport()"><span class="exp-ext">.spe</span><span class="exp-desc" data-i18n="exp.spe">Ортек SPE — совместим с большинством ПО</span><span class="exp-dl">&#8681;</span></a>
+<a class="exp-row" href="/api/export.csv" onclick="closeExport()"><span class="exp-ext">.csv</span><span class="exp-desc" data-i18n="exp.csv">Таблица канал/отсчёты</span><span class="exp-dl">&#8681;</span></a>
+<a class="exp-row" href="/api/export.xml" onclick="closeExport()"><span class="exp-ext">.xml</span><span class="exp-desc" data-i18n="exp.xml">AtomSpectra XML — калибровка и метаданные</span><span class="exp-dl">&#8681;</span></a>
 </div>
 </div>
-</section>
+</div>
 
-<section class="panel pad">
-<div style="display:flex;justify-content:space-between;margin-bottom:12px">
-<span style="font-size:14px;font-weight:600;color:#e8efe2" data-i18n="saved.title">Сохранённые спектры</span>
-<a class="lbl" href="/saved" style="color:var(--accent)" data-i18n-html="saved.all">все &rarr;</a>
+<!-- #UI-31 строго по макету: функции вне макета скрыты (JS цел, UI чист) -->
+<div id="legacy-off" style="display:none" aria-hidden="true">
+<div class="status" id="status" data-i18n="status.connecting">Подключение...</div>
+<span id="big-dose-wrap"><span id="big-dose">0.000</span></span><span id="big-dose-sep"></span>
+<span id="flash-text"></span><i id="flash-inner"></i>
+<div class="seg" id="seg-scale"><button id="btn-lin" onclick="setLog(false)">Lin</button><button id="btn-log" class="on" onclick="setLog(true)">Log</button></div>
+<div class="seg" id="seg-y"><button id="btn-cnt" onclick="setCps(false)">Counts</button><button id="btn-cps" class="on" onclick="setCps(true)">CPS</button></div>
+<div class="seg" id="seg-x"><button id="btn-ch" onclick="setKev(false)">Ch</button><button id="btn-kev" class="on" onclick="setKev(true)">keV</button></div>
+<button onclick="saveSpectrum()">save</button>
+<button id="btn-clear-ovl" onclick="clearOverlay()">clr</button><span id="overlay-label"></span>
+<input type="text" id="fx-prefix" maxlength="23"><button onclick="savePrefix()">px</button><span id="fx-prefix-st"></span>
+<div id="cal-head"><span id="cal-arrow"></span><span id="calib-status" data-i18n="cal.unset">Не задана</span></div>
+<div id="cal-body"><input id="cal-a" type="text"><input id="cal-b" type="text"><input id="cal-c" type="text"><input id="cal-d" type="text"><input id="cal-e" type="text"></div>
+<div id="saved"></div>
 </div>
-<div id="saved"><span class="empty" data-i18n="saved.loading">Загрузка...</span></div>
-</section>
 </div>
 
 <script>
@@ -190,8 +220,7 @@ var DICT={
   "status.rebooting":"Перезагрузка...",
   "status.wifiSetup":"Настройка WiFi...",
   "status.nodata":"Нет данных",
-  "dead.warn":"⚠ Спектрометр на шине (FTDI), но нет ответа по протоколу. Нажмите «Повторить связь» или Старт. Если не поможет — выньте/вставьте USB спектрометра; крайний случай — питание платы ~5 с с уже подключённым прибором.",
-  "dead.retry":"Повторить связь",
+  "dead.warn":"⚠ Спектрометр определился, но не отвечает — нет данных. Скорее всего подключён без питания. Выключите питание платы на ~5 секунд и включите снова, уже с подключённым спектрометром.",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 КБ (%3%) &middot; свободно %4 КБ",
   "btn.start":"&#9654; Старт","btn.stop":"&#9632; Стоп","btn.reset":"&#8634; Сброс",
@@ -200,11 +229,18 @@ var DICT={
   "btn.clearOvl":"Снять overlay",
   "btn.rebootDev":"Reboot прибора","btn.rebootEsp":"Reboot ESP","btn.wifiReset":"WiFi Reset",
   "ctl.scale":"Шкала Y","ctl.value":"Величина","ctl.x":"Ось X",
-  "nuc.toggle":"&#9883; Линии","nuc.title":"Линии нуклидов",
+  "nuc.toggle":"&#9883; Нуклиды","nuc.title":"Линии нуклидов",
   "nuc.all":"Все","nuc.none":"Снять",
   "nuc.need_cal":"Нужна калибровка энергии",
   "btn.lines":"Линии","st.on":"вкл","st.off":"выкл","btn.lines_title":"Показать/скрыть выбранные линии нуклидов — сам выбор не меняется",
   "legend.live":"живой",
+  "hero.cps":"Счёт в секунду","hero.acc":"накопление","hero.counts":"импульсов",
+  "g.live":"Живое","g.dead":"Мёртвое","g.real":"Реальное","g.temp":"Температура","nuc.fs":"&#9974; Во весь экран",
+  "btn.saveBoard":"&#128190; Сохранить на плату","btn.export":"&#8681; Экспорт",
+  "exp.title":"Экспорт спектра","exp.sub":"Файл загрузится на устройство в выбранном формате.",
+  "exp.n42":"ANSI N42.42 — стандарт спектрометрии","exp.spe":"Ортек SPE — совместим с большинством ПО",
+  "exp.csv":"Таблица канал/отсчёты","exp.xml":"AtomSpectra XML — калибровка и метаданные",
+  "nav.monitorS":"Монит.","nav.savedS":"Спектры",
   "cursor.hint":"наведите курсор",
   "cal.title":"Калибровка энергии",
   "cal.unset":"Не задана","cal.set":"Задана","cal.applied":"Применена","cal.error":"Ошибка",
@@ -224,7 +260,6 @@ var DICT={
   "log.start":"Start sent","log.stop":"Stop sent","log.reset":"Reset sent","log.info":"Info requested",
   "log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
-  "log.exportOk":"Выгружено: %1","log.exportErr":"Экспорт не удался: %1",
   "log.cal":"Calibration: [%1]","log.calErr":"Calibration error: %1","log.calClear":"Calibration cleared",
   "st.real":"Реал.","st.live":"Живое","st.dead":"Мёртв.","st.dose":"МД",
   "err.prefix":"Error: %1"
@@ -237,8 +272,7 @@ var DICT={
   "status.rebooting":"Rebooting...",
   "status.wifiSetup":"WiFi setup...",
   "status.nodata":"No data",
-  "dead.warn":"⚠ Spectrometer is on the bus (FTDI) but not answering the protocol. Press “Retry link” or Start. If that fails, unplug/replug the spectrometer USB; last resort — power-cycle the board ~5 s with the instrument already connected.",
-  "dead.retry":"Retry link",
+  "dead.warn":"⚠ Spectrometer detected but not responding — no data. It is likely connected without power. Switch the board power off for ~5 seconds, then on again with the spectrometer already connected.",
   "flash.label":"⚙ Flash LittleFS",
   "flash.fmt":"%1 / %2 KB (%3%) &middot; free %4 KB",
   "btn.start":"&#9654; Start","btn.stop":"&#9632; Stop","btn.reset":"&#8634; Reset",
@@ -247,11 +281,18 @@ var DICT={
   "btn.clearOvl":"Clear overlay",
   "btn.rebootDev":"Reboot device","btn.rebootEsp":"Reboot ESP","btn.wifiReset":"WiFi Reset",
   "ctl.scale":"Y scale","ctl.value":"Value","ctl.x":"X axis",
-  "nuc.toggle":"&#9883; Lines","nuc.title":"Nuclide lines",
+  "nuc.toggle":"&#9883; Nuclides","nuc.title":"Nuclide lines",
   "nuc.all":"All","nuc.none":"None",
   "nuc.need_cal":"Energy calibration required",
   "btn.lines":"Lines","st.on":"on","st.off":"off","btn.lines_title":"Show/hide selected nuclide lines — selection itself unchanged",
   "legend.live":"live",
+  "hero.cps":"Counts per second","hero.acc":"acquisition","hero.counts":"counts",
+  "g.live":"Live","g.dead":"Dead","g.real":"Real","g.temp":"Temperature","nuc.fs":"&#9974; Fullscreen",
+  "btn.saveBoard":"&#128190; Save to board","btn.export":"&#8681; Export",
+  "exp.title":"Export spectrum","exp.sub":"The file downloads to your device in the chosen format.",
+  "exp.n42":"ANSI N42.42 — spectrometry standard","exp.spe":"Ortec SPE — compatible with most software",
+  "exp.csv":"Channel/counts table","exp.xml":"AtomSpectra XML — calibration and metadata",
+  "nav.monitorS":"Monit.","nav.savedS":"Saved",
   "cursor.hint":"hover the chart",
   "cal.title":"Energy calibration",
   "cal.unset":"Not set","cal.set":"Set","cal.applied":"Applied","cal.error":"Error",
@@ -271,7 +312,6 @@ var DICT={
   "log.start":"Start sent","log.stop":"Stop sent","log.reset":"Reset sent","log.info":"Info requested",
   "log.sent":"Sent: %1","log.ovlOk":"Overlay loaded: #%1","log.ovlErr":"Overlay error: %1","log.ovlClear":"Overlay cleared",
   "log.del":"Deleted #%1","log.rebootDev":"Reboot device sent",
-  "log.exportOk":"Exported: %1","log.exportErr":"Export failed: %1",
   "log.cal":"Calibration: [%1]","log.calErr":"Calibration error: %1","log.calClear":"Calibration cleared",
   "st.real":"Real","st.live":"Live","st.dead":"Dead","st.dose":"DR",
   "err.prefix":"Error: %1"
@@ -322,6 +362,9 @@ var csrfToken="";
 var doseK=0;
 
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
+/* #UI-31: нижний лист экспорта (дизайн Atomspectra3) */
+function openExport(){var e=document.getElementById("export-sheet");if(e)e.style.display="";}
+function closeExport(){var e=document.getElementById("export-sheet");if(e)e.style.display="none";}
 async function loadDoseK(){try{var r=await(await fetch("/api/waterfall/dose_k")).json();doseK=(typeof r.dose_k==="number"&&r.dose_k>0)?r.dose_k:0;}catch(e){}}
 function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
 async function loadPrefix(){try{var r=await(await fetch("/api/boot-config")).json();var e=document.getElementById("fx-prefix");if(e)e.value=r.name_prefix||"";}catch(_){}}
@@ -351,45 +394,12 @@ function clearCanvas(){
  X.save();X.translate(12,PT+PH/2);X.rotate(-Math.PI/2);X.textAlign="center";X.fillText(isCps?tr("ax.cps"):tr("ax.cnt"),0,0);X.restore();
 }
 
-var deadBannerOn=false;
-function setDeadBanner(on){
-  var b=document.getElementById("dead-banner");
-  if(!b)return;
-  if(on){
-    // Do NOT rebuild HTML every poll — that destroys the Retry button mid-click.
-    if(!deadBannerOn){
-      b.innerHTML=tr("dead.warn")+' <button type="button" class="btn sm" id="dead-retry" style="margin-left:8px">'+tr("dead.retry")+'</button>';
-      b.style.display="";
-      var r=document.getElementById("dead-retry");
-      if(r) r.onclick=async function(){
-        r.disabled=true;
-        try{
-          await post("/api/usb/recover");
-          lg(tr("dead.retry"));
-        }catch(e){lg(tfmt("err.prefix",e));}
-        setTimeout(function(){try{r.disabled=false;}catch(x){}},4000);
-      };
-    }
-    deadBannerOn=true;
-  }else{
-    if(deadBannerOn){b.style.display="none";b.innerHTML="";}
-    deadBannerOn=false;
-  }
-}  /* #FW-43: баннер + Retry (hotplug / silent MCU) */
+function setDeadBanner(on){var b=document.getElementById("dead-banner");if(!b)return;if(on){b.innerHTML=tr("dead.warn");b.style.display="";}else{b.style.display="none";}}  /* #FW-43: баннер «определился, но не запитан» */
 async function update(){
  try{
-  /* #PERF-1: binary bins (32 KiB) + meta JSON — shared 2s server cache */
-  var rb=await fetch("/api/spectrum");
-  var rm=await fetch("/api/spectrum/meta.json");
-  if(!rb.ok||!rm.ok){
-   var deadHdr=(rm.headers&&rm.headers.get("X-Spectrometer-Dead"))||(rb.headers&&rb.headers.get("X-Spectrometer-Dead"));
-   setDeadBanner(deadHdr==="1");
-   if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}
-   return;
-  }
-  var ab=await rb.arrayBuffer();
-  var d=await rm.json();
-  d.bins=new Uint32Array(ab);
+  var r=await fetch("/api/spectrum.json");
+  if(!r.ok){setDeadBanner(r.headers.get("X-Spectrometer-Dead")==="1");if(++failStreak>=3||!lastD){clearCanvas();document.getElementById("status").textContent=tr("status.nodata");}return}  /* #UI-2: транзиентный не-2xx (напр. 503 при конкуренции сокетов) НЕ гасит последний кадр; гасим лишь после >=3 подряд. #FW-43: дед-флаг из заголовка X-Spectrometer-Dead — баннер работает даже когда спектра нет (404) */
+  var d=await r.json();
   failStreak=0;  /* #UI-2: успешный кадр — сброс счётчика подряд-неудач */
   if(d.calib){calib=d.calib;if(!calibEditing)fillCalibFields(d.calib);nucBtnEnable(true);} else if(!calib){nucBtnEnable(false);}
   if(d.serial)document.getElementById("device-chip").textContent=d.serial;
@@ -415,6 +425,12 @@ async function update(){
   document.getElementById("big-cps").textContent=d.cps;
   document.getElementById("big-total").textContent=d.total.toLocaleString(lcl());
   if(doseK>0){var bigDr=(d.cps*doseK).toFixed(3);document.getElementById("big-dose").textContent=bigDr;document.getElementById("big-dose-sep").style.display="";document.getElementById("big-dose-wrap").style.display="";}else{document.getElementById("big-dose-sep").style.display="none";document.getElementById("big-dose-wrap").style.display="none";}
+  /* #UI-31: сетка 2×2 — Живое/Мёртвое/Реальное/Температура из spectrum.json */
+  (function(){var rt=d.time||0,lv=(typeof d.live==="number")?d.live:rt,dd=Math.max(0,rt-lv),tp=(typeof d.t1==="number")?d.t1:null,el;
+   if((el=document.getElementById("st-live")))el.textContent=fmtHMS(Math.round(lv));
+   if((el=document.getElementById("st-dead")))el.textContent=fmtHMS(Math.round(dd));
+   if((el=document.getElementById("st-real")))el.textContent=fmtHMS(rt);
+   if((el=document.getElementById("st-temp")))el.textContent=(tp!==null)?(tp.toFixed(1)+"°C"):"—";})();
   draw(d);
  }catch(e){if(++failStreak>=3||!lastD){clearCanvas();setDeadBanner(false);document.getElementById("status").textContent=tfmt("err.prefix",e);}}  /* #UI-2: таймаут/сбой сети не гасит последний спектр; гасим лишь после >=3 подряд */
  finally{pollDevLog();}   /* #UI-2: devlog (#UI-1) теперь ПОСЛЕ спектра, не конкурентно — устраняет лишний сокет → меньше 503 */
@@ -611,11 +627,6 @@ async function saveSpectrum(){var r=await(await post("/api/save")).json();
  if(r.ok){lg(tfmt("saved.savedAs",r.index));loadSaved();loadFlashInfo();return}
  var k=r.err==="novalid"?"saved.saveErrNoData":r.err==="nospace"?"saved.saveErrNoSpace":"saved.saveErr";
  lg(tr(k));}
-/* #PERF-2: экспорт идёт через heavyFetch — при занятых воротах ждём и повторяем,
-   а не уводим вкладку на 503-JSON, как делал location.href. */
-function exportSpectrum(url){
- window.heavyDownload(url).then(function(name){lg(tfmt("log.exportOk",name));})
-  .catch(function(e){lg(tfmt("log.exportErr",String(e && e.message||e)));});}
 async function requestInfo(){calibEditing=false;await post("/api/command",{body:"-inf"});await post("/api/command",{body:"-cal"});lg(tr("log.info"));setTimeout(update,800);setTimeout(pollDevLog,600);setTimeout(pollDevLog,1500)}  /* #UI-1: быстро подхватить ответы -inf/-cal */
 async function rebootDevice(){if(!confirm(tr("confirm.rebootDev")))return;await post("/api/reboot-device");lg(tr("log.rebootDev"))}
 async function rebootEsp(){if(!confirm(tr("confirm.rebootEsp")))return;await post("/api/reboot-esp");document.getElementById("status").textContent=tr("status.rebooting")}
@@ -907,5 +918,13 @@ window.openZoomOverlay=function(sourcesFn,opts){
 })();
 </script>
 <script src="/common-time.js"></script>
+<nav class="tabbar">
+<a class="on" href="/m"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="2" height="6" rx="1"/><rect x="5" y="4" width="2" height="11" rx="1"/><rect x="9" y="6" width="2" height="9" rx="1"/><rect x="13" y="2" width="2" height="13" rx="1"/></svg><span data-i18n="nav.spectrum">Спектр</span></a>
+<a href="/waterfall"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1" opacity=".55"/><rect x="1" y="9" width="6" height="6" rx="1" opacity=".55"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg><span data-i18n="nav.waterfall">Водопад</span></a>
+<a href="/m-monitor"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="10" r="2"/><circle cx="8" cy="6" r="2"/><circle cx="13" cy="9" r="2"/></svg><span data-i18n="nav.monitorS">Монит.</span></a>
+<a href="/m-saved"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="12" height="12" rx="3"/></svg><span data-i18n="nav.savedS">Спектры</span></a>
+<a href="/m-system"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.7" fill="currentColor" stroke="none"/></svg><span data-i18n="nav.system">Система</span></a>
+<a href="/m-service"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1 L15 8 L8 15 L1 8 Z"/></svg><span data-i18n="nav.service">Сервис</span></a>
+</nav>
 </body>
 </html>

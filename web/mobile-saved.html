@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AtomSpectra · Сохранённые</title>
+<style>
+/* ===== Тема «Мягкий прибор» (мобильный дизайн Atomspectra, #UI-31/#UI-33) ===== */
+:root{
+  --bg:#18221e; --screen:#0b1310; --panel:#0a120f;
+  --card:rgba(255,255,255,.03); --card-line:rgba(111,224,190,.12); --hairline:rgba(111,224,190,.06);
+  --accent:#6fe0be; --accent-dim:rgba(111,224,190,.10); --amber:#e8c766; --red:#e8776b; --blue:#6fbce0;
+  --txt:#eef6f2; --txt-soft:#d3e0da; --dim:#8aa39b; --dim2:#6d827b; --muted:#54655f; --bd:var(--card-line);
+  --font-sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono','Cascadia Mono',Consolas,monospace;
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); }
+body{ color:var(--txt-soft); font-family:var(--font-sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%;
+  min-height:100vh; padding-bottom:88px;
+  background:radial-gradient(130% 90% at 50% 0%,#243530 0%,#1a2723 52%,#151e1b 100%) no-repeat; }
+a{ color:var(--blue); text-decoration:none; }
+button,input{ font-family:inherit; }
+@keyframes blink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* Шапка */
+.app-header{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:20px 18px 12px; }
+.brand{ display:flex; flex-direction:column; gap:2px; font-weight:700; font-size:17px; color:var(--txt); letter-spacing:-.01em; }
+.brand .sub{ font-size:11px; color:var(--accent); font-family:var(--font-mono); font-weight:400; }
+.chips{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; justify-content:flex-end; }
+.chip{ background:var(--card); border:1px solid var(--card-line); border-radius:999px; padding:6px 11px; font-size:11.5px; color:var(--dim); }
+.chip.ok,.conn{ display:flex; align-items:center; gap:7px; background:var(--accent-dim); border:1px solid rgba(111,224,190,.22); color:var(--accent); font-weight:600; }
+.chip.lang{ cursor:pointer; color:var(--accent); border-color:rgba(111,224,190,.4); font-weight:600; min-width:30px; text-align:center; }
+.chip.mode{ cursor:pointer; color:var(--amber); border-color:rgba(232,199,102,.4); font-weight:600; }
+.chip:hover{ filter:brightness(1.12); }
+.dot{ width:7px; height:7px; border-radius:50%; background:var(--accent); animation:blink 1.8s infinite; }
+
+/* Нижняя таб-панель */
+.tabbar{ position:fixed; left:0; right:0; bottom:0; z-index:50; display:flex; gap:2px;
+  background:var(--panel); border-top:1px solid rgba(111,224,190,.1);
+  padding:8px 6px calc(10px + env(safe-area-inset-bottom,16px)); }
+.tabbar a{ flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; padding:7px 0;
+  border-radius:14px; color:var(--dim2); font-size:10px; font-weight:600; white-space:nowrap; }
+.tabbar a.on{ background:var(--accent-dim); color:var(--accent); }
+.tabbar svg{ width:19px; height:19px; }
+
+/* Разметка */
+.wrap{ max-width:660px; margin:0 auto; padding:6px 16px 8px; display:flex; flex-direction:column; gap:14px; }
+.panel{ background:var(--card); border:1px solid var(--card-line); border-radius:18px; }
+.pad{ padding:16px; }
+
+/* Полосы */
+.bar{ height:10px; border-radius:5px; background:rgba(255,255,255,.06); overflow:hidden; } .bar > i{ display:block; height:100%; border-radius:5px; transition:width .3s,background .3s; }
+.lbl{ font-size:11.5px; color:var(--dim2); }
+.mut{ color:var(--dim2); }
+
+/* Кнопки */
+.btn{ border-radius:14px; padding:12px 16px; font-size:14px; font-weight:600; cursor:pointer; background:var(--card); border:1px solid var(--card-line); color:var(--txt-soft); }
+.btn.sm{ padding:9px 13px; font-size:13px; border-radius:12px; }
+.btn.green{ background:var(--accent); border:0; color:#08120e; font-weight:700; }
+.btn.red{ background:rgba(232,119,107,.12); border:0; color:var(--red); }
+.btn:hover{ filter:brightness(1.08); }
+
+/* Просмотр выбранного спектра */
+.vtitle{ font-size:15px; font-weight:600; color:var(--txt); padding:15px 16px 10px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.vtitle .lbl{ font-weight:400; }
+#dchart{ display:block; width:100%; height:auto; background:var(--screen); border-radius:12px; border:1px solid var(--card-line); }
+.actions{ display:flex; flex-wrap:wrap; gap:8px; padding:12px 16px; border-top:1px solid var(--hairline); }
+.meta{ display:grid; grid-template-columns:1fr auto; gap:9px 16px; font-size:12.5px; padding:14px 16px; border-top:1px solid var(--hairline); }
+.meta .k{ color:var(--dim); } .meta .v{ color:var(--txt-soft); text-align:right; font-family:var(--font-mono); }
+
+/* Список сохранённых — карточки */
+.list{ display:flex; flex-direction:column; }
+.item{ padding:13px 16px; border-top:1px solid var(--hairline); cursor:pointer; display:flex; flex-direction:column; gap:4px; }
+.item:first-child{ border-top:0; }
+.item:active{ background:var(--accent-dim); }
+.item.on{ background:var(--accent-dim); border-left:3px solid var(--accent); padding-left:13px; }
+.item .hd{ display:flex; justify-content:space-between; align-items:center; font-size:14px; color:var(--txt); }
+.item .hd b{ color:var(--accent); font-weight:700; }
+.item .sub{ font-size:11.5px; color:var(--dim2); display:flex; gap:14px; font-family:var(--font-mono); }
+.empty{ color:var(--muted); font-style:italic; font-size:13px; padding:22px; text-align:center; }
+</style>
+</head>
+<body>
+<header class="app-header">
+<div class="brand">AtomSpectra <span class="sub">Gateway&nbsp;&middot;&nbsp;<span id="ip-chip">—</span></span></div>
+<div class="chips">
+<span class="chip mode" id="mode-chip" onclick="toggleMode()" title="Переключить Indoor/Outdoor" style="display:none">&#8646; Indoor</span>
+<span class="chip lang" id="langBtn">EN</span>
+<span class="conn"><span class="dot"></span><span id="device-chip" data-i18n="device">Прибор</span></span>
+</div>
+</header>
+
+<div class="wrap">
+
+<!-- Flash + счётчик -->
+<section class="panel pad">
+<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:7px;color:var(--txt-soft)">
+<span><span style="color:var(--accent);font-weight:600">&#9921; Flash</span> &nbsp; <span id="flash-text">…</span></span>
+<span class="lbl" id="cnt-text">—</span>
+</div>
+<div class="bar"><i id="flash-inner" style="width:0%;background:var(--accent)"></i></div>
+</section>
+
+<!-- Просмотр выбранного (скрыт до выбора) -->
+<section class="panel" id="viewer" style="display:none">
+<div class="vtitle"><span><span data-i18n="view">Просмотр</span> <span id="dt-idx" style="color:var(--accent)">—</span></span><span class="lbl" id="dt-when"></span></div>
+<div style="padding:0 14px 12px"><canvas id="dchart" width="900" height="380"></canvas></div>
+<div class="actions" id="dt-actions">
+<button class="btn sm green" onclick="overlayOnMain()" data-i18n="btn.overlay">&#10141; Overlay на «Спектр»</button>
+<a class="btn sm" id="lnk-xml" data-i18n="exp.xml">Export XML</a>
+<a class="btn sm" id="lnk-csv" data-i18n="exp.csv">Export CSV</a>
+<button class="btn sm red" onclick="deleteCurrent()" data-i18n="btn.delete">Удалить</button>
+</div>
+<div class="meta" id="meta-grid">
+<span class="k" data-i18n="meta.counts">Counts</span><span class="v" id="m-counts">—</span>
+<span class="k" data-i18n="meta.time">Время измерения</span><span class="v" id="m-time">—</span>
+<span class="k" data-i18n="meta.cps">CPS (среднее)</span><span class="v" id="m-cps">—</span>
+<span class="k" data-i18n="meta.saved">Сохранено</span><span class="v" id="m-saved">—</span>
+<span class="k" data-i18n="meta.ch">Каналы</span><span class="v" id="m-ch">—</span>
+<span class="k" data-i18n="meta.cal">Калибровка</span><span class="v" id="m-cal">—</span>
+</div>
+</section>
+
+<!-- Список сохранённых -->
+<section class="panel">
+<div class="vtitle"><span data-i18n="list.title">Список</span><span class="lbl" id="list-cnt">—</span></div>
+<div class="list" id="list"><div class="empty" data-i18n="list.loading">Загрузка...</div></div>
+</section>
+
+</div>
+
+<script>
+"use strict";
+var DICT={
+ ru:{
+  "device":"Прибор",
+  "nav.spectrum":"Спектр","nav.waterfall":"Водопад","nav.monitorS":"Монит.","nav.savedS":"Спектры","nav.system":"Система","nav.service":"Сервис",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor",
+  "mode.confirmOut":"Переключить в полевой режим (Outdoor)? Плата перезагрузится, поднимет точку доступа AtomSpectra-Outdoor, текущее подключение прервётся.",
+  "mode.confirmIn":"Вернуться в домашний режим (Indoor)? Плата перезагрузится и подключится к домашней сети.",
+  "view":"Просмотр","view.placeholder":"—",
+  "exp.xml":"Export XML","exp.csv":"Export CSV",
+  "btn.overlay":"&#10141; Overlay на «Спектр»","btn.delete":"Удалить",
+  "meta.counts":"Counts","meta.time":"Время измерения","meta.cps":"CPS (среднее)",
+  "meta.saved":"Сохранено","meta.ch":"Каналы","meta.cal":"Калибровка",
+  "list.title":"Список","list.loading":"Загрузка...",
+  "list.empty":"Нет сохранённых спектров",
+  "list.err":"Ошибка: ",
+  "cnt.saved":"Сохранено: %1",
+  "cnt.items":"%1 шт.",
+  "no_data":"Нет данных",
+  "ax.ch":"Channel","ax.kev":"keV",
+  "confirm.del":"Удалить спектр #%1?",
+  "err.load":"Ошибка загрузки спектра #%1: %2",
+  "cal.set":"задана (%1 коэфф.)","cal.unset":"не задана",
+  "flash.fmt":"%1 / %2 КБ (%3%) · своб. %4 КБ",
+  "time.h":"ч","time.m":"м","time.s":"с"
+ },
+ en:{
+  "device":"Device",
+  "nav.spectrum":"Spectrum","nav.waterfall":"Waterfall","nav.monitorS":"Monit.","nav.savedS":"Saved","nav.system":"System","nav.service":"Service",
+  "mode.indoor":"Indoor","mode.outdoor":"Outdoor",
+  "mode.confirmOut":"Switch to field mode (Outdoor)? The board will reboot, bring up the AtomSpectra-Outdoor access point, and the current connection will drop.",
+  "mode.confirmIn":"Return to home mode (Indoor)? The board will reboot and connect to the home network.",
+  "view":"View","view.placeholder":"—",
+  "exp.xml":"Export XML","exp.csv":"Export CSV",
+  "btn.overlay":"&#10141; Overlay on Spectrum","btn.delete":"Delete",
+  "meta.counts":"Counts","meta.time":"Acq. time","meta.cps":"CPS (avg)",
+  "meta.saved":"Saved","meta.ch":"Channels","meta.cal":"Calibration",
+  "list.title":"List","list.loading":"Loading...",
+  "list.empty":"No saved spectra",
+  "list.err":"Error: ",
+  "cnt.saved":"Saved: %1",
+  "cnt.items":"%1 pcs",
+  "no_data":"No data",
+  "ax.ch":"Channel","ax.kev":"keV",
+  "confirm.del":"Delete spectrum #%1?",
+  "err.load":"Error loading spectrum #%1: %2",
+  "cal.set":"set (%1 coef.)","cal.unset":"not set",
+  "flash.fmt":"%1 / %2 KB (%3%) · free %4 KB",
+  "time.h":"h","time.m":"m","time.s":"s"
+ }
+};
+var LANG=(function(){try{return localStorage.getItem("aswf-lang")||"ru";}catch(e){return"ru";}})();
+function t(k){var d=DICT[LANG]||DICT.ru;return(d[k]!==undefined)?d[k]:(DICT.ru[k]||k);}
+function tfmt(k){var s=t(k);for(var i=1;i<arguments.length;i++)s=s.replace("%"+i,arguments[i]);return s;}
+function lcl(){return LANG==="ru"?"ru-RU":"en-US";}
+function applyI18n(){
+ document.querySelectorAll("[data-i18n]").forEach(function(el){
+  var k=el.getAttribute("data-i18n"); el.textContent=t(k);
+ });
+ document.querySelectorAll("[data-i18n-html]").forEach(function(el){
+  var k=el.getAttribute("data-i18n-html"); el.innerHTML=t(k);
+ });
+ document.documentElement.lang=LANG;
+ var b=document.getElementById("langBtn"); if(b)b.textContent=(LANG==="ru")?"EN":"RU";
+ document.title="AtomSpectra · "+t("nav.savedS");
+}
+function setLang(l){
+ if(l!=="ru"&&l!=="en")l="ru";
+ LANG=l; try{localStorage.setItem("aswf-lang",l);}catch(e){}
+ applyI18n();
+ try{loadFlashInfo();}catch(e){}
+ try{loadList();}catch(e){}
+ if(currentIdx>=0&&currentData)try{drawChart(currentData);refreshMeta();}catch(e){}
+}
+
+var csrfToken="", spectra=[], currentIdx=-1, currentData=null, calib=null, currentMeta=null;
+
+function fmtTime(s){var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;return(h>0?h+t("time.h")+" ":"")+(m>0?m+t("time.m")+" ":"")+x+t("time.s")}
+function fmtDate(ts){return ts>0?new Date(ts*1000).toLocaleString(lcl()):'—'}
+function fmtNum(n){return Math.round(n).toLocaleString(lcl())}
+function ch2kev(c){if(!calib)return c;var e=0;for(var i=0;i<calib.length;i++)e+=calib[i]*Math.pow(c,i);return e}
+async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||""}catch(e){}}
+function post(url,opts){opts=opts||{};opts.method="POST";opts.headers=Object.assign({},opts.headers||{},{"X-CSRF-Token":csrfToken});return fetch(url,opts)}
+
+async function loadFlashInfo(){
+ try{
+  var r=await(await fetch("/api/system")).json();
+  var total=r.flash_total||0,used=r.flash_used||0,free=total-used;
+  var pct=total>0?((used/total)*100).toFixed(1):0;
+  document.getElementById("flash-text").innerHTML=tfmt("flash.fmt",
+   (used/1024).toFixed(0),(total/1024).toFixed(0),pct,(free/1024).toFixed(0));
+  var fi=document.getElementById("flash-inner");
+  fi.style.width=pct+"%";
+  fi.style.background=pct>90?"#e8776b":pct>70?"#e8c766":"var(--accent)";
+  /* #FIELD-6: индикатор режима Indoor/Outdoor в шапке (клик = переключение) */
+  var nm=r.net_mode||"sta"; window._netMode=nm;
+  var mc=document.getElementById("mode-chip");
+  if(mc){
+   mc.style.display="";
+   mc.textContent="⇄ "+((nm==="field_ap")?t("mode.outdoor"):t("mode.indoor"));
+   mc.style.borderColor=(nm==="field_ap")?"#e8c766":"var(--accent)";
+   mc.style.color=(nm==="field_ap")?"#e8c766":"var(--accent)";
+  }
+ }catch(e){}
+}
+/* #FIELD-6: переключатель Indoor↔Outdoor из шапки. Пишет NVS ap_mode и ребутит. */
+async function toggleMode(){
+ var cur=window._netMode||"sta";
+ var toOutdoor=(cur!=="field_ap");
+ if(!confirm(t(toOutdoor?"mode.confirmOut":"mode.confirmIn")))return;
+ try{await post("/api/net-mode",{headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:toOutdoor?"outdoor":"indoor"})});}catch(e){}
+}
+
+async function loadCalib(){
+ try{var r=await(await fetch("/api/device")).json();
+ if(r.calibration&&r.calibration.length)calib=r.calibration;
+ if(r.serial)document.getElementById("device-chip").textContent=r.serial;}catch(e){}
+}
+
+async function loadList(){
+ try{
+  var r=await(await fetch("/api/list")).json();
+  spectra=r.spectra||[];
+  spectra.sort(function(a,b){return (b.saved_at||0)-(a.saved_at||0);});
+  document.getElementById("cnt-text").textContent=tfmt("cnt.saved",spectra.length);
+  document.getElementById("list-cnt").textContent=tfmt("cnt.items",spectra.length);
+  var el=document.getElementById("list");
+  if(spectra.length===0){el.innerHTML='<div class="empty">'+t("list.empty")+'</div>';return}
+  var html='';
+  for(var i=0;i<spectra.length;i++){
+   var s=spectra[i];
+   var on=s.index===currentIdx?' on':'';
+   html+='<div class="item'+on+'" data-idx="'+s.index+'" onclick="selectIdx('+s.index+')">'+
+    '<div class="hd"><b>#'+s.index+'</b><span class="lbl">'+fmtDate(s.saved_at)+'</span></div>'+
+    '<div class="sub"><span>'+fmtNum(s.counts)+' counts</span><span>'+fmtTime(s.time)+'</span></div>'+
+    '</div>';
+  }
+  el.innerHTML=html;
+ }catch(e){document.getElementById("list").innerHTML='<div class="empty">'+t("list.err")+e+'</div>'}
+}
+
+function refreshMeta(){
+ if(!currentMeta&&!currentData)return;
+ var meta=currentMeta, d=currentData;
+ var total=meta?meta.counts:0;
+ if(!total&&d&&d.bins){total=0;for(var k=0;k<d.bins.length;k++)total+=d.bins[k];}
+ var ti=meta?meta.time:(d&&d.time||0);
+ document.getElementById("m-counts").textContent=fmtNum(total);
+ document.getElementById("m-time").textContent=fmtTime(ti);
+ document.getElementById("m-cps").textContent=ti>0?(total/ti).toFixed(2):"—";
+ document.getElementById("m-saved").textContent=meta?fmtDate(meta.saved_at):"—";
+ document.getElementById("m-ch").textContent=d&&d.bins?d.bins.length:"—";
+ var cal=d&&d.calib&&d.calib.length?d.calib:calib;
+ document.getElementById("m-cal").textContent=cal?tfmt("cal.set",cal.length):t("cal.unset");
+ document.getElementById("dt-when").textContent=meta?fmtDate(meta.saved_at):"";
+}
+
+async function selectIdx(idx){
+ currentIdx=idx;
+ var items=document.querySelectorAll(".item");
+ for(var i=0;i<items.length;i++){items[i].classList.toggle("on",parseInt(items[i].dataset.idx)===idx);}
+ document.getElementById("dt-idx").textContent="#"+idx;
+ currentMeta=spectra.find(function(s){return s.index===idx;})||null;
+ try{
+  var d=await(await fetch("/api/saved/"+idx+"/spectrum.json")).json();
+  currentData=d;
+  var v=document.getElementById("viewer"); v.style.display="";
+  drawChart(d);
+  document.getElementById("lnk-xml").href="/api/saved/"+idx+"/export.xml";
+  document.getElementById("lnk-csv").href="/api/saved/"+idx+"/export.csv";
+  refreshMeta();
+  v.scrollIntoView({behavior:"smooth",block:"start"});
+ }catch(e){
+  alert(tfmt("err.load",idx,e));
+ }
+}
+
+function drawChart(d){
+ var C=document.getElementById("dchart");
+ var X=C.getContext("2d");
+ var W=900,H=380,PL=60,PT=12,PR=W-12,PB=H-36,PW=PR-PL,PH=PB-PT;
+ X.fillStyle="#0b1310";X.fillRect(0,0,W,H);
+ if(!d.bins||d.bins.length===0){
+  X.fillStyle="#5b655a";X.font="14px ui-monospace,monospace";X.textAlign="center";
+  X.fillText(t("no_data"),W/2,H/2);return;
+ }
+ var bins=d.bins,N=bins.length;
+ var mx=0; for(var i=0;i<N;i++)if(bins[i]>mx)mx=bins[i];
+ if(mx<=0)mx=1;
+ var cal=d.calib&&d.calib.length?d.calib:calib;
+ var hasKev=!!cal;
+ var maxExp=Math.ceil(Math.log10(mx));if(maxExp<1)maxExp=1;
+ var minExp=Math.max(maxExp-6,0);
+ function yMap(v){if(v<=0)return PB;var lv=Math.log10(v);if(lv<minExp)return PB;return PB-((lv-minExp)/(maxExp-minExp))*PH;}
+ X.strokeStyle="rgba(255,255,255,.05)";X.lineWidth=1;
+ X.fillStyle="#5a645a";X.font="10px ui-monospace,monospace";X.textAlign="right";
+ for(var p=minExp;p<=maxExp;p++){
+  var v=Math.pow(10,p),y=yMap(v);
+  X.beginPath();X.moveTo(PL,y);X.lineTo(PR,y);X.stroke();
+  var lbl=v>=1e6?(v/1e6).toFixed(0)+"M":v>=1e3?(v/1e3).toFixed(0)+"k":String(v);
+  X.fillText(lbl,PL-5,y+3);
+ }
+ var accent=getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#6fe0be';
+ X.save();X.beginPath();X.rect(PL,PT,PW,PH);X.clip();
+ var bw=PW/N;
+ X.fillStyle=accent+"22";
+ for(var i=0;i<N;i++){var y=yMap(bins[i]);if(PB-y>0.3)X.fillRect(PL+i*bw,y,Math.max(bw-.3,.3),PB-y);}
+ X.strokeStyle=accent;X.lineWidth=1.2;X.beginPath();
+ for(var i=0;i<N;i++){var px=PL+i*bw+bw/2,py=yMap(bins[i]);i===0?X.moveTo(px,py):X.lineTo(px,py);}
+ X.stroke();
+ X.restore();
+ X.strokeStyle="#283024";X.lineWidth=1;X.strokeRect(PL+.5,PT+.5,PW,PH);
+ var nTicks=8;
+ X.fillStyle="#6b756a";X.font="10px ui-monospace,monospace";X.textAlign="center";
+ for(var i=0;i<=nTicks;i++){
+  var px=PL+i/nTicks*PW;
+  var ch=Math.round(i/nTicks*N);
+  var lbl=hasKev?(function(){var e=0;for(var j=0;j<cal.length;j++)e+=cal[j]*Math.pow(ch,j);return e.toFixed(0);})():String(ch);
+  X.strokeStyle="#283024";X.beginPath();X.moveTo(px,PB);X.lineTo(px,PB+4);X.stroke();
+  X.fillText(lbl,px,PB+15);
+ }
+ X.fillStyle="#5a645a";X.fillText(hasKev?t("ax.kev"):t("ax.ch"),PL+PW/2,PB+30);
+}
+
+async function deleteCurrent(){
+ if(currentIdx<0)return;
+ if(!confirm(tfmt("confirm.del",currentIdx)))return;
+ await post("/api/saved/"+currentIdx+"/delete");
+ currentIdx=-1; currentData=null; currentMeta=null;
+ document.getElementById("viewer").style.display="none";
+ ["m-counts","m-time","m-cps","m-saved","m-ch","m-cal"].forEach(function(id){document.getElementById(id).textContent="—";});
+ await loadList();
+ await loadFlashInfo();
+}
+
+function overlayOnMain(){
+ if(currentIdx<0)return;
+ try{localStorage.setItem("aswf-overlay",String(currentIdx));}catch(e){}
+ location.href="/m?overlay="+currentIdx;   /* #UI-33: overlay ведёт на мобильный Спектр /m */
+}
+
+(async function(){
+ applyI18n();
+ document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
+ document.getElementById("ip-chip").textContent=location.hostname;
+ await loadCsrf();
+ await loadCalib();
+ await loadFlashInfo();
+ await loadList();
+ setInterval(loadFlashInfo,10000);
+})();
+</script>
+<nav class="tabbar">
+<a href="/m"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="2" height="6" rx="1"/><rect x="5" y="4" width="2" height="11" rx="1"/><rect x="9" y="6" width="2" height="9" rx="1"/><rect x="13" y="2" width="2" height="13" rx="1"/></svg><span data-i18n="nav.spectrum">Спектр</span></a>
+<a href="/waterfall"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1" opacity=".55"/><rect x="1" y="9" width="6" height="6" rx="1" opacity=".55"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg><span data-i18n="nav.waterfall">Водопад</span></a>
+<a href="/m-monitor"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="10" r="2"/><circle cx="8" cy="6" r="2"/><circle cx="13" cy="9" r="2"/></svg><span data-i18n="nav.monitorS">Монит.</span></a>
+<a class="on" href="/m-saved"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="12" height="12" rx="3"/></svg><span data-i18n="nav.savedS">Спектры</span></a>
+<a href="/m-system"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.7" fill="currentColor" stroke="none"/></svg><span data-i18n="nav.system">Система</span></a>
+<a href="/m-service"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1 L15 8 L8 15 L1 8 Z"/></svg><span data-i18n="nav.service">Сервис</span></a>
+</nav>
+</body>
+</html>
