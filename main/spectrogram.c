@@ -74,6 +74,17 @@ static uint32_t  s_seg_cur = 0xFFFFFFFFu;  // индекс открытого с
 static uint32_t  s_seg_next;               // следующий индекс для нового сегмента
 static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
 static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
+// #FW-8-FIX (2026-08-15): защёлка «make_room для текущего сегмента уже вызван».
+// Раньше триггер жил только в строковом пути и стрелял по строгому s_seg_rows==PREP_ROW —
+// при большом interval_sec сегмент закрывался по возрасту (WF_SEG_MAX_AGE_SEC) ЗАДОЛГО до
+// 32-й строки, триггер не срабатывал никогда (см. P-006). Защёлка ОБЩАЯ для двух триггеров
+// (строкового и добавленного ниже симметричного по времени в wf_fs_task): гарантия —
+// make_room вызывается РОВНО ОДИН РАЗ за сегмент, каким бы из двух путей это ни случилось
+// первым (взаимоисключающее ИЛИ). Сработавший первым путь исключает второй для ЭТОГО
+// сегмента полностью — это не «у каждого пути своё exactly-once», а exactly-once на их
+// объединении. Оба пути читают/пишут защёлку под одним и тем же FSLOCK (см. `seg_write_row`
+// и `wf_fs_task`) — гонки между ними нет.
+static bool      s_seg_prep_done;          // сброшена = ещё не вызывался make_room для этого сегмента
 static uint32_t  s_seg_pinned = 0xFFFFFFFFu; // #REC-11-A2: сегмент в процессе выгрузки (claim) — кольцо его не трогает
 static uint32_t  s_seg_zombie = 0xFFFFFFFFu; // AUD-ASW126 #2: delivered, unlink deferred
 static uint32_t  s_wf_epoch;                 // AUD-ASW126 #3: start/clear vs make_room window
@@ -464,6 +475,7 @@ static void seg_finalize(void)
     }
     s_seg_cur  = 0xFFFFFFFFu;
     s_seg_rows = 0;
+    s_seg_prep_done = false;
     hist_drop_diag_wf_flash_end();
 }
 
@@ -566,6 +578,7 @@ static bool seg_open_new(void)
     s_seg_cur       = s_seg_next;
     s_seg_rows      = 0;
     s_seg_opened_at = now;
+    s_seg_prep_done = false;
     s_seg_next++;
     ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf opened in %lld us", s_seg_cur,
              (long long)(esp_timer_get_time() - t0));
@@ -727,6 +740,7 @@ static void seg_reconcile(void)
     s_seg_cur  = 0xFFFFFFFFu;
     s_seg_fp   = NULL;
     s_seg_rows = 0;
+    s_seg_prep_done = false;
     LOCK(); s_status.seg_count = completed; s_status.seg_dropped = 0; UNLOCK();
     ESP_LOGI(TAG, "seg reconcile: %" PRIu32 " segments, next=%" PRIu32, completed, s_seg_next);
 }
@@ -875,6 +889,7 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         if (!ok) {
             ESP_LOGE(TAG, "seg row write failed — drop segment");
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
+            s_seg_prep_done = false;
             FSUNLOCK();
             return;
         }
@@ -895,6 +910,7 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         if (fflush(s_seg_fp) != 0) {
             ESP_LOGE(TAG, "seg row fflush failed — drop segment");
             fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
+            s_seg_prep_done = false;
             flash_quiet_writer_unlock();
             FSUNLOCK();
             return;
@@ -914,9 +930,17 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         // границы сегмента получали dur 4/6 вместо 5 (тёмные полосы каждые
         // 64 строки, #VIEW-9). Разнос по фазе дробит burst; недобор среза в
         // середине, если и случится, честно ложится в поле dur (v2).
-        if (s_seg_rows == WF_SEG_PREP_ROW) {
+        // #FW-8-FIX (2026-08-15, P-006): было строгое `== WF_SEG_PREP_ROW` — путь
+        // отложенного fflush (см. выше, `s_seg_rows++` без прохода сюда) мог перескочить
+        // ровно эту строку, и триггер для сегмента не срабатывал вовсе. `>=` + защёлка
+        // `s_seg_prep_done` восстанавливает exactly-once без чувствительности к пропуску
+        // одной итерации. Второй, независимый путь недостижимости (interval_sec настолько
+        // большой, что сегмент закрывается по возрасту раньше 32-й строки) закрыт отдельным
+        // симметричным триггером ПО ВРЕМЕНИ в wf_fs_task (см. ниже).
+        if (!s_seg_prep_done && s_seg_rows >= WF_SEG_PREP_ROW) {
             uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
             make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
+            s_seg_prep_done = true;
             (void)s_wf_epoch; /* epoch change here is fine: row already consumed */
         }
     }
@@ -1027,6 +1051,20 @@ static void wf_fs_task(void *arg)
         // чтобы при больших интервалах файл не висел открытым часами и приёмник
         // мог его забрать. Без патча шапки это только fsync+fclose (дёшево).
         FSLOCK();
+        // #FW-8-FIX (2026-08-15, P-006): симметричный триггер make_room ПО ВРЕМЕНИ —
+        // половина возраста сегмента, а не только половина строк. Строковый триггер
+        // в seg_write_row (s_seg_rows >= WF_SEG_PREP_ROW) недостижим, когда interval_sec
+        // настолько велик, что возрастная финализация ниже срабатывает раньше 32-й
+        // строки (interval_sec > WF_SEG_MAX_AGE_SEC/(WF_SEG_PREP_ROW-1) ≈ 19 c) — тогда
+        // освобождение места откладывалось на «страховку» в самом write-пути и совпадало
+        // по фазе с HTTP (issue wf-recorder#1, серии 503). Этот путь не зависит от числа
+        // строк вовсе — считает только время, поэтому закрывает случай целиком.
+        if (s_seg_fp && !s_seg_prep_done &&
+            (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC / 2) {
+            uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
+            make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
+            s_seg_prep_done = true;
+        }
         if (s_seg_fp && (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC) {
             seg_finalize();
             wait_after_seg_close();
@@ -1222,6 +1260,7 @@ int spectrogram_clear(void)
     s_seg_pinned = 0xFFFFFFFFu;   // #REC-11-A2: индексы сбрасываются (next=0) — снять устаревший пин
     s_seg_zombie = 0xFFFFFFFFu;
     s_seg_rows = 0;
+    s_seg_prep_done = false;
     seg_delete_all();
     s_seg_next = 0;
     unlink(WF_DATA);     // legacy (#REC-6)
