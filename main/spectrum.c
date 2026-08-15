@@ -1,6 +1,8 @@
 ﻿#include "atomspectra.h"
 #include "hist_drop_diag.h"
 #include "flash_quiet.h"
+#include "spectrum_hist_stage.h"
+#include "http_io_gate.h"
 #include "esp_log.h"
 #include <inttypes.h>
 #include "esp_littlefs.h"
@@ -70,8 +72,9 @@ static volatile bool s_calib_dirty;
 // Staging трогает ТОЛЬКО CDC-таск (histogram и STAT приходят из одного feed_shproto)
 // — лок на staging не нужен, SPEC_LOCK берётся только на публикацию.
 static uint32_t *s_hist_staging;                  // [SPECTRUM_CHANNELS], PSRAM
-static uint32_t  s_stage_next = UINT32_MAX;       // след. ожидаемый канал; UINT32_MAX = свип не активен
-static bool      s_stage_ok = false;              // непрерывность с offset==0 не нарушена
+static spectrum_hist_stage_t s_hist_stage;        // непрерывность свипа (idle = UINT32_MAX)
+static uint32_t  s_reset_gen;                     // AUD-ASW126 #1/#12: httpd Reset
+static uint32_t  s_stage_reset_gen;               // снимок gen на offset==0 (CDC)
 static uint32_t  s_hist_commits = 0;              // опубликованных полных свипов
 static uint32_t  s_hist_drops = 0;                // отброшенных рваных свипов
 typedef struct {
@@ -89,9 +92,9 @@ static stat_stage_t s_stat_stage;
 // (freeze кэша обоих ядер) не рвёт приём FTDI (FIFO 256 Б = 4.3 мс @600000 бод).
 // Потребители (wf_task — строка водопада, main loop — autosave, monitor_task —
 // серия CPS #MON-1) привязывают свои записи к этому окну через binary-семафоры.
-// #MON-1: было 2 (wf_task + autosave, оба слота заняты) — монитору нужен третий;
-// 4 = +1 запас (переполнение тихое: LOGW и потребитель живёт на fallback-тике).
-#define COMMIT_LISTENERS_MAX 4
+// Occupied: main autosave, monitor, wf s_commit_sig, wf s_fs_quiet_sig.
+// 6 = 4 used + 2 spare (overflow is silent LOGW; consumer falls back to tick).
+#define COMMIT_LISTENERS_MAX 6
 static SemaphoreHandle_t s_commit_listeners[COMMIT_LISTENERS_MAX];
 
 void spectrum_add_commit_listener(void *sem)
@@ -114,6 +117,7 @@ void spectrum_init(void)
         s_hist_staging = malloc(SPECTRUM_CHANNELS * sizeof(uint32_t));
     if (!s_hist_staging)
         ESP_LOGE(TAG, "hist staging alloc failed — fallback to direct bin writes");
+    spectrum_hist_stage_reset(&s_hist_stage);
     esp_vfs_littlefs_conf_t conf = {
         .base_path = STORAGE_PATH,
         .partition_label = "storage",
@@ -154,39 +158,50 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
 
     // #FW-8: сборка свипа в staging. offset==0 — старт нового свипа (официальная
     // спека); разрыв непрерывности = потерянный chunk (flash-freeze) → свип битый.
+    // Непрерывность — spectrum_hist_stage_* (тот же код, что host-тест).
     if (offset == 0) {
         hist_drop_diag_note_burst_start();
-        s_stage_next = 0;
-        s_stage_ok = true;
-    } else if ((uint32_t)offset != s_stage_next) {
-#if HIST_DROP_DIAG
-        if (s_stage_ok) {
-            // First gap in this sweep — once per broken sweep.
-            ESP_LOGW(TAG,
-                     "histogram gap exp=%" PRIu32 " got=%u filled=%" PRIu32
-                     " as=%d wf=%d/%s",
-                     s_stage_next, (unsigned)offset, s_stage_next,
-                     hist_drop_diag_autosave_active() ? 1 : 0,
-                     hist_drop_diag_wf_active() ? 1 : 0,
-                     hist_drop_diag_wf_tag());
-        }
-#endif
-        s_stage_ok = false;
+        SPEC_LOCK();
+        s_stage_reset_gen = s_reset_gen;
+        SPEC_UNLOCK();
     }
+    bool was_ok = s_hist_stage.ok;
+    uint32_t exp_before = s_hist_stage.next_offset;
+    spectrum_hist_stage_note_chunk(&s_hist_stage, offset, (uint32_t)bin_count);
+#if HIST_DROP_DIAG
+    if (was_ok && !s_hist_stage.ok) {
+        ESP_LOGW(TAG,
+                 "histogram gap exp=%" PRIu32 " got=%u filled=%" PRIu32
+                 " as=%d wf=%d/%s",
+                 exp_before, (unsigned)offset, exp_before,
+                 hist_drop_diag_autosave_active() ? 1 : 0,
+                 hist_drop_diag_wf_active() ? 1 : 0,
+                 hist_drop_diag_wf_tag());
+    }
+#else
+    (void)was_ok;
+    (void)exp_before;
+#endif
     for (size_t i = 0; i < bin_count && (offset + i) < SPECTRUM_CHANNELS; i++) {
         size_t idx = 2 + i * 4;
         s_hist_staging[offset + i] =
             data[idx] | (data[idx+1] << 8) | (data[idx+2] << 16) | (data[idx+3] << 24);
     }
-    s_stage_next = (uint32_t)offset + (uint32_t)bin_count;
 
-    if (s_stage_next >= SPECTRUM_CHANNELS) {
-        if (s_stage_ok) {
+    if (spectrum_hist_stage_complete(&s_hist_stage, SPECTRUM_CHANNELS)) {
+        if (s_hist_stage.ok) {
             // Полный свип: сумма вне лока (staging приватен CDC-таску), публикация
             // атомарно — bins + STAT одним куском, время когерентно counts.
             uint64_t total = 0;
             for (size_t i = 0; i < SPECTRUM_CHANNELS; i++) total += s_hist_staging[i];
             SPEC_LOCK();
+            if (s_reset_gen != s_stage_reset_gen) {
+                SPEC_UNLOCK();
+                s_hist_drops++;
+                ESP_LOGW(TAG, "histogram sweep dropped (reset during sweep)");
+                spectrum_hist_stage_reset(&s_hist_stage);
+                return;
+            }
             memcpy(s_spectrum.bins, s_hist_staging, SPECTRUM_CHANNELS * sizeof(uint32_t));
             s_spectrum.total_counts = (uint32_t)total;
             // #FW-12: время коммита не может опираться только на STAT — на
@@ -248,8 +263,7 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
             ESP_LOGW(TAG, "histogram sweep dropped (gap in chunks), drops=%" PRIu32, s_hist_drops);
 #endif
         }
-        s_stage_next = UINT32_MAX;
-        s_stage_ok = false;
+        spectrum_hist_stage_reset(&s_hist_stage);
     }
 }
 
@@ -475,14 +489,11 @@ int spectrum_get_tcpot_raw(char *out, size_t outsz, uint32_t *out_seq)
 
 void spectrum_reset(void)
 {
-    // #FW-8: свип, начатый до reset, не должен закоммитить дорезетные данные.
-    // Вызов идёт из httpd-таска — гонка с CDC на s_stage_* worst-case даёт один
-    // лишний commit старого свипа, который следующий свип перепишет; не критично.
-    s_stage_next = UINT32_MAX;
-    s_stage_ok = false;
-    s_stat_stage.fresh = false;
+    // AUD-ASW126 #1/#12: httpd must not fclose autosave FILE* or write s_stage_*.
+    // CDC drops an in-flight sweep via s_reset_gen; main consumes abort.
     spectrum_autosave_abort();
     SPEC_LOCK();
+    s_reset_gen++;
     memset(s_spectrum.bins, 0, sizeof(s_spectrum.bins));
     s_spectrum.total_counts = 0;
     s_spectrum.total_time_sec = 0;
@@ -659,6 +670,7 @@ static int s_as_slices;
 static int64_t s_as_t0;
 static int s_as_fail_streak;
 static int64_t s_as_last_ok_us;
+static volatile bool s_as_abort;
 
 static void autosave_cleanup_failed(void)
 {
@@ -696,14 +708,25 @@ int spectrum_autosave_age_sec(void)
 
 bool spectrum_autosave_in_progress(void)
 {
-    return s_as_snap != NULL || s_as_fp != NULL;
+    return s_as_abort || s_as_snap != NULL || s_as_fp != NULL;
 }
 
 void spectrum_autosave_abort(void)
 {
-    if (!spectrum_autosave_in_progress()) return;
-    ESP_LOGW(TAG, "autosave aborted mid-write (tmp discarded)");
+    s_as_abort = true;
+    if (s_as_snap || s_as_fp)
+        ESP_LOGW(TAG, "autosave abort requested (consume on main)");
+}
+
+void spectrum_autosave_consume_abort(void)
+{
+    if (!s_as_abort) return;
+    s_as_abort = false;
+    if (s_as_snap || s_as_fp)
+        ESP_LOGW(TAG, "autosave aborted mid-write (tmp discarded)");
     autosave_cleanup_failed();
+    unlink(AUTOSAVE_FILE);
+    ESP_LOGI(TAG, "autosave consume: current.bin unlinked");
 }
 
 void spectrum_autosave_yield(void)
@@ -723,20 +746,30 @@ bool spectrum_autosave_begin(void)
     ESP_LOGI(TAG, "autosave skipped (HIST_DROP_E1_NO_AUTOSAVE)");
     return false;
 #endif
+    if (s_as_abort) {
+        spectrum_autosave_consume_abort();
+        return false;
+    }
     /* Resume after yield: reopen tmp for append, keep snap/offset. */
     if (s_as_snap && s_as_fp) return true;
     if (s_as_snap && !s_as_fp) {
         if (usb_host_cdc_is_connected() && !flash_quiet_can_start_slice())
             return false;
-        if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks()))
+        if (!http_io_gate_try_enter())
             return false;
+        if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks())) {
+            http_io_gate_leave();
+            return false;
+        }
         FILE *f = fopen(AUTOSAVE_TMP_FILE, "ab");
         if (!f) {
             flash_quiet_writer_unlock();
+            http_io_gate_leave();
             ESP_LOGE(TAG, "Autosave tmp reopen failed");
             return false;
         }
         flash_quiet_writer_unlock();
+        http_io_gate_leave();
         s_as_fp = f;
         return true;
     }
@@ -750,7 +783,12 @@ bool spectrum_autosave_begin(void)
     memcpy(snap, &s_spectrum, sizeof(*snap));
     SPEC_UNLOCK();
 
+    if (!http_io_gate_try_enter()) {
+        free(snap);
+        return false;
+    }
     if (!flash_quiet_writer_lock(flash_quiet_writer_lock_ticks())) {
+        http_io_gate_leave();
         free(snap);
         return false;
     }
@@ -758,13 +796,13 @@ bool spectrum_autosave_begin(void)
     int64_t t_open0 = esp_timer_get_time();
     FILE *f = fopen(AUTOSAVE_TMP_FILE, "wb");
     int64_t open_us = esp_timer_get_time() - t_open0;
+    flash_quiet_writer_unlock();
+    http_io_gate_leave();
     if (!f) {
-        flash_quiet_writer_unlock();
         ESP_LOGE(TAG, "Autosave tmp open failed");
         free(snap);
         return false;
     }
-    flash_quiet_writer_unlock();
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     ESP_LOGI(TAG, "autosave begin open_us=%lld bytes=%zu",
              (long long)open_us, sizeof(*snap));
@@ -782,16 +820,25 @@ bool spectrum_autosave_begin(void)
 
 void spectrum_autosave_pump(void)
 {
+    if (s_as_abort) {
+        spectrum_autosave_consume_abort();
+        return;
+    }
     if (!s_as_fp || !s_as_snap) return;
 
     /* Dedicated quiet window for close/rename once payload is fully written. */
     if (s_as_off >= s_as_total) {
         if (!flash_quiet_can_start_slice()) return;
-        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(50))) return;
+        if (!http_io_gate_try_enter()) return;
+        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(50))) {
+            http_io_gate_leave();
+            return;
+        }
         fflush(s_as_fp);
         if (fclose(s_as_fp) != 0) {
             s_as_fp = NULL;
             flash_quiet_writer_unlock();
+            http_io_gate_leave();
             ESP_LOGE(TAG, "autosave fclose failed");
             autosave_cleanup_failed();
             return;
@@ -799,11 +846,13 @@ void spectrum_autosave_pump(void)
         s_as_fp = NULL;
         if (rename(AUTOSAVE_TMP_FILE, AUTOSAVE_FILE) != 0) {
             flash_quiet_writer_unlock();
+            http_io_gate_leave();
             ESP_LOGE(TAG, "autosave rename failed");
             autosave_cleanup_failed();
             return;
         }
         flash_quiet_writer_unlock();
+        http_io_gate_leave();
         int64_t total_us = esp_timer_get_time() - s_as_t0;
         ESP_LOGI(TAG, "autosave complete slices=%d total_us=%lld",
                  s_as_slices, (long long)total_us);
@@ -817,8 +866,16 @@ void spectrum_autosave_pump(void)
 
     /* At most a few slices per quiet window; require erase-cliff headroom. */
     while (s_as_off < s_as_total) {
+        if (s_as_abort) {
+            spectrum_autosave_consume_abort();
+            return;
+        }
         if (!flash_quiet_can_start_slice()) break;
-        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(50))) break;
+        if (!http_io_gate_try_enter()) break;
+        if (!flash_quiet_writer_lock(pdMS_TO_TICKS(50))) {
+            http_io_gate_leave();
+            break;
+        }
 
         size_t chunk = FLASH_QUIET_SLICE_BYTES;
         if (chunk > s_as_total - s_as_off) chunk = s_as_total - s_as_off;
@@ -827,6 +884,7 @@ void spectrum_autosave_pump(void)
         size_t n = fwrite((const uint8_t *)s_as_snap + s_as_off, 1, chunk, s_as_fp);
         int64_t dt = esp_timer_get_time() - t0;
         flash_quiet_writer_unlock();
+        http_io_gate_leave();
         if (n != chunk) {
             ESP_LOGE(TAG, "autosave slice fwrite failed off=%zu n=%zu", s_as_off, n);
             autosave_cleanup_failed();
@@ -852,6 +910,8 @@ void spectrum_autosave(void)
     ESP_LOGI(TAG, "autosave skipped (HIST_DROP_E1_NO_AUTOSAVE)");
     return;
 #endif
+    if (s_as_abort)
+        spectrum_autosave_consume_abort();
     /* One-shot full write — safe when USB analyzer is silent/disconnected
      * (no 1 Hz burst). Used by offline path and as I2 timing baseline. */
     spectrum_data_t *snap = malloc(sizeof(*snap));
@@ -861,6 +921,11 @@ void spectrum_autosave(void)
     memcpy(snap, &s_spectrum, sizeof(*snap));
     SPEC_UNLOCK();
 
+    if (!http_io_gate_try_enter()) {
+        free(snap);
+        spectrum_autosave_note_fail();
+        return;
+    }
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t t_open0 = esp_timer_get_time();
 #endif
@@ -868,7 +933,12 @@ void spectrum_autosave(void)
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t open_us = esp_timer_get_time() - t_open0;
 #endif
-    if (!f) { ESP_LOGE(TAG, "Autosave open failed"); free(snap); return; }
+    if (!f) {
+        http_io_gate_leave();
+        ESP_LOGE(TAG, "Autosave open failed");
+        free(snap);
+        return;
+    }
 
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t t_wr0 = esp_timer_get_time();
@@ -879,6 +949,7 @@ void spectrum_autosave(void)
     int64_t t_cl0 = esp_timer_get_time();
 #endif
     int cl = fclose(f);
+    http_io_gate_leave();
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t close_us = esp_timer_get_time() - t_cl0;
     ESP_LOGI(TAG, "autosave split open_us=%lld write_us=%lld close_us=%lld wr=%zu",

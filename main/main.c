@@ -4,7 +4,6 @@
 #include "wf_offload.h"   // #REC-11-A2: автономная выгрузка сегментов водопада
 #include "monitor.h"      // #MON-1: серия CPS-мониторинга на плате
 #include "net_time.h"     // #FIELD-5: источник времени (SNTP/браузер/ручной)
-#include "http_io_gate.h" // #PERF-2: skip autosave while HEAVY I/O busy
 #include "debug_log_ring.h"
 #include "hist_drop_diag.h"
 #include "flash_quiet.h"
@@ -61,6 +60,7 @@ void app_main(void)
     // спектрограмма снимет baseline. -rst прибору пошлётся на первом USB-коннекте.
     if (bc.clear_spectrum) {
         spectrum_reset();
+        spectrum_autosave_consume_abort();
         ESP_LOGW(TAG, "FW-3: accumulated spectrum cleared on boot");
     }
     // #FW-50: PSRAM log ring — after spectrum_init, before spectrogram (reserve before WF).
@@ -136,16 +136,18 @@ void app_main(void)
         }
         if (++autosave_tick >= HIST_DROP_E3_AUTOSAVE_TICKS) {
             autosave_tick = 0;
-            // #PERF-2: не писать LittleFS, пока HEAVY download/export держит слот
-            if (!http_io_gate_busy() && http_io_gate_try_enter()) {
+            spectrum_autosave_consume_abort();
 #if HIST_DROP_I3_SLICED
                 /* #FW-8 F1a: sliced write in post-commit quiet windows.
                  * Offline / silent USB → one-shot full write (no 1 Hz burst).
                  * After fail_streak≥5 → force one-shot (one hist-drop) instead of
-                 * unbounded deferral. */
+                 * unbounded deferral.
+                 * http_io_gate is taken only around fopen/fwrite/rename inside
+                 * begin/pump/one-shot — not across commit waits (AUD-ASW126 #6). */
                 if (!usb_host_cdc_is_connected() || spectrum_autosave_fail_streak() >= 5) {
                     if (spectrum_autosave_in_progress())
                         spectrum_autosave_abort();
+                    spectrum_autosave_consume_abort();
                     hist_drop_diag_autosave_begin(true);
                     int64_t t0 = esp_timer_get_time();
                     spectrum_autosave();
@@ -240,8 +242,6 @@ void app_main(void)
                              wait_timed_out ? " (wait_timeout)" : "");
                 }
 #endif
-                http_io_gate_leave();
-            }
         }
         // #WF-1: отложенная запись калибровки (s_calib_dirty). Внутри сама берёт
         // SPEC_LOCK только на снапшот; flash-запись — вне лока и вне CDC/httpd.

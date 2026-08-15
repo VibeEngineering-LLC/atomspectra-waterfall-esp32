@@ -54,6 +54,19 @@ static void test_offset0_resets(void)
     CHECK(st.next_offset == BINS);
 }
 
+static void test_idle_gap_without_offset0(void)
+{
+    spectrum_hist_stage_t st;
+    spectrum_hist_stage_reset(&st);
+    CHECK(st.next_offset == 0xFFFFFFFFu);
+    CHECK(st.ok == false);
+    CHECK(spectrum_hist_stage_complete(&st, CH) == false);
+    /* Stray mid-sweep chunk while idle → gap (firmware UINT32_MAX idle). */
+    spectrum_hist_stage_note_chunk(&st, 128, BINS);
+    CHECK(st.ok == false);
+    CHECK(st.next_offset == 128 + BINS);
+}
+
 void hist_stage_suite(void)
 {
     printf("hist_stage: full sweep\n");
@@ -62,4 +75,6 @@ void hist_stage_suite(void)
     test_gap_exp256_got448();
     printf("hist_stage: offset0 reset\n");
     test_offset0_resets();
+    printf("hist_stage: idle gap without offset0\n");
+    test_idle_gap_without_offset0();
 }

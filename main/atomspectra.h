@@ -224,8 +224,10 @@ bool spectrum_autosave_begin(void);
 bool spectrum_autosave_in_progress(void);
 /** Write slices until quiet budget exhausted or file complete (rename to current.bin). */
 void spectrum_autosave_pump(void);
-/** Hard cancel: discard tmp + snap (spectrum_reset / force one-shot). */
+/** Request hard cancel from any task (flag only — does not fclose/free). */
 void spectrum_autosave_abort(void);
+/** Main-task only: fclose/free/unlink tmp + current.bin after abort(). */
+void spectrum_autosave_consume_abort(void);
 /** Soft yield: close FP, keep tmp+offset for resume (commit-wait timeout). */
 void spectrum_autosave_yield(void);
 void spectrum_autosave_note_fail(void);
