@@ -1061,8 +1061,17 @@ static void wf_fs_task(void *arg)
         // строк вовсе — считает только время, поэтому закрывает случай целиком.
         if (s_seg_fp && !s_seg_prep_done &&
             (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC / 2) {
-            uint32_t rows_ahead = (WF_SEG_MAX_ROWS - s_seg_rows) + WF_SEG_MAX_ROWS;
-            make_room(rows_ahead * (uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
+            /* Запрашиваем РОВНО столько же, сколько запросила бы синхронная
+             * «страховка» в пути записи строки (см. выше, тот же
+             * WF_ROW_STRIDE + WF_FLASH_RESERVE). Смысл #FW-8 — сдвинуть стирание
+             * по ФАЗЕ прочь от записи строки и обслуживания HTTP, а НЕ освободить
+             * больше места: любой лишний резерв превращается в снос ещё не
+             * выгруженных сегментов, то есть в потерю данных потребителя
+             * (wf-recorder#1). Поэтому объём вытеснения остаётся ровно таким же,
+             * каким был бы без этого триггера, — меняется только момент.
+             * Резервировать «на весь следующий сегмент» здесь нельзя: следующий
+             * сегмент получит собственный вызов по своему таймеру. */
+            make_room((uint32_t)WF_ROW_STRIDE + WF_FLASH_RESERVE);
             s_seg_prep_done = true;
         }
         if (s_seg_fp && (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC) {
