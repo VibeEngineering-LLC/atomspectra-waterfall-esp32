@@ -1555,7 +1555,7 @@ static esp_err_t handle_settings_restore(httpd_req_t *req)
     if (kv_get_int(body, "Sfall", &v)) { snprintf(cmd, sizeof(cmd), "-sfall %ld", v); send_cmd_delayed(cmd); }
 
     if (kv_get_int(body, "PileUpThr", &v)) { snprintf(cmd, sizeof(cmd), "-pthr %ld", v); send_cmd_delayed(cmd); }
-    n = kv_get_array(body, "PileUp", arr, 100);
+    n = kv_get_array(body, "PileUp", arr, (int)(sizeof(arr) / sizeof(arr[0])));
     if (n > 0) {
         int off = snprintf(cmd, sizeof(cmd), "-pileup");
         for (int i = 0; i < n && off < (int)sizeof(cmd) - 8; i++)
@@ -1564,7 +1564,7 @@ static esp_err_t handle_settings_restore(httpd_req_t *req)
     }
 
     // Tco[] — до 20 точек (temp, max_integral) термокомпенсации макс. интеграла.
-    n = kv_get_array(body, "Tco", arr, 40);
+    n = kv_get_array(body, "Tco", arr, (int)(sizeof(arr) / sizeof(arr[0])));
     if (n >= 2) {
         send_cmd_delayed("-tclear");
         int npoints = n / 2;
@@ -1583,7 +1583,7 @@ static esp_err_t handle_settings_restore(httpd_req_t *req)
     // Вторая строка бэкапа: "Tcpot [...]" (регистр отличается от "TCpot" выше,
     // strstr — регистрозависим, поэтому find_kv не путает две строки) —
     // до 20 точек компенсации baseline (#DOC-3/BUG-AS-08).
-    n = kv_get_array(body, "Tcpot", arr, 40);
+    n = kv_get_array(body, "Tcpot", arr, (int)(sizeof(arr) / sizeof(arr[0])));
     if (n >= 2) {
         int npoints = n / 2;
         if (npoints > 20) npoints = 20;
