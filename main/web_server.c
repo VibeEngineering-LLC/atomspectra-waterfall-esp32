@@ -298,10 +298,18 @@ static esp_err_t handle_debug_log_flush(httpd_req_t *req)
     if (!csrf_check(req)) return ESP_FAIL;
     uint32_t upto = 0, gen = 0;
     int total = req->content_len;
-    if (total > 0 && total < 256) {
+    bool parse_failed = false;
+
+    // Если тело запроса больше 255 байт — не читаем, это ошибка.
+    // Если тело отсутствует (total <= 0) — это допустимо, сбрасываем всё.
+    if (total >= 256) {
+        parse_failed = true;
+    } else if (total > 0 && total < 256) {
         char body[256];
         int r = httpd_req_recv(req, body, total);
-        if (r > 0) {
+        if (r <= 0) {
+            parse_failed = true;
+        } else {
             body[r < 255 ? r : 255] = '\0';
             cJSON *root = cJSON_Parse(body);
             if (root) {
@@ -310,9 +318,18 @@ static esp_err_t handle_debug_log_flush(httpd_req_t *req)
                 if (cJSON_IsNumber(u)) upto = (uint32_t)u->valuedouble;
                 if (cJSON_IsNumber(g)) gen = (uint32_t)g->valuedouble;
                 cJSON_Delete(root);
+            } else {
+                parse_failed = true;
             }
         }
     }
+    // total <= 0 — тело отсутствует, это нормально, сбрасываем всё
+
+    if (parse_failed) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad flush body");
+        return ESP_FAIL;
+    }
+
     esp_err_t e = debug_log_ring_flush(upto, gen);
     if (e == ESP_ERR_INVALID_STATE) {
         httpd_resp_set_status(req, "409 Conflict");
