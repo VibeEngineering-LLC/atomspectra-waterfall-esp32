@@ -634,47 +634,134 @@ static bool wf_seg_name_ok(const char *name)
     return true;
 }
 
-/* GET /api/waterfall/segments -> JSON-массив завершённых/открытых сегментов:
-   [{"name","idx","bytes","rows","finalized"}]. rows вычисляется из размера
-   файла (payload / WF_ROW_BYTES) — шапки несут saved_rows=0 (#FW-14,
-   derive-from-size). finalized=false у СЕЙЧАС открытого сегмента (по индексу,
-   не по шапке) — браузеру забирать его не нужно. */
+/**
+ * Прочитать seg_seq и started_at из шапки файла сегмента.
+ * Буфер передаётся снаружи, функция не выделяет и не освобождает память.
+ * Нуль-терминатор ставится строго по фактически прочитанному объёму (buf[n] = '\0'),
+ * чтобы избежать мусора от предыдущих чтений в цикле.
+ * Возвращает true только если оба поля найдены.
+ */
+static bool wf_seg_read_ids(const char *path, char *buf, size_t bufcap,
+                            uint32_t *seg_seq, long *started_at)
+{
+    *seg_seq = 0;
+    *started_at = 0;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    size_t n = fread(buf, 1, bufcap - 1, f);
+    fclose(f);
+
+    if (n < 64) return false;
+
+    buf[n] = '\0';
+
+    if (memcmp(buf, "ASWF", 4) != 0) return false;
+
+    bool seq_found = false;
+    bool sat_found = false;
+
+    // Флаг ставится по факту РАЗБОРА числа, а не по факту нахождения ключа:
+    // при усечённой шапке ключ может попасть в прочитанное, а цифры — нет,
+    // и strtoul вернул бы 0, который ушёл бы наружу как достоверное значение.
+    char *end;
+    char *p = strstr(buf + 8, "\"seg_seq\":");
+    if (p) {
+        unsigned long v = strtoul(p + 10, &end, 10);
+        if (end != p + 10) { *seg_seq = (uint32_t)v; seq_found = true; }
+    }
+
+    p = strstr(buf + 8, "\"started_at\":");
+    if (p) {
+        long v = strtol(p + 13, &end, 10);
+        if (end != p + 13) { *started_at = v; sat_found = true; }
+    }
+
+    return seq_found && sat_found;
+}
+
+/**
+ * Обработчик /segments.
+ * Возвращает список сегментов с полями name, idx, bytes, rows, finalized, seg_seq, started_at.
+ * seg_seq и started_at читаются из шапки файла и равны null, если файл повреждён или не прочитан.
+ * Использует PSRAM для буфера заголовка.
+ */
 static esp_err_t h_segments(httpd_req_t *req)
 {
+    /* Ожидание слота, а не мгновенный 503: у этого эндпоинта те же клиенты,
+       что у /segment (wf_pull_client.py, внешний wf-recorder), и они на 503 не
+       ретраят в том же проходе — мгновенный отказ уронил бы весь проход вместе
+       с неотправленными ack. См. симметричный комментарий у h_segment. */
+    if (!http_io_gate_enter_wait_or_503(req, WF_SEGMENT_GATE_WAIT_MS)) return ESP_OK;
+
     const char *dir = spectrogram_seg_dir();
     uint32_t open_idx = spectrogram_seg_open_index();
     httpd_resp_set_type(req, "application/json");
 
     DIR *d = opendir(dir);
-    if (!d) { httpd_resp_sendstr(req, "[]"); return ESP_OK; }   // каталога ещё нет
+    if (!d) {
+        httpd_resp_sendstr(req, "[]");
+        http_io_gate_leave();
+        return ESP_OK;
+    }
 
     httpd_resp_send_chunk(req, "[", 1);
     struct dirent *e;
-    char path[128], line[176];
+    char path[128];
+    /* +1 — место под нуль-терминатор, чтобы шапка читалась ЦЕЛИКОМ (иначе
+       fread(bufcap-1) недобирает последний байт заголовка). */
+    char *hdrbuf = heap_caps_malloc(WF_SEG_HEADER + 1, MALLOC_CAP_SPIRAM);
+    if (!hdrbuf) {
+        // без буфера поля уйдут как null для ВСЕХ сегментов — это молча
+        // выключает различение эпох, поэтому отказ обязан быть виден в логе
+        ESP_LOGW(TAG, "segments: hdrbuf alloc failed - seg_seq/started_at will be null");
+    }
     bool first = true;
     while ((e = readdir(d)) != NULL) {
         if (!wf_seg_name_ok(e->d_name)) continue;
-        // %.90s/%.30s: dir и имя короткие, но d_name по типу до 255 — даём
-        // доказуемую границу для -Wformat-truncation (90+1+30+1=122 <= 128).
         snprintf(path, sizeof(path), "%.90s/%.30s", dir, e->d_name);
         struct stat st;
         if (stat(path, &st) != 0) continue;
         long bytes = (long)st.st_size;
-        // payload = bytes − (8+hdr) − baseline; строк = payload / stride (v4=16406).
-        // Прежняя формула делила на WF_ROW_BYTES без вычета baseline — давала rows+2.
         long payload = bytes - WF_SEG_HEADER - WF_BASELINE_BYTES;
         long rows  = (payload > 0) ? payload / WF_ROW_STRIDE : 0;
         uint32_t idx = (uint32_t)strtoul(e->d_name + 4, NULL, 10);
         bool finalized = (idx != open_idx);
+
+        uint32_t seg_seq = 0;
+        long     started_at = 0;
+        bool     ids_ok = (hdrbuf != NULL) &&
+                          wf_seg_read_ids(path, hdrbuf, WF_SEG_HEADER + 1, &seg_seq, &started_at);
+
+        char seq_s[16], sat_s[24];
+        if (ids_ok) {
+            snprintf(seq_s, sizeof(seq_s), "%" PRIu32, seg_seq);
+            snprintf(sat_s, sizeof(sat_s), "%ld", started_at);
+        } else {
+            snprintf(seq_s, sizeof(seq_s), "null");
+            snprintf(sat_s, sizeof(sat_s), "null");
+        }
+
+        char line[512];
         int n = snprintf(line, sizeof(line),
-            "%s{\"name\":\"%s\",\"idx\":%" PRIu32 ",\"bytes\":%ld,\"rows\":%ld,\"finalized\":%s}",
-            first ? "" : ",", e->d_name, idx, bytes, rows, finalized ? "true" : "false");
-        if (httpd_resp_send_chunk(req, line, n) != ESP_OK) { closedir(d); return ESP_FAIL; }
+                        "%s{\"name\":\"%s\",\"idx\":%" PRIu32 ",\"bytes\":%ld,\"rows\":%ld,\"finalized\":%s,"
+                        "\"seg_seq\":%s,\"started_at\":%s}",
+                        first ? "" : ",", e->d_name, idx, bytes, rows, finalized ? "true" : "false",
+                        seq_s, sat_s);
+        if (httpd_resp_send_chunk(req, line, n) != ESP_OK) {
+            closedir(d);
+            free(hdrbuf);
+            http_io_gate_leave();
+            return ESP_FAIL;
+        }
         first = false;
     }
     closedir(d);
+    free(hdrbuf);
     httpd_resp_send_chunk(req, "]", 1);
     httpd_resp_send_chunk(req, NULL, 0);
+    http_io_gate_leave();
     return ESP_OK;
 }
 
