@@ -20,6 +20,8 @@ void dbglog_filter_suite(void);
 void hist_stage_suite(void);
 // #FW-8 residual: quiet-budget math from test_flash_quiet.c
 void flash_quiet_suite(void);
+// A1-P0: разбор тела POST /api/settings/restore — запись за границу приёмного массива
+void run_kv_array_tests(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -174,6 +176,7 @@ int main(void)
     dbglog_filter_suite();
     hist_stage_suite();
     flash_quiet_suite();
+    run_kv_array_tests();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);

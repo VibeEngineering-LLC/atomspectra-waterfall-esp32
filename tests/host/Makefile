@@ -12,7 +12,8 @@ SRCS = test_shproto.c test_roundtrip.c ../../components/shproto/shproto.c \
        test_net_time.c ../../main/net_time.c \
        test_debug_log_filter.c \
        test_hist_stage.c ../../main/spectrum_hist_stage.c \
-       test_flash_quiet.c
+       test_flash_quiet.c \
+       test_kv_array.c
 
 test: $(SRCS) test_util.h
 	$(CC) $(CFLAGS) -o test_runner $(SRCS)
