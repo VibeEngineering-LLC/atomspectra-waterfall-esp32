@@ -114,6 +114,20 @@ pre.preview{ margin-top:12px; font-size:11px; line-height:1.5; color:#9aa496; ba
 <div class="mut" id="dbglog-status" style="font-size:11px;margin-top:9px;text-align:center;min-height:14px"></div>
 </section>
 
+<section class="panel" id="usbdiag-panel">
+<div class="ttl"><span style="color:var(--accent)">&#8646;</span> <span data-i18n="usbd.title">Канал USB (#FW-53)</span></div>
+<div class="mut" style="font-size:11.5px;line-height:1.6;margin-bottom:10px" data-i18n="usbd.hint">Целостность кадров от прибора. «С ошибкой» — отброшено по CRC16 или структуре кадра. Единичные ошибки на подключении USB нормальны; непрерывный рост означает помехи, плохой кабель или перегрузку.</div>
+<table class="ptable" style="width:100%">
+<tbody>
+<tr><td data-i18n="usbd.good">Принято кадров</td><td style="text-align:right"><b id="usbd-good">—</b></td></tr>
+<tr><td data-i18n="usbd.bad">С ошибкой</td><td style="text-align:right"><b id="usbd-bad">—</b></td></tr>
+<tr><td data-i18n="usbd.rate">Доля ошибок</td><td style="text-align:right"><b id="usbd-rate">—</b></td></tr>
+<tr><td data-i18n="usbd.sweeps">Спектров собрано</td><td style="text-align:right"><b id="usbd-sweeps">—</b></td></tr>
+<tr><td data-i18n="usbd.sweepdrop">Спектров развалилось</td><td style="text-align:right"><b id="usbd-sweepdrop">—</b></td></tr>
+</tbody>
+</table>
+</section>
+
 </div>
 
 <section class="panel" id="param-panel" style="display:none">
@@ -192,6 +206,13 @@ var DICT={
   "restore.ok":"Готово — настройки восстановлены",
   "restore.err":"Ошибка восстановления",
   "restore.noDevice":"Прибор не подключён",
+  "usbd.title":"Канал USB (#FW-53)",
+  "usbd.hint":"Целостность кадров от прибора. «С ошибкой» — отброшено по CRC16 или структуре кадра. Единичные ошибки на подключении USB нормальны; непрерывный рост означает помехи, плохой кабель или перегрузку.",
+  "usbd.good":"Принято кадров",
+  "usbd.bad":"С ошибкой",
+  "usbd.rate":"Доля ошибок",
+  "usbd.sweeps":"Спектров собрано",
+  "usbd.sweepdrop":"Спектров развалилось",
   "dbglog.title":"Debug-лог (#FW-50)",
   "dbglog.hint":"Кольцо в PSRAM (~384 KiB). Off = полный off. Чужие теги держатся на WARN ради ёмкости кольца. Mac pull каждые 5 мин (standard/detailed) или 30 с (debug).",
   "dbglog.enable":"Включить сбор логов",
@@ -256,6 +277,13 @@ var DICT={
   "restore.ok":"Done — settings restored",
   "restore.err":"Restore error",
   "restore.noDevice":"Device not connected",
+  "usbd.title":"USB link (#FW-53)",
+  "usbd.hint":"Frame integrity from the instrument. \"Bad\" means dropped on CRC16 or framing. A few errors when USB is plugged in are normal; continuous growth means interference, a bad cable or overload.",
+  "usbd.good":"Frames received",
+  "usbd.bad":"Bad",
+  "usbd.rate":"Error rate",
+  "usbd.sweeps":"Spectra assembled",
+  "usbd.sweepdrop":"Spectra dropped",
   "dbglog.title":"Debug log (#FW-50)",
   "dbglog.hint":"PSRAM ring (~384 KiB). Off = full off. Third-party tags stay at WARN to save ring capacity. Mac pull every 5 min (standard/detailed) or 30 s (debug).",
   "dbglog.enable":"Enable log capture",
@@ -308,6 +336,27 @@ async function refreshSystem(){
   }else{
    devDot.classList.add("off"); devStat.textContent=t("dev.chipOff"); devChip.classList.add("warn"); devChip.classList.remove("ok");
   }
+ }catch(e){}
+}
+
+// #FW-53: счётчики целостности USB-кадров. good = всё, что дошло до разбора
+// (CRC уже сошёлся), bad = отброшено по CRC16/структуре кадра.
+async function refreshUsbDiag(){
+ try{
+  var d=await(await fetch("/api/usb-diag")).json();
+  var good=(d.pkt_hist||0)+(d.pkt_text||0)+(d.pkt_stat||0)+(d.pkt_osc||0)+(d.pkt_unknown||0);
+  var bad=d.pkt_bad||0, tot=good+bad;
+  document.getElementById("usbd-good").textContent=good.toLocaleString();
+  document.getElementById("usbd-bad").textContent=bad.toLocaleString();
+  var rt=document.getElementById("usbd-rate");
+  rt.textContent = tot ? (bad*100/tot).toFixed(3)+" %" : "—";
+  rt.style.color = (tot && bad*100/tot > 1) ? "var(--red,#e05)" : "";
+  // свипы — это НЕ pkt_hist: тот считает чанки (~128 на спектр)
+  var sw=d.sweep_commits||0, sd=d.sweep_drops||0;
+  document.getElementById("usbd-sweeps").textContent=sw.toLocaleString();
+  var sdEl=document.getElementById("usbd-sweepdrop");
+  sdEl.textContent=sd.toLocaleString();
+  sdEl.style.color = (sw+sd && sd*100/(sw+sd) > 5) ? "var(--red,#e05)" : "";
  }catch(e){}
 }
 
@@ -494,7 +543,10 @@ async function doRestore(){
  await loadCsrf();
  await refreshSystem();
  await loadDbglog();
+ await refreshUsbDiag();
  setInterval(refreshSystem,3000);
+ // #FW-53: реже, чем system — счётчики меняются плавно, лишний вызов не нужен
+ setInterval(refreshUsbDiag,10000);
 })();
 </script>
 <script src="/common-time.js"></script>
