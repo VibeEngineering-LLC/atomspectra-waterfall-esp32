@@ -6,6 +6,30 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ## Open
 
+### P-014: an open Web UI degrades measurement completeness (partially fixed in v1.2.11)
+
+**Status:** partially fixed in `v1.2.11` · remainder known, architectural work planned.
+
+Serving HTTP competes with instrument data reception for CPU/bus/flash: while the board
+answers a browser, USB frames can be lost and one-second spectrum sweeps get rejected by
+CRC — **silently**, with no errors in the UI. Measured before the fixes (same method, live
+board): idle — 0 % loss, an open "Waterfall" tab — 9.4 % of measurement seconds lost,
+"System" tab — 25.8 %, six parallel clients — 95.6 %.
+
+`v1.2.11` fixes the two main offenders: the LittleFS used-space calculation walked the whole
+partition on every `GET /api/system` (now cached for 30 s), and `GET /api/device` copied
+32 KB of spectrum under the reception lock for the sake of four metadata fields (now ~200 B).
+After: "System" 2.8 %, "Waterfall" 1.1 %.
+
+**Remainder:** `GET /api/waterfall/segments` reads each file's header from flash (loss grows
+with the number of segments); a storm of many simultaneous clients is still destructive.
+Watch your own board: Service page → "USB link" → "Spectra dropped" — growth while using
+the UI is exactly this issue.
+
+**Recommendation until fully fixed:** during critical long measurements do not keep Web UI
+tabs open permanently (especially "System" — the heaviest one); take a look, then close.
+The `wf-recorder` collector with a sane interval is safe.
+
 ### #FW-50: overnight web UI hang (waterfall + monitoring)
 
 **Status:** open · diagnostics in `v1.2.3` (PSRAM debug-log ring + Mac pull).
@@ -143,6 +167,39 @@ The instrument serial number (`serial_number`) stays empty after connection.
 ---
 
 ## Fixed
+
+### #DATA-7: silent data loss in the collector on segment name reuse — FIXED (v1.2.9 + wf-recorder v0.3.0)
+
+A segment file name (`seg_NNNNN.aswf`) is unique only within the current directory contents:
+after `clear`, a reboot on an empty directory, or an NVS erase the numbering restarts and a
+new segment gets the name of an already-collected one. The `wf-recorder` client ≤ v0.2
+identified segments by the (name, size) pair — with a fixed interval all full segments weigh
+the same, so a new segment was mistaken for an already-stitched one: the delete
+acknowledgement was sent **without writing the data**. A real user lost 66 segments
+(~13 h of measurements) this way — analysis in
+[wf-recorder#1](https://github.com/VibeEngineering-LLC/wf-recorder/issues/1).
+
+Fixed on both sides: firmware `v1.2.9` exposes `seg_seq` and `started_at` from the file
+header in the listing; client `v0.3.0+` identifies segments by the SHA-256 of the body and
+does not acknowledge deletion until the write is confirmed. Verified by four independent
+reproductions, including an unplanned one (a name got reused during normal operation — the
+client correctly downloaded it anew). Details: `docs/bugs/2026-08-15-fw8-unreachable-and-503.md`.
+
+### v1.2.9–v1.2.11 batch: stack overflow, debug-log wipe, USB observability — FIXED
+
+- **httpd stack overflow while parsing `PileUp[]`** (`v1.2.9`): `kv_get_array` accepted a
+  limit of 100 elements into a 40-element array — writing past the handler's stack. Found
+  by external audit, fixed via `sizeof`, covered by a host test with stack canaries.
+- **`POST /api/debug/log/flush` wiped the whole log ring on a malformed request body**
+  (`v1.2.10`): a read/parse failure still reached the flush with `upto=0, gen=0` (bypassing
+  the optimistic lock) while replying `{"ok":true}`. Now a malformed body → `400 Bad
+  Request` with no flush; the no-body path (legitimate full reset) is unchanged.
+- **USB link observability** (`v1.2.10`–`v1.2.11`, #FW-53): a counter of frames dropped by
+  CRC16/framing (`pkt_bad` — the signal existed in the parser but was never read), counters
+  of assembled/dropped sweeps (`sweep_commits`/`sweep_drops` — not to be confused with
+  `pkt_hist`, which counts chunks, ~128 per spectrum). All in `/api/usb-diag` and on the
+  Service page → "USB link" panel; the serial log prints
+  `usb_cdc: shproto pkts: N good, M bad` every 10 s.
 
 ### #FW-8 residual: `histogram sweep dropped` ≈ 1/min (LittleFS autosave) — FIXED
 
@@ -653,6 +710,13 @@ in `wf_pull_client.py:161-169` only catches recording pauses, not segments the r
 **Workaround:** keep the client's `--interval` well below the time it takes the ring to
 eat an unread segment at the current recording rate. There is currently no automatic
 protection (a pin, like push has) for the pull download path — not implemented.
+
+**Confirmed in practice (2026-08-16/17, joint testing):** the risk actually fires when the
+polling interval is close to the segment period (polling every 330 s with a 320 s period —
+one segment lost) and when polling pauses exceed the ring capacity. Rule of thumb: **poll at
+least twice as often as the segment close period**. Client `v0.4.0+` distinguishes "ring ate
+it before pull" from "open segment cut by a reboot" better than before, but the loss class
+itself is only prevented by interval discipline.
 
 ---
 
