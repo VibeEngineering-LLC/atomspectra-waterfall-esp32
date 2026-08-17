@@ -126,6 +126,7 @@ void app_main(void)
             wifi_is_connected() ? "OK" : "--",
             tcp_bridge_client_connected() ? "OK" : "--",
             sp->total_counts, (unsigned)sp->cpu_load);
+        usb_host_cdc_log_pkt_stats();   // #FW-53: shproto good/bad, тот же тик 10 с
 
         // #FW-13: период -inf 30 с → 30 мин (оператор 2026-07-03). Единственное
         // динамичное поле ответа — температура; каждый -inf вклинивает 404-байтный

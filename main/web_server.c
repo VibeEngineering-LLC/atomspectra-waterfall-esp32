@@ -1295,6 +1295,7 @@ static esp_err_t handle_usb_diag(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "pkt_stat",              d.pkt_stat);
     cJSON_AddNumberToObject(root, "pkt_osc",               d.pkt_osc);
     cJSON_AddNumberToObject(root, "pkt_unknown",           d.pkt_unknown);
+    cJSON_AddNumberToObject(root, "pkt_bad",               d.pkt_bad);  // #FW-53
     cJSON_AddNumberToObject(root, "last_shproto_ts_ms",    d.last_shproto_ts_ms);
     cJSON_AddNumberToObject(root, "drv_task_alive_ts_ms",  d.drv_task_alive_ts_ms);
     cJSON_AddNumberToObject(root, "conn_task_alive_ts_ms", d.conn_task_alive_ts_ms);

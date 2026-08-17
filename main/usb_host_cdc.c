@@ -215,6 +215,13 @@ static void feed_shproto(const uint8_t *d, size_t n) {
     for (size_t i = 0; i < n; i++) {
         shproto_byte_received(&s_rx_packet, d[i]);
         if (s_rx_packet.ready) { s_rx_packet.ready = false; handle_rx_packet(); }
+        // #FW-53: dropped ставится один раз на SHPROTO_FINISH (CRC/короткий кадр) и
+        // держится до следующего SHPROTO_START — сбрасывать сразу, иначе инкремент
+        // на каждом следующем байте до старта нового пакета.
+        else if (s_rx_packet.dropped) {
+            s_rx_packet.dropped = false;
+            DIAG_LOCK(); s_diag.pkt_bad++; DIAG_UNLOCK();
+        }
     }
 }
 
@@ -746,6 +753,21 @@ void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out)
     *out = s_diag;
     DIAG_UNLOCK();
     out->uptime_ms = diag_now_ms();
+}
+
+// #FW-53: см. декларацию в atomspectra.h. "good" = сумма распознанных типов кадров
+// (hist+text+stat+osc+unknown, всё, что дошло до handle_rx_packet — уже валидный CRC),
+// "bad" = отброшено по CRC/framing (pkt_bad). Формат строки — по мотивам находки
+// внешнего пользователя (wf-recorder#1, BOPOHOP): в его кастомной сборке была такая же
+// диагностика, у нас сигнал уже был внутри shproto_struct.dropped, просто не считался.
+void usb_host_cdc_log_pkt_stats(void)
+{
+    DIAG_LOCK();
+    uint32_t good = s_diag.pkt_hist + s_diag.pkt_text + s_diag.pkt_stat +
+                    s_diag.pkt_osc + s_diag.pkt_unknown;
+    uint32_t bad  = s_diag.pkt_bad;
+    DIAG_UNLOCK();
+    ESP_LOGI(TAG, "shproto pkts: %" PRIu32 " good, %" PRIu32 " bad", good, bad);
 }
 
 // #FW-43: см. декларацию в atomspectra.h. true = «прибор определился, но не запитан».
