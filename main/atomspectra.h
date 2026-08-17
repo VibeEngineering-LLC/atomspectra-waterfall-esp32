@@ -164,6 +164,7 @@ typedef struct {
     uint32_t pkt_stat;
     uint32_t pkt_osc;
     uint32_t pkt_unknown;
+    uint32_t pkt_bad;               // #FW-53: CRC/framing отброшены (shproto_struct.dropped)
     uint32_t last_shproto_ts_ms;    // #FW-43: ts последнего CRC-валид SHPROTO-пакета (любой тип). Детект «определился, но не запитан».
     // Tasks
     uint32_t drv_task_alive_ts_ms;  // hint через RX cb
@@ -176,6 +177,10 @@ typedef struct {
 } usb_diag_snapshot_t;
 
 void usb_host_cdc_diag_snapshot(usb_diag_snapshot_t *out);
+
+// #FW-53: периодическая строка "shproto pkts: N good, M bad" в serial-лог (тег usb_cdc) —
+// диагностика целостности USB CDC-канала прибор<->ESP32 без похода в /api/usb-diag.
+void usb_host_cdc_log_pkt_stats(void);
 
 // #FW-43: детект «прибор определился (FTDI '01 60' идёт), но не запитан». Первопричина
 // (INC): hotplug в живой USB-хост не даёт физического фронта VBUS 0→5В на плате с жёстко
