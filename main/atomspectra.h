@@ -211,6 +211,16 @@ int spectrum_get_info_raw(char *out, size_t outsz, uint32_t *out_seq);
 int spectrum_get_tcpot_raw(char *out, size_t outsz, uint32_t *out_seq);
 void spectrum_reset(void);
 const spectrum_data_t *spectrum_get_current(void);
+
+// #PERF-4: снимок метаданных БЕЗ bins[8192]. Для потребителей, которым нужны
+// серийник/калибровка/cps/температура: ~200 Б под SPEC_LOCK вместо 32 КБ.
+// Поле bins[] в out НЕ заполняется — не читать его после этого вызова.
+bool spectrum_get_meta(spectrum_data_t *out);
+
+// #FW-53: счётчики СВИПОВ (не чанков). commits — собрано полных спектров,
+// drops — отброшено рваных (разрыв в чанках). pkt_hist в usb-diag считает
+// ЧАНКИ гистограммы и в разы больше — это разные величины.
+void spectrum_get_sweep_stats(uint32_t *commits, uint32_t *drops);
 bool spectrum_get_snapshot(spectrum_data_t *out);
 // #MON-1: атомарная пара (total_counts, total_time_sec) под коммит-локом —
 // для монитора CPS; НЕ копирует 32 КБ bins (в отличие от spectrum_get_snapshot).

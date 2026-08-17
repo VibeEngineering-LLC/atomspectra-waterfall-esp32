@@ -4,6 +4,7 @@
 #include "spectrum_hist_stage.h"
 #include "http_io_gate.h"
 #include "esp_log.h"
+#include <stddef.h>
 #include <inttypes.h>
 #include "esp_littlefs.h"
 #include "esp_timer.h"
@@ -983,4 +984,29 @@ int spectrum_delete_from_flash(int index)
     if (remove(path) != 0) return -1;
     ESP_LOGI(TAG, "Deleted %s", path);
     return 0;
+}
+// #FW-53: см. декларацию в atomspectra.h. Читается из HTTP-контекста, поэтому
+// под тем же SPEC_LOCK, что и остальные публикуемые поля.
+void spectrum_get_sweep_stats(uint32_t *commits, uint32_t *drops)
+{
+    SPEC_LOCK();
+    if (commits) *commits = s_hist_commits;
+    if (drops)   *drops   = s_hist_drops;
+    SPEC_UNLOCK();
+}
+
+// #PERF-4 (P-014): снимок БЕЗ bins[8192]. spectrum_get_snapshot() копирует 32 КБ
+// под SPEC_LOCK — тем же локом, который берёт spectrum_process_histogram_chunk()
+// на каждый чанк от прибора. Потребителям, которым нужны только метаданные
+// (серийник, калибровка, cps, температура), это стоило 8,5 % потерянных свипов
+// на /api/device. Копируем хвост структуры после bins — ~200 Б вместо 32 КБ.
+// offsetof, а не перечисление полей: новое поле структуры попадёт сюда само.
+bool spectrum_get_meta(spectrum_data_t *out)
+{
+    const size_t off = offsetof(spectrum_data_t, total_counts);
+    SPEC_LOCK();
+    memcpy((uint8_t *)out + off, (const uint8_t *)&s_spectrum + off,
+           sizeof(spectrum_data_t) - off);
+    SPEC_UNLOCK();
+    return out->valid;
 }
