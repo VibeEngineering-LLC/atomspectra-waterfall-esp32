@@ -471,6 +471,7 @@ static void seg_finalize(void)
         s_seg_fp = NULL;
         flash_quiet_writer_unlock();
         char p[64]; seg_path(p, sizeof(p), s_seg_cur);
+        ESP_LOGW(TAG, "seg_%05" PRIu32 ".aswf DROP: finalize with 0 rows", s_seg_cur);
         unlink(p);
     }
     s_seg_cur  = 0xFFFFFFFFu;
@@ -619,7 +620,8 @@ static bool quiet_unlink_path(const char *p)
     }
     hist_drop_diag_wf_flash_begin("unlink");
     bool ok = (unlink(p) == 0);
-    if (!ok) ESP_LOGW(TAG, "unlink failed: %s", p);
+    if (ok) ESP_LOGW(TAG, "unlinked: %s", p);
+    else    ESP_LOGW(TAG, "unlink failed: %s", p);
     hist_drop_diag_wf_flash_end();
     flash_quiet_writer_unlock();
     return ok;
@@ -729,7 +731,13 @@ static void seg_reconcile(void)
             long poff = seg_payload_offset(f);         // v3=36872, v1/v2=4104
             long payload = (long)sb.st_size - poff;
             uint32_t rows = payload > 0 ? (uint32_t)(payload / stride) : 0;
-            if (rows == 0) { fclose(f); unlink(p); continue; }
+            if (rows == 0) {
+                // #FW-54 (I2): молчаливое удаление здесь стоило потери открытого
+                // сегмента при ребуте (P-016). Причина и арифметика — в журнал.
+                ESP_LOGW(TAG, "reconcile DROP %s: size=%ld poff=%ld stride=%" PRIu32 " -> rows=0",
+                         e->d_name, (long)sb.st_size, poff, stride);
+                fclose(f); unlink(p); continue;
+            }
             fclose(f);
             completed++;
             if (!any || idx > maxidx) { maxidx = idx; any = true; }
@@ -1244,6 +1252,36 @@ int spectrogram_stop(void)
     write_state(false);  // #REC-6: запись остановлена — ребут НЕ должен возобновлять
     ESP_LOGI(TAG, "recording stopped, flash_rows=%" PRIu32, s_status.flash_rows);
     return 0;
+}
+
+// #FW-55 (P-016): закрыть открытый сегмент ПЕРЕД штатным ребутом/OTA.
+// Строки пишутся без fsync (по дизайну #FW-8: sync на строку = class-B
+// заморозка флеша), поэтому LittleFS не обновляет размер в inode: файл
+// остаётся size=0, и seg_reconcile сносит его как пустой. Замер 2026-08-18:
+// 41 записанная строка -> size=0 -> DROP, освободилось 925 696 Б занятых
+// блоков. Здесь мы платим одну финализацию (она и делает fsync) за
+// сохранность до 64 строк (на interval=180 — до 3,2 часа измерений).
+// write_state НЕ трогаем: на флеше должно остаться active=true, иначе
+// после ребута запись не возобновится (#REC-6).
+// Потерю питания это не закрывает — только штатный путь перезагрузки.
+void spectrogram_prepare_reboot(void)
+{
+    if (!s_status.ready) return;
+    LOCK(); bool was_rec = s_status.recording; s_status.recording = false; UNLOCK();
+    if (was_rec) {
+        if (s_fs_sig) xSemaphoreGive(s_fs_sig);      // подтолкнуть consumer
+        for (int i = 0; i < 30; i++) {               // дренаж, не дольше ~3 с
+            LOCK(); bool drained = (s_fs_flushed >= s_status.total_rows); UNLOCK();
+            if (drained) break;
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+    FSLOCK();
+    if (s_seg_fp) {
+        ESP_LOGW(TAG, "prepare_reboot: finalizing open segment (%" PRIu32 " rows)", s_seg_rows);
+        seg_finalize();
+    }
+    FSUNLOCK();
 }
 
 int spectrogram_clear(void)

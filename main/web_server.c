@@ -1652,6 +1652,7 @@ static esp_err_t handle_reboot_esp(httpd_req_t *req)
     if (!csrf_check(req)) return ESP_FAIL;
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;
@@ -1694,6 +1695,7 @@ static esp_err_t handle_wifi_reset(httpd_req_t *req)
         nvs_close(nvs);
     }
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;
@@ -1833,6 +1835,7 @@ static esp_err_t handle_ap_pass(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"reboot\":true}");
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;
@@ -1868,6 +1871,7 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"reboot\":true}");
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;
