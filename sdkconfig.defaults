@@ -9,6 +9,15 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
+# Этап II (P-014): код и rodata исполняются ИЗ PSRAM, а не из SPI-флеш.
+# Мотив: при любой операции с флешем (запись строки водопада, unlink кольцом,
+# autosave) кэш гаснет у ОБОИХ ядер — USB-приём встаёт, FIFO переходника
+# (256 Б, бюджет 4,3 мс @600000 бод) переполняется, кадр бьётся CRC и свип
+# бракуется целиком. Замер шторма 6 клиентов до включения: потеряно 90 из 294
+# свипов = 30,6 %. XIP из PSRAM убирает саму причину — кэш не гаснет.
+# PSRAM здесь octal 80 МГц, поэтому замедление кода ожидается минимальным.
+# SPIRAM_XIP_FROM_PSRAM подтягивает FETCH_INSTRUCTIONS и RODATA.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
 # USB Host
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
