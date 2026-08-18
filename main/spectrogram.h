@@ -100,6 +100,10 @@ void   spectrogram_get_status(wf_status_t *out);
 // его через монотонный аптайм-якорь — иначе весь .n42-экспорт сегмента застрянет
 // на 1970 год. Идемпотентно/безопасно вызывать и когда коррекция не нужна.
 void   spectrogram_time_synced(void);
+
+// #FW-55 (P-016): финализировать открытый сегмент перед штатным ребутом/OTA.
+// Без вызова теряется всё накопленное в текущем сегменте (до WF_SEG_MAX_ROWS строк).
+void   spectrogram_prepare_reboot(void);
 int    spectrogram_start(void);
 int    spectrogram_stop(void);
 int    spectrogram_clear(void);

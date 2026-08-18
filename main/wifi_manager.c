@@ -1,4 +1,5 @@
 #include "atomspectra.h"
+#include "spectrogram.h"   // #FW-55 (P-016): spectrogram_prepare_reboot()
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -186,6 +187,7 @@ static esp_err_t handle_setup_connect(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
 
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;
@@ -204,6 +206,7 @@ static esp_err_t handle_setup_field(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     ESP_LOGI(TAG, "FIELD-2c: field mode requested from setup -> reboot");
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
     return ESP_OK;
@@ -331,6 +334,7 @@ static void set_fb_flag_and_reboot(void)
         nvs_close(nvs);
     }
     ESP_LOGW(TAG, "FIELD-2a: STA no IP -> reboot into field AP");
+    spectrogram_prepare_reboot();   // #FW-55 (P-016): не терять открытый сегмент
     esp_restart();
 }
 
