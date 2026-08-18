@@ -237,6 +237,9 @@ static void settings_load(void)
     uint32_t seq = 0;                       // #DATA-1b: глоб. номер сегмента переживает clear/ребут
     if (nvs_get_u32(h, "seg_seq", &seq) == ESP_OK)
         s_seg_seq = seq;
+    uint32_t evicted = 0;                   // #FW-56: накопительные вытеснения кольцом
+    if (nvs_get_u32(h, "seg_evict", &evicted) == ESP_OK)
+        s_status.seg_evicted = evicted;
     nvs_close(h);
 }
 
@@ -644,10 +647,27 @@ static void make_room(uint32_t need)
         if (oldest == s_seg_zombie) s_seg_zombie = 0xFFFFFFFFu;
         LOCK();
         s_status.seg_dropped++;
+        s_status.seg_evicted++;
+        uint32_t evicted_now = s_status.seg_evicted;
         if (s_status.seg_count) s_status.seg_count--;
         s_status.flash_full = true;              // индикатор: кольцо хоть раз сработало
         UNLOCK();
-        ESP_LOGW(TAG, "ring: dropped seg_%05" PRIu32 ".aswf", oldest);
+        // #FW-56: персист СРАЗУ, а не при открытии следующего сегмента. Первая
+        // версия откладывала запись — и провалила проверку: вытеснение идёт по
+        // prep-триггеру в СЕРЕДИНЕ сегмента, до открытия следующего проходит до
+        // 32 строк, и ребут в этом окне уносил счётчик (наблюдалось 1 -> 0).
+        // Цена приемлема: рядом только что отработал unlink ~1 МБ (секунды),
+        // NVS-транзакция на его фоне незаметна и происходит не чаще вытеснений.
+        {
+            nvs_handle_t nh;
+            if (nvs_open(WF_SETTINGS_NS, NVS_READWRITE, &nh) == ESP_OK) {
+                nvs_set_u32(nh, "seg_evict", evicted_now);
+                nvs_commit(nh);
+                nvs_close(nh);
+            }
+        }
+        ESP_LOGW(TAG, "ring: dropped seg_%05" PRIu32 ".aswf (evicted total=%" PRIu32 ")",
+                 oldest, evicted_now);
     }
 }
 
@@ -749,6 +769,9 @@ static void seg_reconcile(void)
     s_seg_fp   = NULL;
     s_seg_rows = 0;
     s_seg_prep_done = false;
+    // #FW-56: seg_dropped — счётчик ТЕКУЩЕЙ сессии, обнуление здесь намеренное.
+    // seg_evicted (накопительный, из NVS) НЕ трогаем: именно он отвечает на вопрос
+    // «куда делись сегменты», когда seg_dropped обнулён ребутом (ложный P-015).
     LOCK(); s_status.seg_count = completed; s_status.seg_dropped = 0; UNLOCK();
     ESP_LOGI(TAG, "seg reconcile: %" PRIu32 " segments, next=%" PRIu32, completed, s_seg_next);
 }
@@ -1299,6 +1322,8 @@ int spectrogram_clear(void)
     s_status.flash_full = false;
     s_status.seg_count  = 0;
     s_status.seg_dropped = 0;
+    s_status.seg_evicted = 0;    // #FW-56: явная очистка пользователем — история вытеснений
+                                 // теряет смысл вместе с самими данными (в отличие от ребута)
     s_started_uptime_us = 0;     // #FW-21: очистка — сессии нет
     UNLOCK();
 
@@ -1314,6 +1339,17 @@ int spectrogram_clear(void)
     unlink(WF_META);     // legacy (#REC-6)
     unlink(WF_STATE);    // #REC-6: сбросить persist-состояние записи
     FSUNLOCK();
+
+    // #FW-56: сброс накопительного счётчика довести до NVS — иначе ребут сразу
+    // после очистки вернул бы старое значение из флеша.
+    {
+        nvs_handle_t nh;
+        if (nvs_open(WF_SETTINGS_NS, NVS_READWRITE, &nh) == ESP_OK) {
+            nvs_set_u32(nh, "seg_evict", 0);
+            nvs_commit(nh);
+            nvs_close(nh);
+        }
+    }
 
     ESP_LOGI(TAG, "waterfall cleared");
     return 0;

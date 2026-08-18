@@ -143,13 +143,13 @@ static esp_err_t h_status(httpd_req_t *req)
         "{\"recording\":%s,\"persist\":%s,\"flash_full\":%s,\"ready\":%s,"
         "\"interval_sec\":%" PRIu32 ",\"ring_capacity\":%" PRIu32 ",\"ring_count\":%" PRIu32 ","
         "\"total_rows\":%" PRIu32 ",\"flash_rows\":%" PRIu32 ","
-        "\"seg_count\":%" PRIu32 ",\"seg_dropped\":%" PRIu32 ","
+        "\"seg_count\":%" PRIu32 ",\"seg_dropped\":%" PRIu32 ",\"seg_evicted\":%" PRIu32 ","
         "\"started_at\":%ld,\"elapsed_sec\":%" PRIu32 ",\"channels\":%d}",
         s.recording ? "true" : "false", s.persist ? "true" : "false",
         s.flash_full ? "true" : "false", s.ready ? "true" : "false",
         s.interval_sec, s.ring_capacity, s.ring_count,
         s.total_rows, s.flash_rows,
-        s.seg_count, s.seg_dropped,
+        s.seg_count, s.seg_dropped, s.seg_evicted,   /* #FW-56 */
         (long)s.started_at, s.elapsed_sec, WF_CHANNELS);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
