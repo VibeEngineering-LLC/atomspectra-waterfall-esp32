@@ -6,30 +6,6 @@ A list of known bugs, limitations, and fixed issues for the AtomSpectra ESP32 Ga
 
 ## Open
 
-### P-014: an open Web UI degrades measurement completeness (partially fixed in v1.2.11)
-
-**Status:** partially fixed in `v1.2.11` · remainder known, architectural work planned.
-
-Serving HTTP competes with instrument data reception for CPU/bus/flash: while the board
-answers a browser, USB frames can be lost and one-second spectrum sweeps get rejected by
-CRC — **silently**, with no errors in the UI. Measured before the fixes (same method, live
-board): idle — 0 % loss, an open "Waterfall" tab — 9.4 % of measurement seconds lost,
-"System" tab — 25.8 %, six parallel clients — 95.6 %.
-
-`v1.2.11` fixes the two main offenders: the LittleFS used-space calculation walked the whole
-partition on every `GET /api/system` (now cached for 30 s), and `GET /api/device` copied
-32 KB of spectrum under the reception lock for the sake of four metadata fields (now ~200 B).
-After: "System" 2.8 %, "Waterfall" 1.1 %.
-
-**Remainder:** `GET /api/waterfall/segments` reads each file's header from flash (loss grows
-with the number of segments); a storm of many simultaneous clients is still destructive.
-Watch your own board: Service page → "USB link" → "Spectra dropped" — growth while using
-the UI is exactly this issue.
-
-**Recommendation until fully fixed:** during critical long measurements do not keep Web UI
-tabs open permanently (especially "System" — the heaviest one); take a look, then close.
-The `wf-recorder` collector with a sane interval is safe.
-
 ### #FW-50: overnight web UI hang (waterfall + monitoring)
 
 **Status:** open · diagnostics in `v1.2.3` (PSRAM debug-log ring + Mac pull).
@@ -167,6 +143,36 @@ The instrument serial number (`serial_number`) stays empty after connection.
 ---
 
 ## Fixed
+
+### P-014: an open Web UI degrades measurement completeness — FIXED (v1.2.12)
+
+Serving HTTP competed with instrument data reception for CPU/bus/flash: while the board
+answered a browser, USB frames could be lost and one-second spectrum sweeps got rejected by
+CRC — **silently**, with no errors in the UI. Measured before the fixes (live board): idle —
+0 % loss, an open "Waterfall" tab — 9.4 % of measurement seconds lost, "System" tab — 25.8 %,
+six parallel clients — 95.6 %.
+
+`v1.2.11` fixed the two main offenders (LittleFS used-space cache, metadata without spectrum
+copy): "System" 2.8 %, "Waterfall" 1.1 % — but flash operations still froze both CPU cores'
+cache while running, stalling USB reception.
+
+`v1.2.12` removes the root cause entirely: firmware code and constants now execute from
+PSRAM (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), so flash operations no longer freeze the cores'
+cache. Loss in all three scenarios — **0.0 %**. As a side effect, the UI got faster (median
+response time −29 %, throughput +31 %). Cost: 1.5 MB of free PSRAM taken by the code.
+
+### P-016: an open segment was lost on a routine reboot — FIXED (v1.2.12)
+
+On reboot via the web button, a WiFi change, or an access-point switch, the last open
+waterfall segment could be lost entirely, even though the data was already physically on
+flash: LittleFS does not update a file's size in its inode without an explicit
+`fsync`/`fclose`, and the integrity check on the next boot discarded such a file as empty.
+In the worst case (production interval 180 s) this meant up to 3.2 hours of measurements
+lost per reboot.
+
+Fix: before every routine reboot path, the firmware now force-flushes and closes the open
+segment. Emergency paths (power loss, panic, watchdog) are not covered by this fix — a
+segment can still be lost there.
 
 ### #DATA-7: silent data loss in the collector on segment name reuse — FIXED (v1.2.9 + wf-recorder v0.3.0)
 
