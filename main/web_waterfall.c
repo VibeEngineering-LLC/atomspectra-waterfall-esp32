@@ -143,13 +143,13 @@ static esp_err_t h_status(httpd_req_t *req)
         "{\"recording\":%s,\"persist\":%s,\"flash_full\":%s,\"ready\":%s,"
         "\"interval_sec\":%" PRIu32 ",\"ring_capacity\":%" PRIu32 ",\"ring_count\":%" PRIu32 ","
         "\"total_rows\":%" PRIu32 ",\"flash_rows\":%" PRIu32 ","
-        "\"seg_count\":%" PRIu32 ",\"seg_dropped\":%" PRIu32 ",\"seg_evicted\":%" PRIu32 ","
+        "\"seg_count\":%" PRIu32 ",\"seg_lost\":%" PRIu32 ",\"seg_evicted\":%" PRIu32 ","
         "\"started_at\":%ld,\"elapsed_sec\":%" PRIu32 ",\"channels\":%d}",
         s.recording ? "true" : "false", s.persist ? "true" : "false",
         s.flash_full ? "true" : "false", s.ready ? "true" : "false",
         s.interval_sec, s.ring_capacity, s.ring_count,
         s.total_rows, s.flash_rows,
-        s.seg_count, s.seg_dropped, s.seg_evicted,   /* #FW-56 */
+        s.seg_count, s.seg_lost, s.seg_evicted,   /* #FW-57: seg_dropped -> seg_lost */
         (long)s.started_at, s.elapsed_sec, WF_CHANNELS);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
@@ -847,7 +847,11 @@ static esp_err_t h_segment_delete(httpd_req_t *req)
         return ESP_FAIL;
     }
     uint32_t idx = (uint32_t)strtoul(name + 4, NULL, 10);
+    // #3/Codeaudit P1: unlink идёт с отпущенным FSLOCK внутри spectrogram_seg_delete —
+    // гейт нужен только вокруг ЭТОГО вызова, не вокруг csrf/parse выше.
+    if (!http_io_gate_enter_wait_or_503(req, WF_SEGMENT_GATE_WAIT_MS)) return ESP_OK;
     bool ok = spectrogram_seg_delete(idx);
+    http_io_gate_leave();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"not-deletable\"}");
     return ESP_OK;

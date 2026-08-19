@@ -573,6 +573,17 @@ int spectrum_save_to_flash(void)
         fclose(f);
         idx++;
     }
+    // #FW-59 (задача #3/Codeaudit P1): idx==9999 значит слоты 0..9998 заняты —
+    // цикл выше НЕ выполнил тело для idx=9999 (условие while сработало раньше),
+    // поэтому `path` всё ещё держит имя ПОСЛЕДНЕГО проверенного файла (spec_9998.bin).
+    // Без этой проверки следующий fopen(path,"wb") молча перезаписал бы
+    // spec_9998.bin, а вызывающему вернулся бы idx=9999 — имя файла и
+    // сообщённый индекс разошлись бы, спектр по факту потерян.
+    if (idx >= 9999) {
+        ESP_LOGE(TAG, "Save rejected: spec_XXXX.bin slots exhausted (0..9998 all taken)");
+        free(snap);
+        return -4;
+    }
     f = fopen(path, "wb");
     if (!f) { ESP_LOGE(TAG, "Cannot create %s", path); free(snap); return -3; }
     size_t wr = fwrite(snap, sizeof(*snap), 1, f);
