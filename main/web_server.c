@@ -42,6 +42,12 @@ static const char *TAG = "web";
 #define WF_TIME_SYNCED_EPOCH 1700000000L   // 2023-11-14 UTC
 static inline bool time_is_synced(time_t t) { return t >= WF_TIME_SYNCED_EPOCH; }
 
+// #3/Codeaudit P1: короткое ожидание HEAVY-слота для сохранённых-спектров
+// эндпоинтов (спектры/save/list/export/delete на Flash) — тот же принцип и
+// то же значение, что WF_SEGMENT_GATE_WAIT_MS в web_waterfall.c: пользователь
+// ждёт клик, мгновенный 503 на пустяковой задержке слота — плохой UX.
+#define SAVED_FLASH_GATE_WAIT_MS 250
+
 // CSRF-токен: генерируется при старте, выдаётся по GET /api/csrf-token,
 // требуется в заголовке X-CSRF-Token на всех мутирующих POST. Защищает
 // открытый-в-LAN Web UI от drive-by cross-origin POST: сторонняя страница
@@ -515,13 +521,21 @@ static esp_err_t handle_boot_config_set(httpd_req_t *req)
 static esp_err_t handle_save(httpd_req_t *req)
 {
     if (!csrf_check(req)) return ESP_FAIL;
+    // #3/Codeaudit P1: этот хендлер пишет на Flash (spectrum_save_to_flash), но
+    // до сих пор шёл БЕЗ гейта — мог конкурировать с autosave/offload/segment-pull.
+    // Короткое ожидание слота (не мгновенный 503): «Сохранить» — клик пользователя,
+    // редкий и не автоматический ретрай не нужен, но и мгновенный отказ на пустяковой
+    // задержке слота — плохой UX.
+    if (!http_io_gate_enter_wait_or_503(req, SAVED_FLASH_GATE_WAIT_MS)) return ESP_OK;
     int idx = spectrum_save_to_flash();
+    http_io_gate_leave();
     char resp[64];
     if (idx >= 0)
         snprintf(resp, sizeof(resp), "{\"ok\":true,\"index\":%d}", idx);
     else {
-        // #FW-24: конкретная причина отказа в UI
-        const char *err = (idx == -1) ? "novalid" : (idx == -2) ? "nospace" : "fserr";
+        // #FW-24: конкретная причина отказа в UI. #FW-59: -4 = слоты исчерпаны.
+        const char *err = (idx == -1) ? "novalid" : (idx == -2) ? "nospace"
+                         : (idx == -4) ? "exhausted" : "fserr";
         snprintf(resp, sizeof(resp), "{\"ok\":false,\"err\":\"%s\"}", err);
     }
     httpd_resp_set_type(req, "application/json");
@@ -529,10 +543,24 @@ static esp_err_t handle_save(httpd_req_t *req)
     return ESP_OK;
 }
 
+// #3/Codeaudit P1: буфер листинга — см. комментарий у handle_list.
+#define SAVED_LIST_BUF_CAP (64 * 1024)
+
 static esp_err_t handle_list(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr_chunk(req, "{\"spectra\":[");
+    // Раньше без гейта, chunk'и слались клиенту живьём во время readdir/fopen —
+    // держать гейт так было бы нельзя (слот на скорости клиента). Теперь под
+    // гейтом только сбор в буфер PSRAM (Flash I/O); отдача клиенту — без гейта.
+    if (!http_io_gate_enter_wait_or_503(req, SAVED_FLASH_GATE_WAIT_MS)) return ESP_OK;
+    size_t cap = SAVED_LIST_BUF_CAP;
+    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (!buf) { cap = 4096; buf = malloc(cap); }
+    if (!buf) {
+        http_io_gate_leave();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+    size_t len = (size_t)snprintf(buf, cap, "{\"spectra\":[");
     char path[80], item[160];
     int count = 0;
     // Перечисляем реальные файлы каталога, а не пробуем индексы подряд:
@@ -565,14 +593,19 @@ static esp_err_t handle_list(httpd_req_t *req)
         fclose(f);
         int n = snprintf(item, sizeof(item), "%s{\"index\":%d,\"counts\":%" PRIu32 ",\"time\":%" PRIu32 ",\"saved_at\":%ld}",
             count > 0 ? "," : "", i, counts, time_sec, (long)saved_at);
-        httpd_resp_send_chunk(req, item, n);
+        // #3: буфер вместо chunk-отправки — см. комментарий над handle_list.
+        // Запас 32 Б — под хвост "],\"count\":N}", который допишется после цикла.
+        if (len + (size_t)n + 32 > cap) break;   // переполнение: отдаём собранное, не портим JSON
+        memcpy(buf + len, item, (size_t)n);
+        len += (size_t)n;
         count++;
     }
     if (dir) closedir(dir);
-    char tail[32];
-    int n = snprintf(tail, sizeof(tail), "],\"count\":%d}", count);
-    httpd_resp_send_chunk(req, tail, n);
-    httpd_resp_send_chunk(req, NULL, 0);
+    len += (size_t)snprintf(buf + len, cap - len, "],\"count\":%d}", count);
+    http_io_gate_leave();   // #3: гейт отпущен ДО сетевой отдачи клиенту
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, len);
+    free(buf);
     return ESP_OK;
 }
 
@@ -1039,16 +1072,21 @@ static esp_err_t handle_saved_export_xml(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad index");
         return ESP_FAIL;
     }
+    // #3/Codeaudit P1: read из Flash (spectrum_load_from_flash) шёл без гейта.
+    if (!http_io_gate_enter_wait_or_503(req, SAVED_FLASH_GATE_WAIT_MS)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(spectrum_data_t));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (spectrum_load_from_flash(idx, sp) != 0) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Spectrum not found");
         return ESP_FAIL;
     }
+    http_io_gate_leave();   // #3: файл уже прочитан в sp — рендер идёт БЕЗ гейта
     char fn[32];
     snprintf(fn, sizeof(fn), "spectrum_%04d.xml", idx);
     esp_err_t ret = render_spectrum_xml(req, sp, fn);
@@ -1063,16 +1101,20 @@ static esp_err_t handle_saved_export_csv(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad index");
         return ESP_FAIL;
     }
+    if (!http_io_gate_enter_wait_or_503(req, SAVED_FLASH_GATE_WAIT_MS)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(spectrum_data_t));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (spectrum_load_from_flash(idx, sp) != 0) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Spectrum not found");
         return ESP_FAIL;
     }
+    http_io_gate_leave();
     char fn[32];
     snprintf(fn, sizeof(fn), "spectrum_%04d.csv", idx);
     esp_err_t ret = render_spectrum_csv(req, sp, fn);
@@ -1087,16 +1129,20 @@ static esp_err_t handle_saved_json(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad index");
         return ESP_FAIL;
     }
+    if (!http_io_gate_enter_wait_or_503(req, SAVED_FLASH_GATE_WAIT_MS)) return ESP_OK;
     spectrum_data_t *sp = malloc(sizeof(spectrum_data_t));
     if (!sp) {
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
     if (spectrum_load_from_flash(idx, sp) != 0) {
         free(sp);
+        http_io_gate_leave();
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Spectrum not found");
         return ESP_FAIL;
     }
+    http_io_gate_leave();
     esp_err_t ret = render_spectrum_json(req, sp);
     free(sp);
     return ret;
@@ -1110,11 +1156,11 @@ static esp_err_t handle_saved_delete(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad index");
         return ESP_FAIL;
     }
+    if (!http_io_gate_enter_wait_or_503(req, SAVED_FLASH_GATE_WAIT_MS)) return ESP_OK;
+    int rc = spectrum_delete_from_flash(idx);
+    http_io_gate_leave();
     httpd_resp_set_type(req, "application/json");
-    if (spectrum_delete_from_flash(idx) == 0)
-        httpd_resp_sendstr(req, "{\"ok\":true}");
-    else
-        httpd_resp_sendstr(req, "{\"ok\":false}");
+    httpd_resp_sendstr(req, rc == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
     return ESP_OK;
 }
 

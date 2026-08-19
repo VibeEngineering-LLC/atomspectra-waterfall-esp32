@@ -847,7 +847,11 @@ static esp_err_t h_segment_delete(httpd_req_t *req)
         return ESP_FAIL;
     }
     uint32_t idx = (uint32_t)strtoul(name + 4, NULL, 10);
+    // #3/Codeaudit P1: unlink идёт с отпущенным FSLOCK внутри spectrogram_seg_delete —
+    // гейт нужен только вокруг ЭТОГО вызова, не вокруг csrf/parse выше.
+    if (!http_io_gate_enter_wait_or_503(req, WF_SEGMENT_GATE_WAIT_MS)) return ESP_OK;
     bool ok = spectrogram_seg_delete(idx);
+    http_io_gate_leave();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"not-deletable\"}");
     return ESP_OK;
