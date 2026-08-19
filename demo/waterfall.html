@@ -132,7 +132,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <span class="ind" data-i18n-title="lbl.ring_title" title="live-окно в PSRAM — последние строки. Забор сегментов его не опустошает."><span data-i18n="lbl.ring">Кольцо ОЗУ</span> <b id="ringtxt">0/0</b><span class="bar"><i id="ringfi" style="width:0%;background:var(--accent)"></i></span></span>
 <span class="ind" id="flashwrap" data-i18n-title="lbl.flash_title" title="занятость флэш-памяти платы"><span data-i18n="lbl.flash">Flash</span> <b id="flashtxt">—</b><span class="bar"><i id="flashfi" style="width:0%;background:var(--accent)"></i></span></span>
 <span class="ind" id="diskwrap" data-i18n-title="lbl.disk_title" title="Файл, в который идёт запись стрима (браузер показывает только имя, не путь к папке)" style="display:none"><span data-i18n="lbl.disk">&#128190; Диск:</span> <b id="disktxt">—</b></span>
-<span class="ind" id="segwrap" data-i18n-title="lbl.seg_title" title="Завершённые сегменты водопада на Flash платы (единица автономной записи и забора)"><span data-i18n="lbl.seg">&#128190; Сегменты</span> <b id="segtxt">0</b><span id="segdrop" class="err" style="margin-left:6px;display:none"></span></span>
+<span class="ind" id="segwrap" data-i18n-title="lbl.seg_title" title="Завершённые сегменты водопада на Flash платы (единица автономной записи и забора)"><span data-i18n="lbl.seg">&#128190; Сегменты</span> <b id="segtxt">0</b><span id="seglost" class="err" style="margin-left:6px;display:none"></span><span id="segevict" class="warn" style="margin-left:6px;display:none"></span></span>
 </div>
 </section>
 
@@ -205,7 +205,7 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <summary data-i18n="help.summary">&#10067; Как идёт автономная запись и забор данных</summary>
 <div data-i18n-html="help.body">
 <p><b>Автономная запись.</b> Нажмите «Старт» — плата сама пишет водопад сегментами (<code>.aswf</code>) во Flash. Браузер нужен только чтобы нажать Старт/Стоп; после старта страницу можно закрыть — запись продолжится на плате.</p>
-<p><b>Хранилище — кольцо keep-last.</b> Сегменты копятся во Flash; когда место кончается, затирается старейший незабранный сегмент (индикатор «&#8722;N (кольцо)»). На Flash всегда остаётся последний отрезок.</p>
+<p><b>Хранилище — кольцо keep-last.</b> Сегменты копятся во Flash; когда место кончается, затирается старейший незабранный сегмент (индикатор «&#8722;N (кольцо)» — это безопасно, данные уже забраны или устарели). На Flash всегда остаётся последний отрезок. Отдельный индикатор «&#9888; потеряно N» — редкое и серьёзное событие: сегмент не пережил потерю питания/аварийный ребут, в отличие от кольца это реальная потеря данных.</p>
 <p><b>Забор данных.</b> Готовые сегменты берёт внешний вьювер по сети (список — <code>/api/waterfall/segments</code>, файл — <code>/api/waterfall/segment?name=</code>) и при необходимости сшивает несколько <code>.aswf</code> в один. Live-картинка на этой странице идёт по WebSocket из кольца ОЗУ и Flash не требует. Полное «Кольцо ОЗУ» — штатное окно последних строк, не очередь незабранных файлов (очередь — «Сегменты»).</p>
 <p><b>Экспорт .n42</b> — снимок текущего кольца ОЗУ (последние ~256 строк), работает всегда.</p>
 </div>
@@ -240,11 +240,11 @@ var DICT={
   "lbl.ring_title":"live-окно в PSRAM — последние строки. Забор сегментов его не опустошает.",
   "lbl.flash":"Flash","lbl.flash_title":"занятость флэш-памяти платы","lbl.disk":"💾 Диск:",
   "lbl.seg":"💾 Сегменты","lbl.seg_title":"Завершённые сегменты водопада на Flash платы (единица автономной записи и забора)",
-  "seg.dropped":" −%1 (кольцо)",
+  "seg.lost":" ⚠ потеряно %1","seg.evicted":" −%1 (кольцо)",
   "lbl.disk_title":"Файл, в который идёт запись стрима. Браузер по приватности не раскрывает путь к папке — показано только имя файла (папку вы выбрали в диалоге «Сохранить как»).",
   "disk.ind":"%1 · %2 стр. · %3 МБ · %4","disk.ram_tag":" · буфер ОЗУ (скачается на «Стоп»)",
   "help.summary":"❓ Как идёт автономная запись и забор данных",
-  "help.body":"<p><b>Автономная запись.</b> Нажмите «Старт» — плата сама пишет водопад сегментами (<code>.aswf</code>) во Flash. Браузер нужен только чтобы нажать Старт/Стоп; после старта страницу можно закрыть — запись продолжится на плате.</p><p><b>Хранилище — кольцо keep-last.</b> Сегменты копятся во Flash; когда место кончается, затирается старейший незабранный сегмент (индикатор «−N (кольцо)»). На Flash всегда остаётся последний отрезок.</p><p><b>Забор данных.</b> Готовые сегменты берёт внешний вьювер по сети (список — <code>/api/waterfall/segments</code>, файл — <code>/api/waterfall/segment?name=</code>) и при необходимости сшивает несколько <code>.aswf</code> в один. Live-картинка на этой странице идёт по WebSocket из кольца ОЗУ и Flash не требует. Полное «Кольцо ОЗУ» — штатное окно последних строк, не очередь незабранных файлов (очередь — «Сегменты»).</p><p><b>Экспорт .n42</b> — снимок текущего кольца ОЗУ (последние ~256 строк), работает всегда.</p>",
+  "help.body":"<p><b>Автономная запись.</b> Нажмите «Старт» — плата сама пишет водопад сегментами (<code>.aswf</code>) во Flash. Браузер нужен только чтобы нажать Старт/Стоп; после старта страницу можно закрыть — запись продолжится на плате.</p><p><b>Хранилище — кольцо keep-last.</b> Сегменты копятся во Flash; когда место кончается, затирается старейший незабранный сегмент (индикатор «−N (кольцо)» — это безопасно, данные уже забраны или устарели). На Flash всегда остаётся последний отрезок. Отдельный индикатор «⚠ потеряно N» — редкое и серьёзное событие: сегмент не пережил потерю питания/аварийный ребут, это реальная потеря данных.</p><p><b>Забор данных.</b> Готовые сегменты берёт внешний вьювер по сети (список — <code>/api/waterfall/segments</code>, файл — <code>/api/waterfall/segment?name=</code>) и при необходимости сшивает несколько <code>.aswf</code> в один. Live-картинка на этой странице идёт по WebSocket из кольца ОЗУ и Flash не требует. Полное «Кольцо ОЗУ» — штатное окно последних строк, не очередь незабранных файлов (очередь — «Сегменты»).</p><p><b>Экспорт .n42</b> — снимок текущего кольца ОЗУ (последние ~256 строк), работает всегда.</p>",
   "lbl.axis_x":"Ось X","opt.channels":"каналы","opt.kev":"кэВ","lbl.brightness":"Яркость",
   "opt.log":"лог","opt.lin":"лин","lbl.contrast":"Контраст","lbl.palette":"Палитра",
   "lbl.palette_title":"Сменить цветовую палитру","lbl.channels":"Каналы","btn.fit_reset":"сброс зума",
@@ -302,11 +302,11 @@ var DICT={
   "lbl.ring_title":"PSRAM live window — last rows. Segment offload does not drain it.",
   "lbl.flash":"Flash","lbl.flash_title":"on-board flash usage","lbl.disk":"💾 Disk:",
   "lbl.seg":"💾 Segments","lbl.seg_title":"Completed waterfall segments on the board Flash (unit of autonomous recording and offload)",
-  "seg.dropped":" −%1 (ring)",
+  "seg.lost":" ⚠ lost %1","seg.evicted":" −%1 (ring)",
   "lbl.disk_title":"The file the stream is being written to. For privacy the browser does not reveal the folder path — only the file name is shown (you chose the folder in the «Save As» dialog).",
   "disk.ind":"%1 · %2 rows · %3 MB · %4","disk.ram_tag":" · RAM buffer (downloads on «Stop»)",
   "help.summary":"❓ How autonomous recording and data offload work",
-  "help.body":"<p><b>Autonomous recording.</b> Press «Start» — the board records the waterfall to Flash as segments (<code>.aswf</code>) on its own. The browser is only needed to press Start/Stop; after starting you may close the page — recording continues on the board.</p><p><b>Storage — keep-last ring.</b> Segments accumulate on Flash; when space runs out, the oldest not-yet-offloaded segment is dropped (the «−N (ring)» indicator). The latest stretch is always kept on Flash.</p><p><b>Data offload.</b> An external viewer pulls finished segments over the network (list — <code>/api/waterfall/segments</code>, file — <code>/api/waterfall/segment?name=</code>) and stitches several <code>.aswf</code> into one if needed. The live image on this page comes over WebSocket from the RAM ring and needs no Flash. A full «RAM ring» is the live window of last rows, not a backlog of unfetched files (that queue is «Segments»).</p><p><b>.n42 export</b> — a snapshot of the current RAM ring (last ~256 rows), always available.</p>",
+  "help.body":"<p><b>Autonomous recording.</b> Press «Start» — the board records the waterfall to Flash as segments (<code>.aswf</code>) on its own. The browser is only needed to press Start/Stop; after starting you may close the page — recording continues on the board.</p><p><b>Storage — keep-last ring.</b> Segments accumulate on Flash; when space runs out, the oldest not-yet-offloaded segment is dropped (the «−N (ring)» indicator — safe, that data was already offloaded or is stale). The latest stretch is always kept on Flash. A separate «⚠ lost N» indicator is rare and serious: a segment did not survive a power loss / crash reboot — real data loss, unlike the ring.</p><p><b>Data offload.</b> An external viewer pulls finished segments over the network (list — <code>/api/waterfall/segments</code>, file — <code>/api/waterfall/segment?name=</code>) and stitches several <code>.aswf</code> into one if needed. The live image on this page comes over WebSocket from the RAM ring and needs no Flash. A full «RAM ring» is the live window of last rows, not a backlog of unfetched files (that queue is «Segments»).</p><p><b>.n42 export</b> — a snapshot of the current RAM ring (last ~256 rows), always available.</p>",
   "lbl.axis_x":"Axis X","opt.channels":"channels","opt.kev":"keV","lbl.brightness":"Brightness",
   "opt.log":"log","opt.lin":"lin","lbl.contrast":"Contrast","lbl.palette":"Palette",
   "lbl.palette_title":"Change colour palette","lbl.channels":"Channels","btn.fit_reset":"reset zoom",
@@ -970,12 +970,17 @@ async function refreshStatus(){
   }else{
    fw.style.opacity="1";
   }
-  // #REC-11-A1: сегменты на Flash (автономная запись). seg_dropped>0 — кольцо
-  // keep-last затёрло старейшие отрезки (Flash был полон).
+  // #FW-57: сегменты на Flash (автономная запись). Два независимых индикатора —
+  // seg_lost (реальная потеря, тревога) и seg_evicted (безопасное вытеснение
+  // кольцом keep-last при заполнении Flash, информационно). Раньше оба события
+  // шли в одно поле seg_dropped и их было нельзя различить (см. P-016).
   document.getElementById("segtxt").textContent=(s.seg_count||0);
-  var sd=document.getElementById("segdrop");
-  if(s.seg_dropped>0){sd.style.display="";sd.textContent=t("seg.dropped").replace("%1",s.seg_dropped);}
-  else{sd.style.display="none";}
+  var sl=document.getElementById("seglost");
+  if(s.seg_lost>0){sl.style.display="";sl.textContent=t("seg.lost").replace("%1",s.seg_lost);}
+  else{sl.style.display="none";}
+  var se=document.getElementById("segevict");
+  if(s.seg_evicted>0){se.style.display="";se.textContent=t("seg.evicted").replace("%1",s.seg_evicted);}
+  else{se.style.display="none";}
   tickRecTime();
  }catch(e){}
 }
@@ -1325,9 +1330,10 @@ if(oflEnEl)oflEnEl.onchange=async function(){
   if(!(await enablePersistNow())){el.checked=false;oflSetMsg(t("ofl.err_persist"),"err");}
  }catch(e){el.checked=false;oflSetMsg(t("ofl.err_persist"),"err");}
 };
-/* #PERF-2: зеркало web/waterfall.html — через heavyDownload (r.ok, имя из
-   Content-Disposition, revoke object URL). В самом демо эти два обработчика
-   перехватывает demo-shim.js, здесь они для соответствия прошивке. */
+/* #PERF-2: как и шесть ручек экспорта спектра — через heavyDownload: он
+   проверяет r.ok (иначе тело ошибки 404 «no waterfall data» легло бы на диск
+   под именем файла), берёт имя из Content-Disposition (иначе теряется
+   пользовательский префикс #FW-42) и снимает object URL. */
 document.getElementById("bExportN42").onclick=function(){
  heavyDownload("/api/waterfall/export.n42","waterfall.n42")
   .then(function(){lg(t("log.export"));}).catch(function(e){lg(String(e));});

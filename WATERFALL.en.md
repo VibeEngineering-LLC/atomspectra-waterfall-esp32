@@ -87,8 +87,8 @@ are always available for the window/stream). If `persist` is on, rows are also w
 to **flash** (LittleFS) — not as one file but as **segments** `.aswf` (see below): the
 unit of upload, the unit of the keep-last ring, and an independent file for stitching.
 When flash runs out of space the **keep-last ring** kicks in: the oldest not-yet-sent
-segment is overwritten, `flash_full` becomes `true` (= ring is active), the `seg_dropped`
-counter grows; the PSRAM ring and the WS stream keep running without interruption.
+segment is overwritten, `flash_full` becomes `true` (= ring is active), the `seg_evicted`
+counter grows (safe — see below); the PSRAM ring and the WS stream keep running without interruption.
 
 > **Calibration.** The instrument's real energy calibration is a 5-coefficient
 > polynomial (`E(ch) = c₀ + c₁·ch + c₂·ch² + c₃·ch³ + c₄·ch⁴`). It is delivered in the
@@ -112,7 +112,7 @@ be pulled and read independently of the others.
 | Segment size | up to **64 rows** (`WF_SEG_MAX_ROWS`) ≈ 1 MB payload |
 | Finalisation | on reaching 64 rows **OR** after 10 min (`WF_SEG_MAX_AGE_SEC`) — so a large interval doesn't leave a file open for hours |
 | Survives reboot | on boot `spectrogram_restore()` reconciles `/storage/wf`: deletes empty stubs, restores the index; **if recording was active — continues into a NEW segment** (no mid-segment append, every file stays valid) |
-| Flash full | **keep-last ring**: the oldest not-yet-sent segment is overwritten; `flash_full=true`, `seg_dropped` grows |
+| Flash full | **keep-last ring**: the oldest not-yet-sent segment is overwritten; `flash_full=true`, `seg_evicted` grows (safe) |
 | Row counter | the header always carries `saved_rows=0` — **rows are derived from the file size** (`payload / row_stride`); the header is never patched (patching an offset in LittleFS = copy-on-write of the whole file tail with a multi-second flash-cache freeze) |
 | Open segment | marked `finalized:false` in `/segments` (by the open file's index); no need to pull it before finalise |
 
@@ -165,8 +165,8 @@ engages).
   "recording": false, "persist": false, "flash_full": false, "ready": true,
   "interval_sec": 5, "ring_capacity": 256, "ring_count": 0,
   "total_rows": 0, "flash_rows": 0,
-  "seg_count": 0, "seg_dropped": 0,
-  "started_at": 0, "channels": 8192
+  "seg_count": 0, "seg_lost": 0, "seg_evicted": 0, "seg_dropped": 0,
+  "started_at": 0, "elapsed_sec": 0, "channels": 8192
 }
 ```
 
@@ -176,7 +176,19 @@ engages).
 - `flash_rows` — rows written to flash this session (monotonic);
 - `flash_full` — the **keep-last ring is active** (old segments being overwritten), not "flash is gone forever";
 - `seg_count` — finalised segments currently on Flash;
-- `seg_dropped` — segments removed by the keep-last ring since boot.
+- `seg_lost` — **#FW-57** (2026-08-19), real loss: boot reconciliation found a segment with
+  size=0 (rows may have physically reached flash, but the inode never confirmed the size —
+  power loss / crash reboot, see `KNOWN_ISSUES.en.md` P-016). Cumulative, survives reboot
+  (NVS), resets only on `/api/waterfall/clear`. **Previously this event and the safe ring
+  eviction below were counted in one `seg_dropped` field — growth could not be told apart**;
+- `seg_evicted` — **#FW-56**, segments overwritten by the keep-last ring (safe: the segment
+  was already offloaded or is stale). Also cumulative (NVS), also survives reboot;
+- `seg_dropped` — **deprecated, kept for backwards compatibility**: emitted as an alias of
+  `seg_lost`. The field is public — external receivers and scripts read it, so removing it
+  silently would break them without warning. The alias points at `seg_lost` (the alarming
+  metric), not at the sum: a client that watched for "something was lost" must keep seeing
+  losses, not routine rotation. **New integrations should use `seg_lost` and
+  `seg_evicted`**; the field will not be removed before the next major version.
 
 `GET /api/waterfall/segments` → JSON array (no CSRF). Each element:
 

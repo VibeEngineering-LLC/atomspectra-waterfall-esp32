@@ -240,6 +240,9 @@ static void settings_load(void)
     uint32_t evicted = 0;                   // #FW-56: накопительные вытеснения кольцом
     if (nvs_get_u32(h, "seg_evict", &evicted) == ESP_OK)
         s_status.seg_evicted = evicted;
+    uint32_t lost = 0;                      // #FW-57: накопительные реальные потери
+    if (nvs_get_u32(h, "seg_lost", &lost) == ESP_OK)
+        s_status.seg_lost = lost;
     nvs_close(h);
 }
 
@@ -646,7 +649,8 @@ static void make_room(uint32_t need)
         if (!removed) break;                     // same oldest would spin forever
         if (oldest == s_seg_zombie) s_seg_zombie = 0xFFFFFFFFu;
         LOCK();
-        s_status.seg_dropped++;
+        // #FW-57: seg_lost НЕ трогаем здесь — это безопасное вытеснение (данные уже
+        // скачаны/устарели), не потеря. Раньше оба события шли в одно поле seg_dropped.
         s_status.seg_evicted++;
         uint32_t evicted_now = s_status.seg_evicted;
         if (s_status.seg_count) s_status.seg_count--;
@@ -666,7 +670,7 @@ static void make_room(uint32_t need)
                 nvs_close(nh);
             }
         }
-        ESP_LOGW(TAG, "ring: dropped seg_%05" PRIu32 ".aswf (evicted total=%" PRIu32 ")",
+        ESP_LOGW(TAG, "ring: evicted seg_%05" PRIu32 ".aswf (evicted total=%" PRIu32 ")",
                  oldest, evicted_now);
     }
 }
@@ -727,6 +731,21 @@ static long seg_payload_offset(FILE *f)
         : (long)(8 + WF_HDR_RESERVE);
 }
 
+// #FW-57: NVS-персист seg_lost сразу при обнаружении (как seg_evicted в make_room) —
+// откладывать до следующего события нельзя, иначе ребут в узком окне унесёт счётчик.
+static void persist_seg_lost_if_any(uint32_t lost, uint32_t lost_total)
+{
+    if (!lost) return;
+    nvs_handle_t nh;
+    if (nvs_open(WF_SETTINGS_NS, NVS_READWRITE, &nh) == ESP_OK) {
+        nvs_set_u32(nh, "seg_lost", lost_total);
+        nvs_commit(nh);
+        nvs_close(nh);
+    }
+    ESP_LOGW(TAG, "seg reconcile: %" PRIu32 " segment(s) LOST this boot (total lost=%" PRIu32 ")",
+             lost, lost_total);
+}
+
 // boot-реконсиляция: пройти каталог, для каждого сегмента rows = из размера файла.
 // rows==0 → удалить огрызок. Шапки НЕ патчатся (#FW-14: saved_rows=0 = derive-from-
 // size, патч = COW-заморозка #FW-8). Восстановить s_seg_next/seg_count. (под s_fs_lock)
@@ -734,7 +753,7 @@ static void seg_reconcile(void)
 {
     mkdir(WF_SEG_DIR, 0777);                      // гарантировать каталог
     DIR *d = opendir(WF_SEG_DIR);
-    uint32_t maxidx = 0, completed = 0;
+    uint32_t maxidx = 0, completed = 0, lost = 0;
     bool any = false;
     if (d) {
         struct dirent *e;
@@ -754,9 +773,12 @@ static void seg_reconcile(void)
             if (rows == 0) {
                 // #FW-54 (I2): молчаливое удаление здесь стоило потери открытого
                 // сегмента при ребуте (P-016). Причина и арифметика — в журнал.
+                // #FW-57: и в счётчик seg_lost (см. хвост функции) — консервативно,
+                // reconcile не отличает «был пуст с начала» от «строки на flash,
+                // fsync не успел» (P-016 root cause).
                 ESP_LOGW(TAG, "reconcile DROP %s: size=%ld poff=%ld stride=%" PRIu32 " -> rows=0",
                          e->d_name, (long)sb.st_size, poff, stride);
-                fclose(f); unlink(p); continue;
+                fclose(f); unlink(p); lost++; continue;
             }
             fclose(f);
             completed++;
@@ -769,10 +791,15 @@ static void seg_reconcile(void)
     s_seg_fp   = NULL;
     s_seg_rows = 0;
     s_seg_prep_done = false;
-    // #FW-56: seg_dropped — счётчик ТЕКУЩЕЙ сессии, обнуление здесь намеренное.
-    // seg_evicted (накопительный, из NVS) НЕ трогаем: именно он отвечает на вопрос
-    // «куда делись сегменты», когда seg_dropped обнулён ребутом (ложный P-015).
-    LOCK(); s_status.seg_count = completed; s_status.seg_dropped = 0; UNLOCK();
+    // #FW-57: seg_lost — накопительный (как seg_evicted), НЕ обнуляется ребутом:
+    // молчаливое обнуление счётчика ПОТЕРЬ ребутом — тот же класс дефекта
+    // наблюдаемости, что породил ложный P-015 для seg_evicted, здесь цена выше.
+    LOCK();
+    s_status.seg_count = completed;
+    s_status.seg_lost  += lost;
+    uint32_t lost_total = s_status.seg_lost;
+    UNLOCK();
+    persist_seg_lost_if_any(lost, lost_total);
     ESP_LOGI(TAG, "seg reconcile: %" PRIu32 " segments, next=%" PRIu32, completed, s_seg_next);
 }
 
@@ -1321,7 +1348,7 @@ int spectrogram_clear(void)
     s_status.flash_rows = 0;
     s_status.flash_full = false;
     s_status.seg_count  = 0;
-    s_status.seg_dropped = 0;
+    s_status.seg_lost   = 0;     // #FW-57: явная очистка — история потерь тоже стирается
     s_status.seg_evicted = 0;    // #FW-56: явная очистка пользователем — история вытеснений
                                  // теряет смысл вместе с самими данными (в отличие от ребута)
     s_started_uptime_us = 0;     // #FW-21: очистка — сессии нет
@@ -1346,6 +1373,7 @@ int spectrogram_clear(void)
         nvs_handle_t nh;
         if (nvs_open(WF_SETTINGS_NS, NVS_READWRITE, &nh) == ESP_OK) {
             nvs_set_u32(nh, "seg_evict", 0);
+            nvs_set_u32(nh, "seg_lost", 0);   // #FW-57
             nvs_commit(nh);
             nvs_close(nh);
         }
