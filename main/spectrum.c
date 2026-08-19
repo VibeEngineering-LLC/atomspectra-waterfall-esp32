@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
+#include <errno.h>      // #FW-58: check unlink() result (issue #24)
 #include <sys/stat.h>   // #FW-24: mkdir SPEC_DIR
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -493,6 +494,17 @@ void spectrum_reset(void)
     // AUD-ASW126 #1/#12: httpd must not fclose autosave FILE* or write s_stage_*.
     // CDC drops an in-flight sweep via s_reset_gen; main consumes abort.
     spectrum_autosave_abort();
+    // #FW-58 (issue #24): unlink the already-committed autosave file HERE, not only
+    // via the deferred spectrum_autosave_consume_abort() on the next main-loop tick
+    // (up to ~60 s, or longer if consume is starved). AUTOSAVE_FILE is the rename()
+    // target, distinct from AUTOSAVE_TMP_FILE and from the writer-owned s_as_fp/
+    // s_as_snap state — removing it here is metadata-only and does not race the
+    // sliced writer. Without this, Reset (handle_reset httpd handler answers
+    // "ok":true immediately) followed by a reboot/power cut inside the deferred
+    // window left current.bin on flash; spectrum_restore_autosave() at boot then
+    // silently resurrected the pre-reset spectrum — the Reset undid itself.
+    if (unlink(AUTOSAVE_FILE) != 0 && errno != ENOENT)
+        ESP_LOGW(TAG, "Reset: current.bin unlink failed (errno=%d)", errno);
     SPEC_LOCK();
     s_reset_gen++;
     memset(s_spectrum.bins, 0, sizeof(s_spectrum.bins));
@@ -726,8 +738,15 @@ void spectrum_autosave_consume_abort(void)
     if (s_as_snap || s_as_fp)
         ESP_LOGW(TAG, "autosave aborted mid-write (tmp discarded)");
     autosave_cleanup_failed();
-    unlink(AUTOSAVE_FILE);
-    ESP_LOGI(TAG, "autosave consume: current.bin unlinked");
+    // #FW-58 (issue #24): check the result instead of logging unconditional success.
+    // ENOENT is the expected/common case now that spectrum_reset() already unlinks
+    // synchronously — not an error. Any other errno means current.bin is still on
+    // flash and this pass will NOT retry (s_as_abort is already cleared above), so
+    // it must be visible, not silently claimed as done.
+    if (unlink(AUTOSAVE_FILE) == 0)
+        ESP_LOGI(TAG, "autosave consume: current.bin unlinked");
+    else if (errno != ENOENT)
+        ESP_LOGW(TAG, "autosave consume: current.bin unlink failed (errno=%d)", errno);
 }
 
 void spectrum_autosave_yield(void)
