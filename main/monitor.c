@@ -29,7 +29,12 @@
 
 static const char *TAG = "monitor";
 
-#define MON_RING_PSRAM     21600   // 6 ч при 1 Гц: 21600 × 10 Б ≈ 211 КБ PSRAM
+// #MON-3: 12 ч вместо 6. Кольцо — единственное, что переживает F5 страницы:
+// вкладка держит свою историю в памяти браузера, но при перезагрузке
+// восстанавливает ровно то, что осталось на плате. При 6 ч суточное наблюдение
+// теряло данные от одного случайного F5. Цена: 422 КБ PSRAM вместо 211 из 8 МБ.
+// Не хватит — monitor_init штатно падает в internal-fallback (1 ч), не в отказ.
+#define MON_RING_PSRAM     43200   // 12 ч при 1 Гц: 43200 × 10 Б ≈ 422 КБ PSRAM
 #define MON_RING_INTERNAL   3600   // fallback без PSRAM: 1 ч ≈ 35 КБ internal
 
 static monitor_sample_t *s_ring;
