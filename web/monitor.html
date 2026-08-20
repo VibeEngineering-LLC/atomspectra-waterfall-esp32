@@ -517,7 +517,8 @@ function drawChart(){
  for(i=0;i<data.length;i++){ var v=data[i].cps; if(v<mn)mn=v; if(v>mx)mx=v; }
  for(i=0;i<sma.length;i++){ if(sma[i]<mn)mn=sma[i]; if(sma[i]>mx)mx=sma[i]; }
  if(mx-mn<1e-9)mx=mn+1;
- var padY=(mx-mn)*0.08; mn-=padY; mx+=padY;
+ // Отступ полей; cps=counts/dur ≥ 0 — отступ вниз не заводит ось в минус (ложный масштаб)
+ var padY=(mx-mn)*0.08, mn0=mn; mn-=padY; mx+=padY; if(mn<0&&mn0>=0)mn=0;
  var col=ac();
  // #UI-38: ось X — реальное время; позиция точки пропорциональна её timestamp
  var t0=data[0].ts.getTime(), tN=data[data.length-1].ts.getTime(), span=tN-t0;

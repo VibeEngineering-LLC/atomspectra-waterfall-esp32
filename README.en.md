@@ -294,7 +294,7 @@ initialized in any mode and consumes no RAM or power.
 | `/api/saved/<N>/spectrum.json` | GET | Saved spectrum (JSON) |
 | `/api/saved/<N>/delete` | POST | Delete a saved spectrum |
 | `/api/device` | GET | Instrument info (settings, calibration, serial) |
-| `/api/system` | GET | ESP32 health (heap, uptime, RSSI, flash) |
+| `/api/system` | GET | ESP32 health: `free_heap`/`min_free_heap`, `psram_total`/`psram_free`/`psram_largest` (`#MON-3`, `firmware-v1.2.16+` — the combined heap mixes internal and SPIRAM, so it can't tell whether the next large buffer will fit), uptime, RSSI, `flash_total`/`flash_used` |
 | `/api/calibration` | POST | Set calibration coefficients manually |
 | `/api/reboot-device` | POST | Reboot the spectrometer (CMD 0xF3) |
 | `/api/reboot-esp` | POST | Reboot the ESP32 |
