@@ -1245,6 +1245,13 @@ static esp_err_t handle_system(httpd_req_t *req)
     cJSON_AddStringToObject(root, "fw_version", app_desc ? app_desc->version : "?");
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "min_free_heap", esp_get_minimum_free_heap_size());
+    // #MON-3: PSRAM отдельной строкой. Общая куча складывает internal и SPIRAM, по
+    // ней нельзя судить, влезет ли следующее крупное кольцо: решение «расширить
+    // историю мониторинга» до сих пор принималось по косвенной цифре. Значения
+    // берутся из heap_caps напрямую, дешёвые (счётчики аллокатора, не обход).
+    cJSON_AddNumberToObject(root, "psram_total", heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root, "psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root, "psram_largest", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(root, "uptime_sec", (double)(esp_timer_get_time() / 1000000));
     cJSON_AddBoolToObject(root, "usb_connected", usb_host_cdc_is_connected());
     cJSON_AddBoolToObject(root, "wifi_connected", wifi_is_connected());

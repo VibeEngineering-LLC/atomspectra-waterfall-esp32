@@ -28,7 +28,8 @@ nav a,nav span{ padding:12px 16px; font-size:13px; color:var(--dim); flex-shrink
 nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); }
 .panel{ background:var(--panel); border:1px solid var(--bd); border-radius:10px; padding:16px; }
 .mut{ color:#6b756a; }
-.grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.cols{ columns:3; column-gap:14px; }
+.cols .panel{ break-inside:avoid; page-break-inside:avoid; -webkit-column-break-inside:avoid; margin-bottom:14px; }
 .ttl{ font-size:14px; font-weight:600; color:#e8efe2; margin-bottom:13px; display:flex; align-items:center; gap:8px; }
 .kv{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid #161c15; font-size:12.5px; }
 .kv span:first-child{ color:#7c887c; } .kv span:last-child{ color:#dfe5dc; text-align:right; }
@@ -41,9 +42,12 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 .chip.lang:hover{ filter:brightness(1.15); }
 .boot-row{ display:flex; align-items:center; gap:9px; padding:8px 0; font-size:12.5px; cursor:pointer; border-bottom:1px solid #161c15; color:#dfe5dc; }
 .boot-row input{ width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
-.grid-3{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
-/* #UI-32: 2 колонки, выровненные по высоте (grid stretch); телефон → 1 колонка */
-@media(max-width:760px){ .grid,.grid-3{ grid-template-columns:1fr; } }
+/* #UI-33: одна раскладка CSS columns — панели упаковываются плотно, без выравнивания
+   по высоте соседа. Пороги: 3 колонки держатся, пока на колонку остаётся ~350 px
+   (1121 px окна: (1121-44-28)/3 = 350); 2 колонки — до 760 px ((760-44-14)/2 = 351),
+   это прежний порог файла; уже — одна колонка (телефон). */
+@media(max-width:1120px){ .cols{ columns:2; } }
+@media(max-width:760px){ .cols{ columns:1; } }
 </style>
 </head>
 <body>
@@ -62,15 +66,28 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 
 <div class="wrap">
 
-<div class="grid">
+<!-- #UI-33: одна раскладка (CSS columns 3/2/1). Порядок панелей в DOM = порядок на
+     экране: сначала наблюдение (состояние), затем настройка (правится изредка). -->
+<div class="cols">
+
+<!-- наблюдение: прибор, ресурсы платы, связь -->
 <section class="panel">
-<div style="display:flex;justify-content:space-between;margin-bottom:8px">
-<span style="font-size:12px;color:#8a9686" data-i18n="heap.title">Свободная память (heap)</span>
-<span style="font-size:18px;font-weight:600;color:var(--accent)"><span id="heap-cur">—</span> <span class="mut" style="font-size:11px" data-i18n="unit.kb">КБ</span></span>
+<div class="ttl"><span style="color:var(--accent)">&#9678;</span> <span data-i18n="dev.title">Прибор · AtomSpectra</span></div>
+<div style="display:flex;justify-content:space-between;margin-bottom:6px">
+<span style="font-size:12px;color:#8a9686" data-i18n="cpu.title">CPU спектрометра</span>
+<span style="font-size:16px;font-weight:600;color:#f0c45a"><span id="cpu-cur">—</span> <span class="mut" style="font-size:11px">%</span></span>
 </div>
-<canvas id="heapc" width="700" height="90" style="width:100%;height:auto;display:block"></canvas>
-<div class="mut" style="font-size:11px;margin-top:5px"><span data-i18n="heap.minSince">мин. с момента старта:</span> <span id="heap-min">—</span> <span data-i18n="unit.kb">КБ</span></div>
+<canvas id="cpuc" width="700" height="64" style="width:100%;height:auto;display:block;margin-bottom:11px"></canvas>
+<div class="kv"><span>USB</span><span id="dev-usb">—</span></div>
+<div class="kv"><span data-i18n="dev.serial">Серийный №</span><span id="dev-serial">—</span></div>
+<div class="kv"><span data-i18n="dev.ver">Версия прошивки</span><span id="dev-ver">—</span></div>
+<div class="kv"><span data-i18n="dev.ch">Каналов</span><span id="dev-ch">—</span></div>
+<div class="kv"><span data-i18n="dev.cal">Калибровка</span><span id="dev-cal">—</span></div>
+<div class="kv"><span data-i18n="dev.temp">Темп. T1/T2/T3</span><span id="dev-t">—</span></div>
+<div class="kv"><span data-i18n="dev.mode">Режим</span><span id="dev-mode">—</span></div>
+<button class="btn red" onclick="rebootDevice()" data-i18n="dev.reboot">Перезагрузить прибор</button>
 </section>
+
 <section class="panel">
 <div style="display:flex;justify-content:space-between;margin-bottom:8px">
 <span style="font-size:12px;color:#8a9686" data-i18n="flash.title">Flash (LittleFS)</span>
@@ -79,9 +96,6 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <canvas id="flashc" width="700" height="90" style="width:100%;height:auto;display:block"></canvas>
 <div class="mut" style="font-size:11px;margin-top:5px"><span data-i18n="flash.used">занято:</span> <span id="flash-sub">—</span></div>
 </section>
-</div>
-
-<div class="grid">
 
 <section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#9636;</span> ESP32-S3</div>
@@ -101,6 +115,15 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </section>
 
 <section class="panel">
+<div style="display:flex;justify-content:space-between;margin-bottom:8px">
+<span style="font-size:12px;color:#8a9686" data-i18n="heap.title">Свободная память (heap)</span>
+<span style="font-size:18px;font-weight:600;color:var(--accent)"><span id="heap-cur">—</span> <span class="mut" style="font-size:11px" data-i18n="unit.kb">КБ</span></span>
+</div>
+<canvas id="heapc" width="700" height="90" style="width:100%;height:auto;display:block"></canvas>
+<div class="mut" style="font-size:11px;margin-top:5px"><span data-i18n="heap.minSince">мин. с момента старта:</span> <span id="heap-min">—</span> <span data-i18n="unit.kb">КБ</span></div>
+</section>
+
+<section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#8779;</span> WiFi</div>
 <div class="kv"><span data-i18n="wifi.state">Состояние</span><span id="wifi-state">—</span></div>
 <div class="kv"><span>SSID</span><span id="wifi-ssid">—</span></div>
@@ -113,44 +136,18 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn" onclick="resetWifi()" data-i18n="wifi.reset">Сбросить WiFi (режим настройки)</button>
 </section>
 
-<section class="panel" id="field-panel">
-<div class="ttl"><span style="color:var(--accent)">&#9788;</span> <span data-i18n="field.title">Полевой режим · Время</span></div>
-<div class="kv"><span data-i18n="field.mode">Режим сети</span><span id="net-mode">—</span></div>
-<div class="kv" id="ap-ssid-row" style="display:none"><span data-i18n="field.apSsid">Точка доступа</span><span id="ap-ssid">—</span></div>
-<div class="kv" id="ap-clients-row" style="display:none"><span data-i18n="field.apClients">Подключено телефонов</span><span id="ap-clients">—</span></div>
-<div class="kv"><span data-i18n="field.timeSrc">Источник времени</span><span id="time-src">—</span></div>
-<input id="manual-time-inp" type="datetime-local" step="1" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px;margin-bottom:6px">
-<button class="btn" onclick="setManualTime()" data-i18n="field.setTime">Установить время платы</button>
-<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="field.timeHint">В полевом режиме (без интернета) время берётся с телефона автоматически. Поле выше — ручная коррекция (пусто = текущее время телефона).</div>
-<div style="border-top:1px solid var(--bd);margin:12px 0 8px"></div>
-<div style="font-size:12px;color:#8a9686;margin-bottom:6px" data-i18n="field.apPassTitle">Пароль полевой точки доступа</div>
-<div id="ap-pass-warn" style="display:none;font-size:11px;color:#f0c45a;margin-bottom:6px" data-i18n="field.passDefaultWarn">Пароль AP — публичный по умолчанию; для людных мест смени пароль.</div>
-<input id="ap-pass-inp" type="text" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px">
-<button class="btn" onclick="changeApPass()" data-i18n="field.apPassSave">Сменить пароль AP (перезагрузка)</button>
-<div id="ap-pass-status" class="mut" style="font-size:11px;margin-top:5px"></div>
-</section>
-
-</div>
-
-<div class="grid">
-
 <section class="panel">
-<div class="ttl"><span style="color:var(--accent)">&#9678;</span> <span data-i18n="dev.title">Прибор · AtomSpectra</span></div>
-<div style="display:flex;justify-content:space-between;margin-bottom:6px">
-<span style="font-size:12px;color:#8a9686" data-i18n="cpu.title">CPU спектрометра</span>
-<span style="font-size:16px;font-weight:600;color:#f0c45a"><span id="cpu-cur">—</span> <span class="mut" style="font-size:11px">%</span></span>
+<div class="ttl"><span style="color:var(--accent)">&#8644;</span> <span data-i18n="tcp.title">TCP-мост (serial-over-WiFi)</span></div>
+<div class="kv"><span data-i18n="tcp.port">Порт</span><span>8234</span></div>
+<div class="kv"><span data-i18n="wifi.state">Состояние</span><span id="tcp-state">—</span></div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:11px" data-i18n-html="tcp.hint">BecqMoni / AtomSpectra на ПК подключаются к <span id="tcp-addr" style="color:#aeb6a8">—</span> вместо COM-порта.</div>
+<div style="display:flex;gap:8px;margin-top:13px">
+<button class="btn red" style="margin-top:0" onclick="rebootEsp()" data-i18n="btn.rebootEsp">Reboot ESP</button>
+<button class="btn green" style="margin-top:0" onclick="location.reload()" data-i18n="btn.refresh">Обновить</button>
 </div>
-<canvas id="cpuc" width="700" height="64" style="width:100%;height:auto;display:block;margin-bottom:11px"></canvas>
-<div class="kv"><span>USB</span><span id="dev-usb">—</span></div>
-<div class="kv"><span data-i18n="dev.serial">Серийный №</span><span id="dev-serial">—</span></div>
-<div class="kv"><span data-i18n="dev.ver">Версия прошивки</span><span id="dev-ver">—</span></div>
-<div class="kv"><span data-i18n="dev.ch">Каналов</span><span id="dev-ch">—</span></div>
-<div class="kv"><span data-i18n="dev.cal">Калибровка</span><span id="dev-cal">—</span></div>
-<div class="kv"><span data-i18n="dev.temp">Темп. T1/T2/T3</span><span id="dev-t">—</span></div>
-<div class="kv"><span data-i18n="dev.mode">Режим</span><span id="dev-mode">—</span></div>
-<button class="btn red" onclick="rebootDevice()" data-i18n="dev.reboot">Перезагрузить прибор</button>
 </section>
 
+<!-- настройка: правится изредка -->
 <section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="boot.titleBoot">Старт платы</span></div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
@@ -169,10 +166,6 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <button class="btn green" onclick="saveBootConfig('bc-status')" data-i18n="boot.save">Сохранить</button>
 <div class="mut" id="bc-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
 </section>
-
-</div>
-
-<div class="grid">
 
 <section class="panel">
 <div class="ttl"><span style="color:var(--accent)">&#9654;</span> <span data-i18n="dose.title">Мощность дозы</span></div>
@@ -195,16 +188,21 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 </div>
 </section>
 
-<div style="display:flex;flex-direction:column;gap:14px">
-<section class="panel">
-<div class="ttl"><span style="color:var(--accent)">&#8644;</span> <span data-i18n="tcp.title">TCP-мост (serial-over-WiFi)</span></div>
-<div class="kv"><span data-i18n="tcp.port">Порт</span><span>8234</span></div>
-<div class="kv"><span data-i18n="wifi.state">Состояние</span><span id="tcp-state">—</span></div>
-<div class="mut" style="font-size:11px;line-height:1.5;margin-top:11px" data-i18n-html="tcp.hint">BecqMoni / AtomSpectra на ПК подключаются к <span id="tcp-addr" style="color:#aeb6a8">—</span> вместо COM-порта.</div>
-<div style="display:flex;gap:8px;margin-top:13px">
-<button class="btn red" style="margin-top:0" onclick="rebootEsp()" data-i18n="btn.rebootEsp">Reboot ESP</button>
-<button class="btn green" style="margin-top:0" onclick="location.reload()" data-i18n="btn.refresh">Обновить</button>
-</div>
+<section class="panel" id="field-panel">
+<div class="ttl"><span style="color:var(--accent)">&#9788;</span> <span data-i18n="field.title">Полевой режим · Время</span></div>
+<div class="kv"><span data-i18n="field.mode">Режим сети</span><span id="net-mode">—</span></div>
+<div class="kv" id="ap-ssid-row" style="display:none"><span data-i18n="field.apSsid">Точка доступа</span><span id="ap-ssid">—</span></div>
+<div class="kv" id="ap-clients-row" style="display:none"><span data-i18n="field.apClients">Подключено телефонов</span><span id="ap-clients">—</span></div>
+<div class="kv"><span data-i18n="field.timeSrc">Источник времени</span><span id="time-src">—</span></div>
+<input id="manual-time-inp" type="datetime-local" step="1" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px;margin-bottom:6px">
+<button class="btn" onclick="setManualTime()" data-i18n="field.setTime">Установить время платы</button>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="field.timeHint">В полевом режиме (без интернета) время берётся с телефона автоматически. Поле выше — ручная коррекция (пусто = текущее время телефона).</div>
+<div style="border-top:1px solid var(--bd);margin:12px 0 8px"></div>
+<div style="font-size:12px;color:#8a9686;margin-bottom:6px" data-i18n="field.apPassTitle">Пароль полевой точки доступа</div>
+<div id="ap-pass-warn" style="display:none;font-size:11px;color:#f0c45a;margin-bottom:6px" data-i18n="field.passDefaultWarn">Пароль AP — публичный по умолчанию; для людных мест смени пароль.</div>
+<input id="ap-pass-inp" type="text" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" style="width:100%;padding:9px;background:#0a0c0a;color:#e8efe2;border:1px solid var(--bd);border-radius:6px;box-sizing:border-box;font-family:inherit;font-size:15px">
+<button class="btn" onclick="changeApPass()" data-i18n="field.apPassSave">Сменить пароль AP (перезагрузка)</button>
+<div id="ap-pass-status" class="mut" style="font-size:11px;margin-top:5px"></div>
 </section>
 
 <section class="panel">
@@ -215,8 +213,6 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <div class="mut" style="font-size:11px;line-height:1.5;margin-top:6px" data-i18n="tz.hint">Влияет на ось времени, таблицу и CSV-экспорт вкладки «Мониторинг». Хранится в браузере.</div>
 <div class="mut" id="tz-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
 </section>
-</div>
-
 </div>
 </div>
 
