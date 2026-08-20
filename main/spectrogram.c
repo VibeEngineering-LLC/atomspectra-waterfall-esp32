@@ -136,12 +136,16 @@ static void reg_add(uint32_t idx, uint32_t seg_seq, int64_t started_at)
     s_seg_reg[i].seg_seq    = seg_seq;
     s_seg_reg[i].started_at = started_at;
     s_seg_reg[i].rows       = 0;
+    // #FW-61: заготовка = шапка + baseline, без строк. Дальше растёт в reg_update_open.
+    s_seg_reg[i].bytes      = (uint32_t)WF_SEG_HEADER + (uint32_t)WF_BASELINE_BYTES;
     s_seg_reg[i].finalized  = false;
     s_seg_reg[i].valid      = true;
 }
 
 // Отсутствие записи здесь — рассинхрон (финализируем то, чего реестр не видел).
-static void reg_mark_finalized(uint32_t idx, uint32_t rows)
+// #FW-61: bytes — ФАКТИЧЕСКИЙ размер (stat), не формула (см. поле в spectrogram.h).
+// bytes==0 = «неизвестен», тогда прежнее значение сохраняем: устаревшее лучше ложного нуля.
+static void reg_mark_finalized(uint32_t idx, uint32_t rows, uint32_t bytes)
 {
     int i = reg_find(idx);
     if (i < 0) {
@@ -149,7 +153,20 @@ static void reg_mark_finalized(uint32_t idx, uint32_t rows)
         return;
     }
     s_seg_reg[i].rows      = rows;
+    if (bytes) s_seg_reg[i].bytes = bytes;
     s_seg_reg[i].finalized = true;
+}
+
+// #FW-61: живой счётчик строк открытого сегмента. Раньше листинг до самой финализации
+// отдавал rows=0, хотя строки уже писались, — внешняя трассировка ролловера видела
+// константу вместо роста. Зовётся под уже взятым LOCK (там же, где flash_rows++),
+// поэтому дополнительного захвата не добавляет.
+static void reg_update_open(uint32_t idx, uint32_t rows, uint32_t bytes)
+{
+    int i = reg_find(idx);
+    if (i < 0) return;
+    s_seg_reg[i].rows  = rows;
+    s_seg_reg[i].bytes = bytes;
 }
 
 // Удаление отсутствующего — не ошибка: точки удаления работают и с файлами,
@@ -561,7 +578,14 @@ static void seg_finalize(void)
         fclose(s_seg_fp);
         s_seg_fp = NULL;
         flash_quiet_writer_unlock();
-        LOCK(); s_status.seg_count++; reg_mark_finalized(s_seg_cur, s_seg_rows); UNLOCK();
+        // #FW-61: фактический размер файла — stat уже после fclose, данные на flash.
+        char fp_[80]; seg_path(fp_, sizeof(fp_), s_seg_cur);
+        struct stat fsb;
+        uint32_t fbytes = (stat(fp_, &fsb) == 0) ? (uint32_t)fsb.st_size : 0;
+        LOCK();
+        s_status.seg_count++;
+        reg_mark_finalized(s_seg_cur, s_seg_rows, fbytes);
+        UNLOCK();
         ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf finalized (%" PRIu32 " rows)",
                  s_seg_cur, s_seg_rows);
     } else {
@@ -855,14 +879,47 @@ static void seg_read_ids_open(FILE *f, uint32_t *seq, int64_t *started)
     // s_hdr свободен: он нужен только для СБОРКИ шапки при открытии сегмента, а
     // реконсиляция работает под тем же s_fs_lock и сегментов не открывает.
     *seq = 0; *started = 0;
+    // #FW-61: проверка сигнатуры и факта разбора числа — восстановлены. Они были в
+    // удалённой wf_seg_read_ids и исчезли молча: при усечённой шапке ключ может попасть
+    // в прочитанное, а цифры — нет, и strtoul вернул бы 0 как достоверное значение.
+    char sig[4];
+    if (fseek(f, 0, SEEK_SET) != 0) return;
+    if (fread(sig, 1, 4, f) != 4 || memcmp(sig, "ASWF", 4) != 0) return;
     if (fseek(f, 8, SEEK_SET) != 0) return;          // 8 = "ASWF" + uint32 reserve
     size_t n = fread(s_hdr, 1, WF_HDR_RESERVE - 1, f);
     if (n < 32) return;
     s_hdr[n] = '\0';
+    char *end;
     char *p = strstr(s_hdr, "\"seg_seq\":");
-    if (p) *seq = (uint32_t)strtoul(p + 10, NULL, 10);
+    if (p) { unsigned long v = strtoul(p + 10, &end, 10); if (end != p + 10) *seq = (uint32_t)v; }
     p = strstr(s_hdr, "\"started_at\":");
-    if (p) *started = (int64_t)strtoll(p + 13, NULL, 10);
+    if (p) { long long v = strtoll(p + 13, &end, 10); if (end != p + 13) *started = (int64_t)v; }
+}
+
+// #FW-61: размер ТЕКУЩЕГО (пишущегося) сегмента по числу строк. Здесь формула законна:
+// открытый сегмент всегда создан ЭТОЙ прошивкой, значит геометрия v5. Для завершённых и
+// восстановленных с flash файлов размер берётся stat'ом — там версия может быть любой.
+static inline uint32_t seg_bytes_for_rows(uint32_t rows)
+{
+    return rows * (uint32_t)WF_ROW_STRIDE + (uint32_t)WF_SEG_HEADER + (uint32_t)WF_BASELINE_BYTES;
+}
+
+// #FW-61: закрыть в реестре сегмент, брошенный аварийно (сбой записи строки). Файл
+// остался на flash с уцелевшими строками, поэтому помечаем его завершённым с фактическим
+// размером — иначе приёмник, берущий только finalized, обойдёт его стороной, и кольцо
+// сотрёт годные данные. Размер берём stat'ом: при обрыве fwrite в файле может лежать
+// частично записанная строка, и формула по числу строк дала бы заниженное значение.
+static void seg_reg_close_dropped(uint32_t idx, uint32_t rows)
+{
+    if (idx == 0xFFFFFFFFu) return;
+    char p[80];
+    seg_path(p, sizeof(p), idx);
+    struct stat sb;
+    uint32_t bytes = (stat(p, &sb) == 0) ? (uint32_t)sb.st_size : 0;
+    LOCK();
+    reg_mark_finalized(idx, rows, bytes);
+    s_status.seg_count++;   // файл остаётся завершённым — счётчик обязан это отражать
+    UNLOCK();
 }
 
 // boot-реконсиляция: пройти каталог, для каждого сегмента rows = из размера файла.
@@ -907,7 +964,9 @@ static void seg_reconcile(void)
             fclose(f);
             LOCK();
             reg_add(idx, rseq, rstart);
-            reg_mark_finalized(idx, rows);
+            // #FW-61: размер берём из уже сделанного stat — он ТОЧЕН для любой версии
+            // формата, включая pre-v5 файлы, пережившие обновление прошивки.
+            reg_mark_finalized(idx, rows, (uint32_t)sb.st_size);
             UNLOCK();
             completed++;
             if (!any || idx > maxidx) { maxidx = idx; any = true; }
@@ -1076,7 +1135,14 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         bool ok = fwrite_quiet_slices(s_seg_fp, s_row_pack, po);
         if (!ok) {
             ESP_LOGE(TAG, "seg row write failed — drop segment");
-            fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
+            fclose(s_seg_fp); s_seg_fp = NULL;
+            // #FW-61: файл ОСТАЁТСЯ на flash с уже записанными строками — значит и в
+            // реестре он обязан остаться ЗАВЕРШЁННЫМ, иначе приёмник (берёт только
+            // finalized) его никогда не заберёт, и кольцо сотрёт годные измерения.
+            // До этой правки запись висела finalized=false навсегда: s_seg_cur здесь
+            // сбрасывается, поэтому и признак «это открытый сегмент» больше не работал.
+            seg_reg_close_dropped(s_seg_cur, s_seg_rows);
+            s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
             s_seg_prep_done = false;
             FSUNLOCK();
             return;
@@ -1091,20 +1157,28 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         if (!locked) {
             ESP_LOGW(TAG, "seg row fflush deferred (writer lock) — row kept buffered");
             s_seg_rows++;
-            LOCK(); s_status.flash_rows++; UNLOCK();
+            LOCK();
+            s_status.flash_rows++;
+            reg_update_open(s_seg_cur, s_seg_rows, seg_bytes_for_rows(s_seg_rows));  // #FW-61
+            UNLOCK();
             FSUNLOCK();
             return;
         }
         if (fflush(s_seg_fp) != 0) {
             ESP_LOGE(TAG, "seg row fflush failed — drop segment");
-            fclose(s_seg_fp); s_seg_fp = NULL; s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
+            fclose(s_seg_fp); s_seg_fp = NULL;
+            seg_reg_close_dropped(s_seg_cur, s_seg_rows);   // #FW-61, см. ветку fwrite выше
+            s_seg_cur = 0xFFFFFFFFu; s_seg_rows = 0;
             s_seg_prep_done = false;
             flash_quiet_writer_unlock();
             FSUNLOCK();
             return;
         }
         s_seg_rows++;
-        LOCK(); s_status.flash_rows++; UNLOCK();
+        LOCK();
+        s_status.flash_rows++;
+        reg_update_open(s_seg_cur, s_seg_rows, seg_bytes_for_rows(s_seg_rows));  // #FW-61
+        UNLOCK();
         /* Skip periodic fsync while USB analyzer is live — fflush is enough
          * for size-derived rows mid-segment; finalize always fsyncs. */
         if (s_seg_rows % WF_FSYNC_BATCH == 0 && !usb_host_cdc_is_connected()) {
@@ -1650,6 +1724,7 @@ bool spectrogram_offload_claim(uint32_t *idx_out, char *name_out, size_t name_ca
             LOCK();
             if (s_status.seg_count) s_status.seg_count--;
             s_status.flash_full = false;
+            reg_remove(z);          // #FW-61: СЕДЬМАЯ точка инварианта, пропущенная в #FW-60
             UNLOCK();
             s_seg_zombie = 0xFFFFFFFFu;
             ESP_LOGI(TAG, "offload_claim: zombie seg_%05" PRIu32 " unlinked", z);

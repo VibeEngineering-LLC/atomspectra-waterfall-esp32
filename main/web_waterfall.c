@@ -671,7 +671,11 @@ static esp_err_t h_segments(httpd_req_t *req)
         return ESP_FAIL;
     }
     int nreg = spectrogram_seg_registry_snapshot(reg, WF_SEG_REG_MAX);
-    uint32_t open_idx = spectrogram_seg_open_index();
+    /* #FW-61: spectrogram_seg_open_index() отсюда УБРАН — он берёт s_fs_lock без таймаута,
+       то есть обработчик мог встать на секунды на ролловере сегмента (fsync ~1 МБ) и
+       занять воркер LIVE-полосы. Это ровно то, от чего защищал снятый HEAVY-гейт, и делало
+       комментарий «flash не трогаем» неверным. Признак открытого сегмента реестр знает сам:
+       finalized==false. */
     httpd_resp_set_type(req, "application/json");
 
     if (nreg <= 0) {
@@ -685,10 +689,14 @@ static esp_err_t h_segments(httpd_req_t *req)
         /* bytes выводится из rows обратной формулой (та же геометрия, что у читателя
            файла). Раньше бралось из stat(), но ради одного поля возвращать обход
            каталога бессмысленно: размер однозначно определяется числом строк. */
+        /* #FW-61: bytes — фактический размер из реестра (stat), а не формула по числу
+           строк: у сегментов старых версий формата другой stride и нет baseline-секции,
+           и вычисленное значение расходилось с файлом — приёмник отвергал такой сегмент
+           каждый проход, пока кольцо его не стирало. */
         long rows  = (long)reg[i].rows;
-        long bytes = rows * WF_ROW_STRIDE + WF_SEG_HEADER + WF_BASELINE_BYTES;
+        long bytes = (long)reg[i].bytes;
         uint32_t idx = reg[i].idx;
-        bool finalized = reg[i].finalized && (idx != open_idx);
+        bool finalized = reg[i].finalized;
 
         char seq_s[16], sat_s[24];
         if (reg[i].seg_seq) snprintf(seq_s, sizeof(seq_s), "%" PRIu32, reg[i].seg_seq);
@@ -703,6 +711,11 @@ static esp_err_t h_segments(httpd_req_t *req)
                         "\"seg_seq\":%s,\"started_at\":%s}",
                         i ? "," : "", idx, idx, bytes, rows,
                         finalized ? "true" : "false", seq_s, sat_s);
+        /* snprintf возвращает ЖЕЛАЕМУЮ длину: без этого зажима при усечении в сеть ушло бы
+           больше байт, чем есть в буфере (чтение за его границей). Сейчас максимум ~157 Б
+           при предельных значениях, но буфер уменьшен с 512 до 256 — запас сократился. */
+        if (n < 0) continue;
+        if (n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
         if (httpd_resp_send_chunk(req, line, n) != ESP_OK) { free(reg); return ESP_FAIL; }
     }
     free(reg);
