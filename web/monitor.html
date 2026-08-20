@@ -157,6 +157,7 @@ var DICT={
   "dev.chipOk":"Прибор подключён","dev.chipOff":"Нет прибора",
   "ctl.interval":"Интервал усреднения, с","ctl.start":"Старт","ctl.stop":"Стоп","ctl.clear":"Очистить","ctl.csv":"Выгрузить CSV",
   "run.idle":"остановлено","run.rec":"идёт запись · собрано %1","run.wait":"ожидание набора прибором…","run.paused":"прибор не набирает (время не идёт)","run.cleared":"спектр очищен на приборе — якорь сброшен",
+  "run.ring":"история платы (сбор идёт автономно) · показано %1",
   "live.title":"Текущий CPS","live.hint":"мгновенное значение с прибора","live.total":"Всего импульсов","live.devtime":"Время набора, с",
   "avg.title":"Средний CPS (сессия)","avg.rel":"отн. погрешность","avg.samples":"Отсчётов","avg.counts":"Импульсов в сессии","avg.dur":"Длит. сессии, с",
   "last.title":"Последний интервал","last.counts":"Импульсов","last.dur":"Длит., с",
@@ -173,6 +174,7 @@ var DICT={
   "dev.chipOk":"Device connected","dev.chipOff":"No device",
   "ctl.interval":"Averaging interval, s","ctl.start":"Start","ctl.stop":"Stop","ctl.clear":"Clear","ctl.csv":"Export CSV",
   "run.idle":"stopped","run.rec":"recording · %1 collected","run.wait":"waiting for device acquisition…","run.paused":"device not acquiring (time frozen)","run.cleared":"spectrum cleared on device — anchor reset",
+  "run.ring":"board history (acquired autonomously) · %1 shown",
   "live.title":"Current CPS","live.hint":"instantaneous value from device","live.total":"Total counts","live.devtime":"Acquisition time, s",
   "avg.title":"Mean CPS (session)","avg.rel":"relative error","avg.samples":"Samples","avg.counts":"Counts in session","avg.dur":"Session duration, s",
   "last.title":"Last interval","last.counts":"Counts","last.dur":"Duration, s",
@@ -233,6 +235,13 @@ var lastNextSeq=1;           // next_seq платы из последнего о
 var sessStart=0;             // seq первого сэмпла сессии (0 = сессии нет)
 var sessStopSeq=0;           // seq, на котором сессия заморожена Стопом (0 = не заморожена)
 var rebuildStop=0;           // >0: после F5 восстановить замороженную сессию до этого seq
+// #MON-2: сессии нет → показываем ВСЮ историю, уже лежащую в кольце платы (плата
+// копит автономно). Отдельный флаг: running задаёт вид кнопки/персист/семантику
+// «идёт моя сессия», просмотр кольца не должен их трогать. sessStart в этом режиме
+// остаётся 0 — иначе после F5 loadState примет просмотр за сохранённую сессию.
+var viewRing=false;          // режим просмотра кольца платы
+var ringPrimed=false;        // стартовый seq просмотра уже взят из first_seq платы
+var syncGen=0;               // Старт/Стоп/Очистить обрывают догон, висящий в полёте
 // Привязка наборного времени прибора к стене: сэмпл с end_sec=anchorEnd пришёл в anchorWall (мс).
 // ts ведра = anchorWall - (anchorEnd - devEnd)*1000 — при живом сборе это «сейчас»,
 // при догоне после F5/фона — честная ретро-дата.
@@ -271,10 +280,11 @@ function wipeView(){
 }
 
 function toggleRun(){
+ syncGen++;                  // #MON-2: догон в полёте больше не наш — его сэмплы отбросить
  if(!running){
   // Старт: сессия = сэмплы платы начиная с текущего next_seq. Локальный вид
   // очищается — после F5 сессия восстановится с платы ровно в этом же объёме.
-  running=true;
+  running=true; viewRing=false; ringPrimed=false;   // #MON-2: явная сессия отменяет просмотр кольца
   sessStart=Math.max(lastNextSeq,lastSeq+1); sessStopSeq=0; rebuildStop=0;
   lastSeq=sessStart-1;
   wipeView(); noteCleared=false;
@@ -289,6 +299,7 @@ function toggleRun(){
 }
 function clearData(){
  if(samples.length && !confirm(t("confirm.clear")))return;
+ syncGen++; viewRing=false; ringPrimed=false;   // #MON-2: очистка гасит просмотр кольца
  wipeView(); noteCleared=false;
  if(running){ sessStart=Math.max(lastNextSeq,lastSeq+1); lastSeq=sessStart-1; sessStopSeq=0; }
  else{ sessStart=0; sessStopSeq=0; rebuildStop=0; }
@@ -304,7 +315,7 @@ function renderStartBtn(){
 function renderStatus(){
  var s=document.getElementById("run-stat");
  var dot='<span class="live-dot'+(running?' rec':'')+'"></span>';
- if(!running){ s.innerHTML=dot+t("run.idle"); return; }
+ if(!running){ s.innerHTML=dot+(viewRing?(noteCleared?t("run.cleared"):tfmt("run.ring",samples.length)):t("run.idle")); return; }
  if(noteCleared){ s.innerHTML=dot+t("run.cleared"); return; }
  s.innerHTML=dot+tfmt("run.rec",samples.length);
 }
@@ -347,6 +358,7 @@ function handleEpoch(r){
   lastSeq=sessStart-1; sessStopSeq=0;
  }else{
   sessStart=0; sessStopSeq=0; rebuildStop=0; lastSeq=r.next_seq-1;
+  ringPrimed=false;   // #MON-2: кольцо потеряно — просмотр начинаем заново с нового first_seq
  }
  renderAggregates(); drawChart(); renderStatus(); saveState();
  return true;
@@ -379,7 +391,8 @@ var syncBusy=false;
 async function syncSeries(){
  if(syncBusy)return; syncBusy=true;
  var frozen=(!running&&rebuildStop>0);   // восстановление замороженной Стопом сессии после F5
- var collecting=running||frozen;
+ var collecting=running||frozen||viewRing;   // #MON-2: просмотр кольца тоже тянет сэмплы
+ var gen=syncGen;                        // смена режима на лету обесценивает этот догон
  var pend=[];                            // базовые сэмплы [end,dur,counts] до постановки в вёдра
  try{
   for(var hop=0;hop<400;hop++){          // догоняем плату циклом: чанк платы <= 2000 сэмплов
@@ -388,8 +401,11 @@ async function syncSeries(){
    var since=collecting?lastSeq:4294967294;
    var r=await(await fetch("/api/monitor/series?since="+since,{cache:"no-store"})).json();
    if(!r||typeof r.next_seq!=="number")break;
-   if(handleEpoch(r)){ pend=[]; frozen=false; collecting=running; if(!collecting)break; }
+   if(gen!==syncGen){ pend=[]; break; }   // #MON-2: пока ждали — сменился режим, сэмплы не наши
+   if(handleEpoch(r)){ pend=[]; frozen=false; collecting=running||viewRing; if(!collecting)break; }
    lastNextSeq=r.next_seq;
+   // #MON-2: первый ответ в режиме просмотра — стартуем с начала кольца платы
+   if(viewRing&&!ringPrimed&&typeof r.first_seq==="number"){ ringPrimed=true; lastSeq=r.first_seq-1; }
    var arr=r.samples||[], f=r.first_seq;
    if(collecting){
     for(var i=0;i<arr.length;i++){
@@ -619,6 +635,8 @@ async function savePrefix(){var e=document.getElementById("fx-prefix"),st=docume
 (function(){
  applyI18n();
  loadState();
+ // #MON-2: ни активной, ни замороженной сессии — показываем историю кольца платы
+ if(!running&&sessStart===0&&rebuildStop===0)viewRing=true;
  loadPrefix();
  renderStartBtn(); renderStatus(); renderAggregates(); renderXUnit(); drawChart();
  document.getElementById("langBtn").onclick=function(){setLang(LANG==="ru"?"en":"ru");};
