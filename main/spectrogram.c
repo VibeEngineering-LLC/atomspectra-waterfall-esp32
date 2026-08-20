@@ -81,6 +81,7 @@ static uint32_t  s_seg_cur = 0xFFFFFFFFu;  // индекс открытого с
 static uint32_t  s_seg_next;               // следующий индекс для нового сегмента
 static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
 static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
+static time_t    s_seg_last_fsync;         // #FW-63: когда последний раз сбрасывали метаданные открытого сегмента
 // #FW-8-FIX (2026-08-15): защёлка «make_room для текущего сегмента уже вызван».
 // Раньше триггер жил только в строковом пути и стрелял по строгому s_seg_rows==PREP_ROW —
 // при большом interval_sec сегмент закрывался по возрасту (WF_SEG_MAX_AGE_SEC) ЗАДОЛГО до
@@ -747,6 +748,7 @@ static bool seg_open_new(void)
     s_seg_cur       = s_seg_next;
     s_seg_rows      = 0;
     s_seg_opened_at = now;
+    s_seg_last_fsync = (time_t)now;   // #FW-63: отсчёт от открытия, не от прошлого сегмента
     s_seg_prep_done = false;
     s_seg_next++;
     // #FW-60: запись заводится СРАЗУ при открытии — те же seg_seq/started_at, что ушли
@@ -1224,10 +1226,21 @@ static void seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         s_status.flash_rows++;
         reg_update_open(s_seg_cur, s_seg_rows, seg_bytes_for_rows(s_seg_rows));  // #FW-61
         UNLOCK();
-        /* Skip periodic fsync while USB analyzer is live — fflush is enough
-         * for size-derived rows mid-segment; finalize always fsyncs. */
-        if (s_seg_rows % WF_FSYNC_BATCH == 0 && !usb_host_cdc_is_connected()) {
+        /* #FW-63: сброс метаданных не реже WF_FSYNC_MIN_SEC — и при живом USB тоже.
+         * Прежняя оговорка «fflush хватает для size-derived rows» опровергнута
+         * логом платы: оборванный сегмент читался как size=0 и терялся целиком.
+         * Длительность меряется и логируется при превышении 100 мс — это та самая
+         * заморозка кэша, ради которой fsync когда-то и отключили; молчать о ней
+         * нельзя, иначе цена правки останется непроверенной. */
+        time_t now_fs = time(NULL);
+        if (now_fs - s_seg_last_fsync >= WF_FSYNC_MIN_SEC) {
+            int64_t t0_fs = esp_timer_get_time();
             fsync(fileno(s_seg_fp));
+            int64_t dt_fs = esp_timer_get_time() - t0_fs;
+            s_seg_last_fsync = now_fs;
+            if (dt_fs > 100000)
+                ESP_LOGW(TAG, "seg fsync took %lld ms (row %" PRIu32 ")",
+                         (long long)(dt_fs / 1000), s_seg_rows);
         }
         flash_quiet_writer_unlock();
         // #FW-8: место под хвост текущего сегмента + весь следующий освобождаем

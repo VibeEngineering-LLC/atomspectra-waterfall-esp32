@@ -24,6 +24,15 @@
 #define WF_SEG_MAX_ROWS       64              // 64 * 16 КБ = 1 МБ payload на сегмент
 #define WF_SEG_MAX_AGE_SEC    600             // финализировать открытый сегмент не реже 10 мин
 #define WF_FSYNC_BATCH        4               // #WF-1: batch fsync only when USB analyzer offline; fflush every row; seg_finalize() always fsyncs (durability)
+// #FW-63: сброс метаданных открытого сегмента по ВРЕМЕНИ, а не по числу строк.
+// Прежнее условие (WF_FSYNC_BATCH строк И только при отключённом USB) в работе не
+// срабатывало никогда: прибор подключён всегда. Расчёт на fflush не оправдался —
+// размер файла на носителе не обновлялся до финализации, и оборванный сегмент
+// читался реконсиляцией как size=0, то есть терялся ЦЕЛИКОМ (лог платы:
+// "reconcile DROP seg_00054.aswf: size=0 poff=4104 -> rows=0"). По времени, а не по
+// строкам, потому что строка = interval_sec: при 5 с «каждая строка» дала бы fsync
+// раз в 5 с. 60 с — верхняя граница частоты; при боевых 180 с это одна строка.
+#define WF_FSYNC_MIN_SEC      60              // #FW-63: не чаще одного fsync открытого сегмента в 60 с
 #define WF_HDR_RESERVE        4096            // .aswf JSON-заголовок (добивается пробелами)
 #define WF_SEG_HEADER         (8 + WF_HDR_RESERVE)  // offset payload в сегменте (= 4104)
 
