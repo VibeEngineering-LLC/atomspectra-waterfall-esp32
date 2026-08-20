@@ -17,6 +17,7 @@
 #include <inttypes.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <math.h>        // #FW-62: isnan для temp_at_open (t1 = NaN, пока -inf не прочитан)
 
 static const char *TAG = "wf";
 
@@ -52,6 +53,12 @@ static uint16_t        *s_dur;       // #FW-5: кольцо реальных д�
 static float           *s_temp;      // #FW-41: кольцо t1 детектора (°C), параллельно s_ring (NaN пока -inf не прочитан)
 static uint32_t         s_prev_time; // #FW-5: предыдущее device total_time_sec (дельта = живое время среза)
 static spectrum_data_t *s_snap;     // start()/seg_header_build() (serial/calib для шапки)
+// #FW-62: калибровка предыдущего сегмента — чтобы в шапке отметить факт её смены.
+// Сравниваются сами коэффициенты, а не флаг «прибор что-то присылал»: -inf приходит
+// раз в 30 минут и чаще всего несёт те же значения.
+static double s_calib_prev[CALIB_COEFFS];
+static bool   s_calib_prev_valid;
+static bool   s_calib_changed;
 static spectrum_data_t *s_wf_snap;  // приватный буфер периодического wf_task (P3-4)
 static uint32_t        *s_baseline;     // PSRAM: 8192×uint32 — снимок накопительного спектра при start()
 static float            s_dose_k;       // µSv/h per cps из NVS (0.0 → NaN в dose_rate строк)
@@ -280,7 +287,8 @@ static void wait_after_seg_close(void)
 
 // #FW-60: единственная reg_*-функция, берущая лок сама — её зовёт HTTP-слой снаружи.
 // Копия по возрастанию idx: порядок нужен, чтобы листинг не прыгал между запросами.
-// Сортировка вставкой — массив крошечный (≤24), а лок держится только на время копии.
+// Сортировка вставкой: массив до WF_SEG_REG_MAX (256) записей, худший случай ~32 тыс.
+// перестановок по 32 Б — доли миллисекунды на 240 МГц, лок держится только на время копии.
 int spectrogram_seg_registry_snapshot(wf_seg_reg_t *out, int cap)
 {
     int n = 0;
@@ -519,6 +527,20 @@ static void seg_header_build(uint32_t rows, long saved_at, long started_at)
         WF_CHANNELS,                                              // baseline.channels
         s_seg_seq, s_seg_total_at_open,                          // #DATA-1b/1c
         s_status.interval_sec, started_at);
+    // #FW-62: температура детектора на момент открытия сегмента и признак того, что
+    // калибровка отличается от предыдущего сегмента. Температура в СТРОКАХ уже есть
+    // (#FW-41), но опорное значение в шапке избавляет от вычитывания строк ради одного
+    // числа; признак смены калибровки отвечает на вопрос «однороден ли сегмент», ради
+    // которого и затевался разбор сдвига.
+    // Источник тот же, что у поля temperature в строках (#FW-41): device_info_t.t1 из -inf.
+    // valid=false (ещё не пришёл -inf) — поле просто не пишем, вместо ложного «0 °C».
+    {
+        const device_info_t *di_ = spectrum_get_device_info();
+        if (n > 0 && n < cap && di_ && di_->valid && !isnan(di_->t1))
+            n += snprintf(s_hdr + n, cap - n, ",\"temp_at_open\":%.2f", (double)di_->t1);
+    }
+    if (n > 0 && n < cap && s_calib_changed)
+        n += snprintf(s_hdr + n, cap - n, ",\"calib_changed\":true");
     if (n > 0 && n < cap && s_snap && s_snap->serial_number[0])
         n += snprintf(s_hdr + n, cap - n, ",\"serial\":\"%s\"", s_snap->serial_number);
     if (n > 0 && n < cap && s_snap && s_snap->calib_valid) {
@@ -645,6 +667,29 @@ static bool seg_open_new(void)
     // никогда не патчится (патч offset 14/34 = LittleFS COW всего хвоста с
     // заморозкой flash-кэша, #FW-8). Время строк несут поля dur (v2) +
     // started_at; saved_at потребители шапки не используют.
+    // #FW-62: освежить метаданные ПЕРЕД сборкой шапки. Раньше s_snap снимался только
+    // при старте записи и при восстановлении после ребута, поэтому ВСЕ сегменты длинной
+    // сессии несли калибровку, снятую в первую секунду. Прибор за это время прогревается,
+    // термокомпенсация двигает усиление и присылает новую калибровку очередным -inf —
+    // прошивка её принимает, а в шапки она не попадала: файл описывал сам себя неверно,
+    // и это ровно тот «сегмент со сдвинутой калибровкой», что видел оператор.
+    // spectrum_get_meta, а не get_snapshot: копирует ~200 Б хвоста структуры вместо
+    // 32 КБ bins под тем же локом, который берёт приём гистограммы (#PERF-4). bins в
+    // s_snap при этом сохраняются — они нужны для baseline и заполняются в start/restore.
+    spectrum_get_meta(s_snap);
+    // #FW-62: сравниваем с калибровкой предыдущего сегмента. Первый сегмент сессии
+    // сменой не считается — сравнивать не с чем.
+    s_calib_changed = false;
+    if (s_snap->calib_valid) {
+        if (s_calib_prev_valid &&
+            memcmp(s_calib_prev, s_snap->calibration, sizeof(s_calib_prev)) != 0) {
+            s_calib_changed = true;
+            ESP_LOGW(TAG, "seg_%05" PRIu32 ": calibration changed since previous segment",
+                     s_seg_next);
+        }
+        memcpy(s_calib_prev, s_snap->calibration, sizeof(s_calib_prev));
+        s_calib_prev_valid = true;
+    }
     wait_flash_quiet();
     seg_header_build(0, 0, now);
     if (!flash_quiet_writer_lock(pdMS_TO_TICKS(500))) {
@@ -1693,14 +1738,12 @@ const char *spectrogram_seg_dir(void)
     return WF_SEG_DIR;
 }
 
-uint32_t spectrogram_seg_open_index(void)
-{
-    uint32_t v;
-    FSLOCK();
-    v = s_seg_fp ? s_seg_cur : 0xFFFFFFFFu;
-    FSUNLOCK();
-    return v;
-}
+/* #FW-61: spectrogram_seg_open_index() УДАЛЕНА. Единственным потребителем был листинг
+   сегментов, а функция берёт s_fs_lock без таймаута — обработчик LIVE-полосы вставал на
+   секунды на ролловере. Признак открытого сегмента теперь берётся из RAM-реестра
+   (finalized == false), обращения к файловой подсистеме не требуется.
+   Оставлять её «на всякий случай» опаснее, чем удалить: следующий читатель почини́т
+   листинг обратно через неё и молча вернёт ту же блокировку. */
 
 // ----------------------------------------------------------------------------
 //  #REC-11-A2: координация выгрузки с кольцом keep-last (под s_fs_lock).
