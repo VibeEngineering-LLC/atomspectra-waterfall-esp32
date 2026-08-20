@@ -18,6 +18,7 @@ no external schema to parse.
 | **v3** | Self-describing `row_fields`. Per-row timestamp, GPS, dose rate. Baseline section. Compression flag. `row_stride=16402`. |
 | **v4** | +per-row `crc32` (row integrity, `covers=16402`). `row_stride=16406`. Header gains `seg_seq` and `total_at_open` (dropped-segment detection and reconciliation). |
 | **v5** | +`temperature` (float32, detector °C) before `crc32` → `crc32.offset/covers` shift to `16406`. `row_stride=16410`. **Current firmware format** (`firmware-v1.0.11`, #FW-41). |
+| — | `firmware-v1.2.15` (#FW-62, geometry unchanged): `temp_at_open` and `calib_changed` added to the header — not a new format version, `row_stride` unchanged, just two optional JSON header fields. |
 
 ---
 
@@ -156,6 +157,18 @@ bump breaks parsing.
 | `seg_seq`       | int (uint32) | Global monotonic segment number (survives reboot/clear via NVS). A gap in the sequence of merged segments means a segment was lost — the ring erased it before offload (#DATA-1b) |
 | `total_at_open` | int (uint32) | Device cumulative counter when the segment was opened. The delta between adjacent segments is reconciled against the Σ counts of the previous one (#DATA-1c) |
 
+### Header fields `firmware-v1.2.15+` (thermal compensation)
+
+| Key | Type | Required | Description |
+|---|---|:---:|---|
+| `temp_at_open`  | float (°C)  | no | Detector temperature (`t1`) at the moment the segment was opened. Same source as the `temperature` row field (#FW-41) — a device status packet. Absent if the segment opened before the firmware received the first such packet after boot/reboot: rather than a false `0`, the field is simply not written. |
+| `calib_changed` | bool        | no | `true` if this segment's `calibration` differs from the previous segment's `calibration` within the same recording session. Compares the actual coefficients, not just whether a status packet arrived (it arrives roughly every 30 min and usually carries the same values). Omitted when there is no difference, or nothing to compare against (first segment of a session). |
+
+Why this was added: before `#FW-62` calibration was captured only once, at recording start, so every
+segment of a long session carried the calibration of the first second — the device's thermal
+compensation shifts the coefficients as it warms up, and the header never reflected that (the file
+misdescribed itself). Now calibration and temperature are refreshed on opening **every** segment.
+
 ### Row CRC32 (v4+)
 
 Standard CRC32: init `0xFFFFFFFF`, polynomial `0xEDB88320` (reflected), final XOR
@@ -200,7 +213,9 @@ descriptor in `row_fields` (v4 → 16402, v5 → 16406).
   "saved_rows":    660,
   "saved_at":      1783197003,
   "serial":        "AS-001",
-  "calibration":   [0.0, 0.298, 0.0]
+  "calibration":   [0.0, 0.298, 0.0],
+  "temp_at_open":  27.5,
+  "calib_changed": true
 }
 ```
 
