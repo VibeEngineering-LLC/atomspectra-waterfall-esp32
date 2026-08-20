@@ -196,9 +196,57 @@ engages).
 [ {"name":"seg_00000.aswf","idx":0,"bytes":1052680,"rows":64,"finalized":true} ]
 ```
 
-- `rows` is derived from the file size: `(bytes − 4104) / 16384`;
-- `finalized:false` — the segment is currently open — don't pull it;
+- **`#FW-60/#FW-61`**: the listing is served from a RAM registry (updated at every point
+  `seg_count` changes), not from a directory scan — used to take up to 1550 ms for four
+  segments, now it's a LIVE-class response with no lock;
+- `bytes` is the actual file size (`stat()`), not computed by formula: segments left over
+  from older format versions have a different `row_stride` and may lack the baseline
+  section, so a formula based on the current version's geometry was wrong for them;
+- `rows` is a direct registry field, updated as rows are written (not only on
+  finalization) — external rollover tracing sees it grow rather than sitting at a constant;
+- `finalized:false` — the segment is currently open — don't pull it. As of
+  `firmware-v1.2.17` (`#FW-63`), such a segment survives a sudden power loss too: header
+  metadata is flushed to storage at least once a minute, so even an unfinalized segment is
+  recovered by reconciliation at boot instead of being lost outright;
 - no directory yet / nothing recorded → `[]`.
+
+## CPS monitoring (`#MON-1`, `firmware-v1.2.16+`)
+
+The "Monitoring" tab shows the count rate over time, independently of waterfall recording.
+Architecture: the board itself, autonomously and continuously, accumulates one-second base
+samples in a PSRAM ring (**12 h** as of `firmware-v1.2.16`, `#MON-3`; 6 h before that) with
+a monotonic `seq`. Collection does not require the page to be open and does not stop when
+the tab is closed — the ring is the source of truth, the tab only reads its tail.
+
+| Endpoint | Method | What it does |
+|---|---|---|
+| `/monitor` | GET | Monitoring web UI |
+| `/api/monitor/series?since=<seq>` | GET | Series tail starting from `seq+1`. Read-only, no CSRF |
+
+`GET /api/monitor/series?since=<seq>` → JSON:
+
+```json
+{"epoch":74967625,"next_seq":1130,"first_seq":1,"interval_base":1,
+ "samples":[[end_sec,dur,counts],...]}
+```
+
+- `epoch` — series epoch; changes on spectrum/device reset or board restart (the ring is
+  lost). A client that sees a new `epoch` must treat its local history as invalid and
+  resync from `first_seq`;
+- `first_seq` / `next_seq` — the bounds of what's currently available in the ring;
+  `since=4294967294` (deliberately out of range) is a cheap way to poll the cursors only,
+  without requesting the samples themselves;
+- `samples` — up to 2000 elements per response (`MON_SERIES_CHUNK`); a client that needs
+  more catches up with a loop of requests until it reaches `next_seq`;
+- each sample `[end_sec, dur, counts]` is the device's acquisition time at the end of the
+  interval, the interval duration (s), and the count increment over it. The client
+  aggregates one-second base samples into "buckets" by its chosen averaging interval on
+  its own — the board only supplies raw data.
+
+The web page restores all available history on opening without an active recording
+session (before `firmware-v1.2.16` it only showed what was collected after pressing
+"Start" — a UI defect, not a firmware one: the board was collecting data all along, the
+page just wasn't fetching it).
 
 ## File formats
 

@@ -144,6 +144,45 @@ The instrument serial number (`serial_number`) stays empty after connection.
 
 ## Fixed
 
+### #FW-63: an open segment was lost ENTIRELY on a sudden reset — FIXED (v1.2.17)
+
+Closes the gap left by **P-016** below: that fix protected only routine reboot paths, not
+emergency ones (power loss, an external re-flash, a panic).
+
+Header metadata for the open segment was flushed to storage on the condition "every N rows
+**and** only while the instrument is not connected over USB." The second half of that
+condition nullifies the first in real operation: the instrument is connected the entire time
+a measurement runs. The assumption was that a regular buffer flush (`fflush`) was enough to
+update the file's size on disk — that's wrong; `fflush` does not require the filesystem to
+update the on-disk size record, `fsync` does. On a sudden reset such a segment was read back
+as a zero-size file, even though its header had been written, and it was lost outright.
+
+A segment closes by age (10 min), not by row count: at the production interval of 180 s that
+window fits only 3–4 rows out of 64 possible. So a sudden reset could cost **up to ten
+minutes of measurements** at a time.
+
+Fix: header metadata is now flushed to storage at least once a minute, regardless of whether
+the instrument is connected. Verified on a live board, red-green: before the fix, a sudden
+reset with 1 row in the open segment wiped it entirely (the loss counter went up); after the
+fix, the same reset with 3 rows in the segment — the segment survived (3 rows, 86,102 B), the
+counter did not change. The fix's cost was measured too (10 min of idle, identical
+conditions before/after): sweep loss 0.00 % in both cases, no metadata flush ever took
+longer than 100 ms.
+
+### #MON-2: CPS monitoring showed an empty chart until "Start" was pressed — FIXED (v1.2.16)
+
+The board (`#MON-1`) collects one-second samples into a PSRAM ring autonomously and
+continuously, regardless of whether the "Monitoring" tab is open. The "Start" button on the
+page, however, began the view from the **current** tail of the ring — everything
+accumulated before the click never made it into view, and with no active session the page
+displayed nothing at all. Opening the tab, a user saw an empty chart on top of samples the
+board had already collected, and concluded that collection only happened while the window
+was open — even though the firmware was working correctly.
+
+Fix: opening the page with no active or frozen session now shows the entire history
+available in the ring. "Start" still means "begin a new session from this moment" — that
+behavior was not changed.
+
 ### P-014: an open Web UI degrades measurement completeness — FIXED (v1.2.12)
 
 Serving HTTP competed with instrument data reception for CPU/bus/flash: while the board
@@ -173,6 +212,8 @@ lost per reboot.
 Fix: before every routine reboot path, the firmware now force-flushes and closes the open
 segment. Emergency paths (power loss, panic, watchdog) are not covered by this fix — a
 segment can still be lost there.
+
+> **Update (v1.2.17):** the emergency-path gap is closed — see **#FW-63** below.
 
 ### #DATA-7: silent data loss in the collector on segment name reuse — FIXED (v1.2.9 + wf-recorder v0.3.0)
 
