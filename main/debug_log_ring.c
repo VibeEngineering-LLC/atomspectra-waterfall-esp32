@@ -3,6 +3,8 @@
 #include "atomspectra.h"
 #include "debug_log_level_filter.h"
 #include "http_io_gate.h"
+#include "spectrogram.h"   // #FW-64: снимок состояния водопада в heartbeat
+#include "wf_offload.h"    // #FW-64: счётчики выгрузки сегментов
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -260,11 +262,32 @@ static void heartbeat_task(void *arg)
         const spectrum_data_t *sp = spectrum_get_current();
         uint32_t hok = 0, hd = 0;
         spectrum_get_hist_stats(&hok, &hd);
-        char line[384];
+
+        // #FW-64: состояние водопада тем же способом, что и остальные поля -
+        // снимок через публичный геттер. spectrogram_get_status() берёт только
+        // свой LOCK и держит его на время memcpy (порядок захвата: FS -> status,
+        // никогда наоборот, см. spectrogram.c), поэтому из heartbeat безопасен.
+        // До spectrogram_init() геттер отдаёт нули, а не падает: heartbeat
+        // стартует раньше инициализации водопада.
+        wf_status_t ws;
+        spectrogram_get_status(&ws);
+        // Выгрузка инициализируется только в indoor-режиме; в остальных
+        // случаях геттер отдаёт нулевую структуру.
+        wf_offload_stat_t os;
+        wf_offload_get_stat(&os);
+
+        // 512 = MAX_LINE кольца: писать длиннее бессмысленно,
+        // debug_log_ring_write_raw() всё равно обрежет.
+        char line[512];
         snprintf(line, sizeof(line),
                  "HB up=%llu free=%lu min=%lu fill=%d%% drop=%lu gen=%lu "
                  "rssi=%d wifi=%s usb=%s cps=%lu t1=%lu heavy=%d wait=%d rej=%lu "
-                 "hok=%" PRIu32 " hd=%" PRIu32 " rxe=%" PRIu32 " rrd=%" PRIu32,
+                 "hok=%" PRIu32 " hd=%" PRIu32 " rxe=%" PRIu32 " rrd=%" PRIu32
+                 // #FW-64: водопад. Поля дописаны В КОНЕЦ строки намеренно -
+                 // дамп кольца забирает внешний сборщик, живущий вне этого
+                 // репозитория; порядок и имена прежних полей для него контракт.
+                 " rec=%d seg=%" PRIu32 " lost=%" PRIu32 " evic=%" PRIu32
+                 " wrows=%" PRIu32 " full=%d ofok=%" PRIu32 " offail=%" PRIu32,
                  (unsigned long long)(esp_timer_get_time() / 1000000ULL),
                  (unsigned long)free_h, (unsigned long)min_h,
                  debug_log_ring_fill_pct(),
@@ -277,7 +300,10 @@ static void heartbeat_task(void *arg)
                  heavy ? 1 : 0, waiters, (unsigned long)rej,
                  hok, hd,
                  usb_host_cdc_rx_errors(),
-                 usb_host_cdc_rx_ring_drops());
+                 usb_host_cdc_rx_ring_drops(),
+                 ws.recording ? 1 : 0, ws.seg_count, ws.seg_lost, ws.seg_evicted,
+                 ws.flash_rows, ws.flash_full ? 1 : 0,
+                 os.sent_ok, os.failed);
         debug_log_ring_write_raw(line);
 
         for (int i = 0; i < HEARTBEAT_MS / 200 && s_hb_run; i++)
