@@ -73,7 +73,12 @@ static FILE     *s_seg_fp;
 static uint32_t  s_seg_cur = 0xFFFFFFFFu;  // индекс открытого сегмента (0xFFFFFFFF = нет)
 static uint32_t  s_seg_next;               // следующий индекс для нового сегмента
 static uint32_t  s_seg_rows;               // строк записано в текущий открытый сегмент
-static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с)
+static long      s_seg_opened_at;          // время открытия текущего сегмента (epoch с) — только для шапки, НЕ для возрастного триггера
+// #P-024 (issue #49, фикс по разбору Steaeavean 2026-08-23): возраст сегмента считаем от
+// монотонных часов, не от wall-clock — скачок SNTP/browser-time (POST /api/time) не должен
+// мгновенно финализировать файл через "age = 56 лет". s_seg_opened_at (epoch) НЕ патчится при
+// синке — раз age больше не читает его, патч не нужен (проще, чем правка в spectrogram_time_synced).
+static int64_t   s_seg_opened_uptime_us;
 static uint32_t  s_seg_pinned = 0xFFFFFFFFu; // #REC-11-A2: сегмент в процессе выгрузки (claim) — кольцо его не трогает
 static uint32_t  s_seg_seq;                // #DATA-1b: глоб. монотонный номер сегмента (NVS-персист, переживает clear/ребут)
 static uint32_t  s_seg_total_at_open;      // #DATA-1c: device cumulative total на момент открытия текущего сегмента
@@ -480,6 +485,10 @@ static bool seg_open_new(void)
         }
     }
     long now = (long)time(NULL);
+    // #P-024 (issue #49): контракт формата (ASWF_FORMAT.md) — started_at=0, пока часы не
+    // синхронизированы (< WF_SANE_EPOCH), означает «ось относительная». Ненулевой near-epoch
+    // хуже нуля: потребитель обязан трактовать ЛЮБОЕ ненулевое значение как абсолютный UTC.
+    long hdr_started_at = (now < (long)WF_SANE_EPOCH) ? 0L : now;
     // #DATA-1b/1c: снимок метаданных сегмента ДО сборки шапки (оба идут в JSON).
     // seg_seq — глоб. монотонный, переживает clear/ребут (NVS); total_at_open —
     // накопительный total прибора сейчас (reconciliation на PC). Персист seq в NVS
@@ -500,7 +509,7 @@ static bool seg_open_new(void)
     // заморозкой flash-кэша, #FW-8). Время строк несут поля dur (v2) +
     // started_at; saved_at потребители шапки не используют.
     wait_flash_quiet();
-    seg_header_build(0, 0, now);
+    seg_header_build(0, 0, hdr_started_at);
     if (!flash_quiet_writer_lock(pdMS_TO_TICKS(500))) {
         ESP_LOGE(TAG, "header lock failed %s", p);
         fclose(f); unlink(p);
@@ -552,10 +561,11 @@ static bool seg_open_new(void)
          * fsyncs. Row batch fsync remains offline-only. */
         flash_quiet_writer_unlock();
     }
-    s_seg_fp        = f;
-    s_seg_cur       = s_seg_next;
-    s_seg_rows      = 0;
-    s_seg_opened_at = now;
+    s_seg_fp               = f;
+    s_seg_cur              = s_seg_next;
+    s_seg_rows             = 0;
+    s_seg_opened_at        = now;                     // epoch — только для справки/шапки
+    s_seg_opened_uptime_us = esp_timer_get_time();     // #P-024: монотонная база возрастного триггера
     s_seg_next++;
     ESP_LOGI(TAG, "seg_%05" PRIu32 ".aswf opened in %lld us", s_seg_cur,
              (long long)(esp_timer_get_time() - t0));
@@ -817,7 +827,11 @@ static bool seg_write_row(const uint8_t *row, uint16_t dur, float temp)
         // #FW-41 v5 суффикс: timestamp + lat(NaN) + lon(NaN) + dose_rate + temperature.
         uint8_t v3tail[WF_TS_BYTES + WF_GPS_BYTES + WF_DOSE_BYTES + WF_TEMP_BYTES];
         {
-            uint32_t ts = (uint32_t)time(NULL);
+            // #P-024 (issue #49): тот же контракт нуля, что и started_at шапки — per-row
+            // timestamp=0, пока часы не синхронизированы, иначе потребитель (N42/десктоп-софт)
+            // трактует near-epoch как абсолютный UTC и рисует ось с 1970 года.
+            time_t now_ts = time(NULL);
+            uint32_t ts = (now_ts < (time_t)WF_SANE_EPOCH) ? 0u : (uint32_t)now_ts;
             uint32_t nan_bits = 0x7FC00000u;
             float lat_v, lon_v, dose_v;
             memcpy(&lat_v,  &nan_bits, 4);
@@ -1019,7 +1033,11 @@ static void wf_fs_task(void *arg)
         // чтобы при больших интервалах файл не висел открытым часами и приёмник
         // мог его забрать. Без патча шапки это только fsync+fclose (дёшево).
         FSLOCK();
-        if (s_seg_fp && (long)(time(NULL) - s_seg_opened_at) >= WF_SEG_MAX_AGE_SEC) {
+        // #P-024 (issue #49): esp_timer вместо time(NULL) — скачок SNTP/browser-time (POST
+        // /api/time) больше не может мгновенно "состарить" сегмент на десятилетия и вызвать
+        // немедленную преждевременную финализацию текущего открытого файла.
+        if (s_seg_fp && (esp_timer_get_time() - s_seg_opened_uptime_us)
+                            >= (int64_t)WF_SEG_MAX_AGE_SEC * 1000000) {
             seg_finalize();
             wait_after_seg_close();
         }
@@ -1093,6 +1111,10 @@ void spectrogram_restore(void)
              (uint32_t)st.interval_sec);
 }
 
+// #P-024 (issue #49): здесь чинится ТОЛЬКО RAM-якорь s_status.started_at (сессия/N42-кольцо).
+// s_seg_opened_uptime_us (возрастной триггер открытого сегмента, wf_fs_task) НЕ трогается —
+// он монотонный (esp_timer), скачок time(NULL) на него не влияет в принципе, патчить нечего.
+// Уже записанный на диск заголовок сегмента (#FW-14) тоже не патчится — тем более незачем.
 void spectrogram_time_synced(void)
 {
     bool corrected = false;
