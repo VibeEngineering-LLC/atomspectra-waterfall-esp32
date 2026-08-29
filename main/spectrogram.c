@@ -1316,7 +1316,7 @@ static void wf_task(void *arg)
         float temp_v;
         {
             const device_info_t *di = spectrum_get_device_info();
-            if (di && di->valid) {
+            if (di && di->valid && !isnan(di->t1)) {
                 temp_v = di->t1;
             } else {
                 uint32_t nan_bits = 0x7FC00000u;

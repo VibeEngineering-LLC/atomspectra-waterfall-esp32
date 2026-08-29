@@ -1,4 +1,5 @@
 #include "atomspectra.h"
+#include "spectrum_t1.h"
 #include "shproto.h"
 #include "web_waterfall.h"
 #include "web_util.h"
@@ -47,6 +48,12 @@ static inline bool time_is_synced(time_t t) { return t >= WF_TIME_SYNCED_EPOCH; 
 // то же значение, что WF_SEGMENT_GATE_WAIT_MS в web_waterfall.c: пользователь
 // ждёт клик, мгновенный 503 на пустяковой задержке слота — плохой UX.
 #define SAVED_FLASH_GATE_WAIT_MS 250
+
+static void json_add_temp(cJSON *o, const char *key, float t)
+{
+    if (isnan(t)) cJSON_AddNullToObject(o, key);
+    else cJSON_AddNumberToObject(o, key, (double)t);
+}
 
 // CSRF-токен: генерируется при старте, выдаётся по GET /api/csrf-token,
 // требуется в заголовке X-CSRF-Token на всех мутирующих POST. Защищает
@@ -122,9 +129,9 @@ static esp_err_t handle_status(httpd_req_t *req)
         cJSON_AddNumberToObject(root, "version", di->version);
         cJSON_AddNumberToObject(root, "mode", di->mode);
         cJSON_AddNumberToObject(root, "freq", di->freq);
-        cJSON_AddNumberToObject(root, "t1", di->t1);
-        cJSON_AddNumberToObject(root, "t2", di->t2);
-        cJSON_AddNumberToObject(root, "t3", di->t3);
+        json_add_temp(root, "t1", di->t1);
+        json_add_temp(root, "t2", di->t2);
+        json_add_temp(root, "t3", di->t3);
         cJSON_AddNumberToObject(root, "time", di->time_sec);
         cJSON_AddNumberToObject(root, "noise", di->noise);
         cJSON_AddNumberToObject(root, "max", di->max_integral);
@@ -193,17 +200,21 @@ static esp_err_t render_spectrum_json(httpd_req_t *req, const spectrum_data_t *s
     int dead = usb_host_cdc_spectrometer_dead() ? 1 : 0;   // #FW-43: «определился, но не запитан»
     int as_age = spectrum_autosave_age_sec();
     int as_streak = spectrum_autosave_fail_streak();
+    char jt1[16], jt2[16], jt3[16];
+    spectrum_temp_json(jt1, sizeof jt1, sp->temperature[0]);
+    spectrum_temp_json(jt2, sizeof jt2, sp->temperature[1]);
+    spectrum_temp_json(jt3, sizeof jt3, sp->temperature[2]);
     int n = snprintf(buf, 4096,
         "],\"total\":%" PRIu32 ",\"cpu\":%u,\"cps\":%" PRIu32 ",\"lost\":%" PRIu32 ",\"time\":%" PRIu32 ",\"live\":%.1f,"
         "\"bridge_drop\":%" PRIu32 ",\"usb_rx_err\":%" PRIu32 ",\"rx_ring_drops\":%" PRIu32 ","
         "\"hist_ok\":%" PRIu32 ",\"hist_drop\":%" PRIu32 ","
         "\"autosave_age_sec\":%d,\"autosave_fail_streak\":%d,"
-        "\"t1\":%.1f,\"t2\":%.1f,\"t3\":%.1f,\"serial\":\"%s\",\"dead\":%d",
+        "\"t1\":%s,\"t2\":%s,\"t3\":%s,\"serial\":\"%s\",\"dead\":%d",
         sp->total_counts, sp->cpu_load, sp->cps, sp->lost_impulses,
         sp->total_time_sec, compute_live_time(sp),
         tcp_bridge_dropped_bytes(), usb_host_cdc_rx_errors(), usb_host_cdc_rx_ring_drops(),
         hist_ok, hist_drop, as_age, as_streak,
-        sp->temperature[0], sp->temperature[1], sp->temperature[2],
+        jt1, jt2, jt3,
         sp->serial_number[0] ? sp->serial_number : "", dead);
     httpd_resp_send_chunk(req, buf, n);
     if (sp->calib_valid) {
@@ -1193,9 +1204,9 @@ static esp_err_t handle_device(httpd_req_t *req)
         cJSON_AddNumberToObject(root, "step", di->step);
         cJSON_AddNumberToObject(root, "time", di->time_sec);
         cJSON_AddNumberToObject(root, "pot", di->pot);
-        cJSON_AddNumberToObject(root, "t1", di->t1);
-        cJSON_AddNumberToObject(root, "t2", di->t2);
-        cJSON_AddNumberToObject(root, "t3", di->t3);
+        json_add_temp(root, "t1", di->t1);
+        json_add_temp(root, "t2", di->t2);
+        json_add_temp(root, "t3", di->t3);
         cJSON_AddBoolToObject(root, "tc_on", di->tc_on);
         cJSON_AddNumberToObject(root, "tp", di->tp);
     }

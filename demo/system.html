@@ -465,7 +465,8 @@ async function refreshDevice(){
   if(r.valid){
    document.getElementById("dev-ver").textContent=r.version||"—";
    document.getElementById("dev-mode").textContent=(r.mode!==undefined?r.mode:"—")+(r.tc_on?" ("+t("tc")+")":"");
-   var tt=(r.t1!==undefined?r.t1:"—")+" / "+(r.t2!==undefined?r.t2:"—")+" / "+(r.t3!==undefined?r.t3:"—")+" °C";
+   var fmtT=function(v){return (typeof v==="number")?v:"—";};
+   var tt=fmtT(r.t1)+" / "+fmtT(r.t2)+" / "+fmtT(r.t3)+" °C";
    document.getElementById("dev-t").textContent=tt;
   }else{
    document.getElementById("dev-ver").textContent="—";

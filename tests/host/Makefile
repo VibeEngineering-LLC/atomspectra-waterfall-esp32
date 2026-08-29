@@ -13,16 +13,17 @@ SRCS = test_shproto.c test_roundtrip.c ../../components/shproto/shproto.c \
        test_debug_log_filter.c \
        test_hist_stage.c ../../main/spectrum_hist_stage.c \
        test_flash_quiet.c \
-       test_kv_array.c
+       test_kv_array.c \
+       test_t1_settle.c ../../main/spectrum_t1.c
 
 test: $(SRCS) test_util.h
-	$(CC) $(CFLAGS) -o test_runner $(SRCS)
+	$(CC) $(CFLAGS) -o test_runner $(SRCS) -lm
 	./test_runner
 
 # Дополнительный прогон под санитайзерами: даже если canary-проверка пропустит
 # регрессию с записью за границу буфера, ASan поймает её жёстко.
 asan: $(SRCS) test_util.h
-	$(CC) $(CFLAGS) -fsanitize=address,undefined -g -o test_runner_asan $(SRCS)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -g -o test_runner_asan $(SRCS) -lm
 	./test_runner_asan
 
 clean:

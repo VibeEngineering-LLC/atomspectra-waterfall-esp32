@@ -329,6 +329,8 @@ static void cdc_teardown(uint8_t reason)
         }
     }
     DIAG_UNLOCK();
+    if (h)
+        spectrum_t1_on_cdc_teardown();
 
     // Close first, then reset RX: if reset precedes close, IDF may still deliver
     // late IN bytes into s_rx_ring after the worker has already drained the flag.
@@ -453,6 +455,7 @@ static void try_open_device(void)
         }
         return;
     }
+    spectrum_t1_on_cdc_open(diag_now_ms());
 
     // #FW-51: count successful reconnects (attempt>1 means we opened before or retried).
     if (s_attempt > 1) {
@@ -613,6 +616,11 @@ static void usb_connect_task(void *arg)
                     }
                 }
             }
+        }
+
+        if (s_cdc_dev && spectrum_t1_refresh_due(diag_now_ms())) {
+            if (usb_host_send_text_command("-inf") == 0)
+                spectrum_t1_mark_refresh_sent();
         }
 
         try_open_device();

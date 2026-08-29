@@ -1,4 +1,5 @@
 ﻿#include "atomspectra.h"
+#include "spectrum_t1.h"
 #include "hist_drop_diag.h"
 #include "flash_quiet.h"
 #include "spectrum_hist_stage.h"
@@ -34,6 +35,9 @@ typedef struct {
 
 static spectrum_data_t s_spectrum;
 static device_info_t   s_device_info;
+static uint32_t s_t1_session_inf;
+static bool     s_t1_refresh_sent;
+static uint32_t s_t1_open_ms;
 
 // #DEV-6: сырые тексты последних -inf / -tc_pot? ответов — источник для бэкапа
 // настроек (см. spectrum_process_info_response/_tcpot_response).
@@ -444,18 +448,61 @@ void spectrum_process_info_response(const char *text)
         else if (strcmp(key, "STEP") == 0) d->step = atoi(p);
         else if (strcmp(key, "t") == 0) d->time_sec = atoi(p);
         else if (strcmp(key, "POT") == 0) d->pot = atoi(p);
-        else if (strcmp(key, "T1") == 0) d->t1 = atof(p);
-        else if (strcmp(key, "T2") == 0) d->t2 = atof(p);
-        else if (strcmp(key, "T3") == 0) d->t3 = atof(p);
+        else if (strcmp(key, "T1") == 0) d->t1 = spectrum_temp_from_token(p);
+        else if (strcmp(key, "T2") == 0) d->t2 = spectrum_temp_from_token(p);
+        else if (strcmp(key, "T3") == 0) d->t3 = spectrum_temp_from_token(p);
         else if (strcmp(key, "TC") == 0) d->tc_on = (strncmp(p, "ON", 2) == 0);
         else if (strcmp(key, "TP") == 0) d->tp = atoi(p);
         if (*p == '[') { while (*p && *p != ']') p++; if (*p==']') p++; }
         else { while (*p && *p != ' ' && *p != '\n') p++; }
     }
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (spectrum_t1_hold_active(s_t1_session_inf, now_ms, s_t1_open_ms))
+        d->t1 = NAN;   /* до open+5s: T1 не публиковать (в т.ч. reconnect retry) */
+    s_t1_session_inf++;
     d->valid = true;
     s_spectrum.temperature[0] = d->t1;
     s_spectrum.temperature[1] = d->t2;
     s_spectrum.temperature[2] = d->t3;
+    SPEC_UNLOCK();
+}
+
+void spectrum_t1_on_cdc_open(uint32_t now_ms)
+{
+    SPEC_LOCK();
+    s_t1_session_inf = 0;
+    s_t1_refresh_sent = false;
+    s_t1_open_ms = now_ms;
+    s_device_info.t1 = NAN;
+    s_spectrum.temperature[0] = NAN;
+    SPEC_UNLOCK();
+}
+
+void spectrum_t1_on_cdc_teardown(void)
+{
+    SPEC_LOCK();
+    s_t1_session_inf = 0;
+    s_t1_refresh_sent = false;
+    s_t1_open_ms = 0;
+    s_device_info.t1 = NAN;
+    s_spectrum.temperature[0] = NAN;
+    SPEC_UNLOCK();
+}
+
+bool spectrum_t1_refresh_due(uint32_t now_ms)
+{
+    bool due;
+    SPEC_LOCK();
+    due = (s_t1_session_inf >= 1) && !s_t1_refresh_sent &&
+          (now_ms - s_t1_open_ms) >= SPECTRUM_T1_REFRESH_MS;
+    SPEC_UNLOCK();
+    return due;
+}
+
+void spectrum_t1_mark_refresh_sent(void)
+{
+    SPEC_LOCK();
+    s_t1_refresh_sent = true;
     SPEC_UNLOCK();
 }
 // #DEV-6: ответ на -tc_pot? ("Tcpot [-40 51 -16 45 ...]") — отдельная команда,

@@ -397,9 +397,9 @@ async function update(){
   var stEl=document.getElementById("status");
   var lv=(typeof d.live==="number")?d.live:d.time;
   var dpct=(d.time>0)?((d.time-lv)/d.time*100):0;
-  var tStr=''+d.t1;
-  if(d.t2>0)tStr+='/'+d.t2;
-  if(d.t3>0)tStr+='/'+d.t3;
+  var tStr=(typeof d.t1==="number")?(''+d.t1):"—";
+  if(typeof d.t2==="number" && d.t2>0)tStr+='/'+d.t2;
+  if(typeof d.t3==="number" && d.t3>0)tStr+='/'+d.t3;
   var doseStr=(doseK>0)?(d.cps*doseK).toFixed(3):"";
   stEl.innerHTML='<span class="ac">CPS <span>'+d.cps+'</span></span><span class="sep">|</span>'+
    '<span class="w"><span>'+d.total.toLocaleString(lcl())+'</span> <span class="mut">'+tr("ax.cnt").toLowerCase()+'</span></span>'+

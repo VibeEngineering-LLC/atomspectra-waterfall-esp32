@@ -133,7 +133,7 @@ TC OFF TCpot OFF Tco [0 0 … 0] TP 1000 PileUp [] PileUpThr 8192
 | `STEP 1` | Discriminator comparison step |
 | `t 9219` | Seconds of the current spectrum acquisition |
 | `POT 102 POT2 26` | Values of `U` and `V` respectively |
-| `T1/T2/T3` | Temperature sensors (`OFF` — not connected; `33.5` — °C) |
+| `T1/T2/T3` | Temperature sensors (`OFF` — not connected; `33.5` — °C). After instrument cold start T1 is invalid for ≥4 s; the gateway does not use field `t`. T1 is withheld (JSON `null`) until ~5 s after CDC-open, including extra `-inf` in that window (reconnect retry, backup). One follow-up `-inf` ~5 s later. `OFF` in JSON means no sensor, not 0 °C. |
 | `Prise/Srise/Pfall/Sfall` | Overlapping-pulse rejection parameters |
 | `TC / TCpot` | Temperature-compensation statuses |
 | `TP 1000` | Max-integral recalculation period, ms |

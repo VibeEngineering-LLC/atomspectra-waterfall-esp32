@@ -200,6 +200,10 @@ void spectrum_get_hist_stats(uint32_t *commits, uint32_t *drops);
 // маркер начала тихого USB-окна для фазовой привязки flash-записей.
 void spectrum_add_commit_listener(void *freertos_binary_sem);
 void spectrum_process_info_response(const char *text);
+void spectrum_t1_on_cdc_open(uint32_t now_ms);
+void spectrum_t1_on_cdc_teardown(void);
+bool spectrum_t1_refresh_due(uint32_t now_ms);
+void spectrum_t1_mark_refresh_sent(void);
 // #DEV-6: ответ на -tc_pot? ("Tcpot [...]") — таблица баз. темп. компенсации,
 // НЕ входит в -inf (см. #DOC-3/BUG-AS-08). Хранится сырым текстом для бэкапа.
 void spectrum_process_tcpot_response(const char *text);
