@@ -32,7 +32,7 @@ static const char *TAG = "wf_web";
 #define WF_SEGMENT_GATE_WAIT_MS 250
 /* #FW-65: Clear unlinks many ~1 MiB files under FSLOCK. Wait longer than
  * the segment GET slot so a short autosave burst can finish first. */
-#define WF_CLEAR_GATE_WAIT_MS   5000
+#define WF_CLEAR_GATE_WAIT_MS   250
 
 static httpd_handle_t s_server;
 static int            s_ws_fds[WF_WS_MAX];

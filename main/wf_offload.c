@@ -109,7 +109,7 @@ static void build_basic_auth(const char *user, const char *pass, char *hdr, size
 // ----------------------------------------------------------------------------
 //  HTTP POST одного сегмента (стриминг тела из файла, без буфера на весь .aswf)
 //  Возврат: HTTP-код (>0) при завершённом запросе; <0 — локальный сбой:
-//    -10 fopen, -11 init, -12 open, -13 oom, -14 write.
+//    -10 fopen, -11 init, -12 open, -13 oom, -14 write, -15 clear-cancel.
 // ----------------------------------------------------------------------------
 
 static int post_segment(const wf_offload_cfg_t *c, const char *name,
@@ -143,11 +143,12 @@ static int post_segment(const wf_offload_cfg_t *c, const char *name,
         size_t rd;
         bool ok = true;
         while ((rd = fread(buf, 1, 4096, f)) > 0) {
+            if (spectrogram_clear_is_pending()) { ok = false; result = -15; break; }
             int w = esp_http_client_write(cl, buf, rd);
             if (w < 0 || (size_t)w != rd) { ok = false; break; }
         }
         free(buf);
-        if (!ok) { result = -14; goto done; }
+        if (!ok) { if (result != -15) result = -14; goto done; }
         esp_http_client_fetch_headers(cl);
         result = esp_http_client_get_status_code(cl);
     }

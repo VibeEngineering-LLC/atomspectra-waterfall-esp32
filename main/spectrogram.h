@@ -138,6 +138,11 @@ int    spectrogram_stop(void);
  * side effects); -2 = partial delete (registry / seg_count / s_seg_next
  * rebuilt from leftover; NVS evict/lost left intact). */
 int    spectrogram_clear(void);
+/* #FW-65: lock-free cancel for wf_offload. Write under FSLOCK in Clear;
+ * read from post_segment without taking FSLOCK (deadlock otherwise). */
+void   spectrogram_clear_begin_pending(void);
+void   spectrogram_clear_end_pending(void);
+bool   spectrogram_clear_is_pending(void);
 void   spectrogram_set_interval(uint32_t sec);
 void   spectrogram_set_persist(bool on);
 void   spectrogram_set_row_cb(wf_row_cb_t cb);
