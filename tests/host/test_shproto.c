@@ -23,6 +23,7 @@ void flash_quiet_suite(void);
 // A1-P0: разбор тела POST /api/settings/restore — запись за границу приёмного массива
 void run_kv_array_tests(void);
 void t1_settle_suite(void);
+void wf_seg_clear_suite(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -179,6 +180,7 @@ int main(void)
     flash_quiet_suite();
     run_kv_array_tests();
     t1_settle_suite();
+    wf_seg_clear_suite();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);

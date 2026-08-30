@@ -143,7 +143,7 @@ keep-last).
 | `/api/waterfall/status` | GET | Статус водопада (JSON, см. ниже) |
 | `/api/waterfall/start` | POST | Начать запись |
 | `/api/waterfall/stop` | POST | Остановить запись |
-| `/api/waterfall/clear` | POST | Очистить кольцо + сегменты на flash (только когда запись остановлена) |
+| `/api/waterfall/clear` | POST | Очистить кольцо + сегменты на flash (только когда запись остановлена). `{"ok":true}` только если `seg_*` пуст; `"err":"recording"` если запись идёт; `"err":"delete"` если файлы остались (#FW-65) |
 | `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — интервал (с) и запись во flash |
 | `/api/waterfall/window` | GET | Снимок кольца (бинарь **ASWW**, до 256 строк) |
 | `/api/waterfall/segments` | GET | **Список сегментов на Flash** (JSON-массив, см. ниже). Не требует CSRF |

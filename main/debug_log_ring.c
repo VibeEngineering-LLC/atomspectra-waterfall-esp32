@@ -275,6 +275,10 @@ static void heartbeat_task(void *arg)
         // случаях геттер отдаёт нулевую структуру.
         wf_offload_stat_t os;
         wf_offload_get_stat(&os);
+        // Sample before snprintf/write_raw: the first HB after boot is the
+        // pre-format watermark. Later ticks include that frame. On Xtensa
+        // ESP32-S3, uxTaskGetStackHighWaterMark is bytes (StackType_t=uint8_t).
+        UBaseType_t stk = uxTaskGetStackHighWaterMark(NULL);
 
         // 512 = MAX_LINE кольца: писать длиннее бессмысленно,
         // debug_log_ring_write_raw() всё равно обрежет.
@@ -287,7 +291,11 @@ static void heartbeat_task(void *arg)
                  // дамп кольца забирает внешний сборщик, живущий вне этого
                  // репозитория; порядок и имена прежних полей для него контракт.
                  " rec=%d seg=%" PRIu32 " lost=%" PRIu32 " evic=%" PRIu32
-                 " wrows=%" PRIu32 " full=%d ofok=%" PRIu32 " offail=%" PRIu32,
+                 " wrows=%" PRIu32 " full=%d ofok=%" PRIu32 " offail=%" PRIu32
+                 // Complementary diagnostics, also appended (names/order of
+                 // #FW-64 keys unchanged): RAM spectrogram ring, last offload
+                 // HTTP status (or negative transport err), stack HWM.
+                 " ring=%" PRIu32 "/%" PRIu32 " st=%d stk=%u",
                  (unsigned long long)(esp_timer_get_time() / 1000000ULL),
                  (unsigned long)free_h, (unsigned long)min_h,
                  debug_log_ring_fill_pct(),
@@ -303,7 +311,10 @@ static void heartbeat_task(void *arg)
                  usb_host_cdc_rx_ring_drops(),
                  ws.recording ? 1 : 0, ws.seg_count, ws.seg_lost, ws.seg_evicted,
                  ws.flash_rows, ws.flash_full ? 1 : 0,
-                 os.sent_ok, os.failed);
+                 os.sent_ok, os.failed,
+                 ws.ring_count, ws.ring_capacity,
+                 os.last_status,
+                 (unsigned)stk);
         debug_log_ring_write_raw(line);
 
         for (int i = 0; i < HEARTBEAT_MS / 200 && s_hb_run; i++)
@@ -324,7 +335,9 @@ static void start_heartbeat(void)
 {
     if (s_hb_task) return;
     s_hb_run = true;
-    xTaskCreate(heartbeat_task, "dbglog_hb", 3072, NULL, 3, &s_hb_task);
+    // 3072 was tight after the #FW-64 tail: post-snprintf HWM fell to ~740
+    // bytes. 4096 left 1456 bytes under a 72h representative load.
+    xTaskCreate(heartbeat_task, "dbglog_hb", 4096, NULL, 3, &s_hb_task);
 }
 
 static esp_err_t alloc_ring(void)

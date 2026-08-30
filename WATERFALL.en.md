@@ -144,7 +144,7 @@ engages).
 | `/api/waterfall/status` | GET | Waterfall status (JSON, see below) |
 | `/api/waterfall/start` | POST | Start recording |
 | `/api/waterfall/stop` | POST | Stop recording |
-| `/api/waterfall/clear` | POST | Clear ring + flash segments (only while stopped) |
+| `/api/waterfall/clear` | POST | Clear ring + flash segments (only while stopped). `{"ok":true}` only if `seg_*` is empty; `"err":"recording"` if recording; `"err":"delete"` if files remain (#FW-65) |
 | `/api/waterfall/config` | POST | `{"interval":N,"persist":bool}` — interval (s) and flash persistence |
 | `/api/waterfall/window` | GET | Ring snapshot (**ASWW** binary, up to 256 rows) |
 | `/api/waterfall/segments` | GET | **List of flash segments** (JSON array, see below). No CSRF needed |

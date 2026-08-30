@@ -69,8 +69,11 @@ void app_main(void)
     // #FW-3: очистка водопада при старте — ДО spectrogram_restore(), иначе restore
     // возобновит прежнюю запись из сохранённого состояния.
     if (bc.clear_waterfall) {
-        spectrogram_clear();
-        ESP_LOGW(TAG, "FW-3: waterfall cleared on boot");
+        int clr = spectrogram_clear();
+        if (clr != 0)
+            ESP_LOGW(TAG, "FW-3/FW-65: waterfall clear on boot failed (%d)", clr);
+        else
+            ESP_LOGW(TAG, "FW-3: waterfall cleared on boot");
     }
     spectrogram_restore();   // #REC-6: возобновить запись после ребута/сбоя питания
     // #FW-2: передать флаги автозапуска в USB-модуль ДО его инициализации.

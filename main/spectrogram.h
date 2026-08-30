@@ -134,6 +134,9 @@ void   spectrogram_time_synced(void);
 void   spectrogram_prepare_reboot(void);
 int    spectrogram_start(void);
 int    spectrogram_stop(void);
+/* #FW-65: 0 = seg_* gone and counters match flash; -1 = recording (no
+ * side effects); -2 = partial delete (registry / seg_count / s_seg_next
+ * rebuilt from leftover; NVS evict/lost left intact). */
 int    spectrogram_clear(void);
 void   spectrogram_set_interval(uint32_t sec);
 void   spectrogram_set_persist(bool on);

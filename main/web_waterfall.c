@@ -30,6 +30,9 @@ static const char *TAG = "wf_web";
 // соединения по LRU. Ждать дольше смысла нет и по другой причине: сегменты на
 // flash пишет wf_fs_task под своим s_fs_lock, ворот она не касается вовсе.
 #define WF_SEGMENT_GATE_WAIT_MS 250
+/* #FW-65: Clear unlinks many ~1 MiB files under FSLOCK. Wait longer than
+ * the segment GET slot so a short autosave burst can finish first. */
+#define WF_CLEAR_GATE_WAIT_MS   5000
 
 static httpd_handle_t s_server;
 static int            s_ws_fds[WF_WS_MAX];
@@ -192,9 +195,16 @@ static esp_err_t h_stop(httpd_req_t *req)
 static esp_err_t h_clear(httpd_req_t *req)
 {
     if (!web_csrf_check(req)) return ESP_FAIL;
+    if (!http_io_gate_enter_wait_or_503(req, WF_CLEAR_GATE_WAIT_MS)) return ESP_OK;
     int r = spectrogram_clear();
+    http_io_gate_leave();
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, r == 0 ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"recording\"}");
+    if (r == 0)
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    else if (r == -1)
+        httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"recording\"}");
+    else
+        httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"delete\"}");
     return ESP_OK;
 }
 
