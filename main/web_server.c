@@ -4,6 +4,7 @@
 #include "web_waterfall.h"
 #include "web_util.h"
 #include "boot_config.h"
+#include "http_activity_plan.h"   // AWF-2a captive: http_uri_is_activity()
 #include "spectrogram.h"    // #FIELD-5: spectrogram_time_synced() при установке времени
 #include "net_time.h"       // #FIELD-5: guard-логика источника времени
 #include "monitor.h"        // #MON-1: серия CPS-мониторинга (/api/monitor/series)
@@ -753,6 +754,16 @@ EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
 EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
 EMBED_HTML_HANDLER(handle_captive_page, captive_html)   // #FIELD-10/#FIELD-11: лёгкая captive-landing
+// AWF-2a captive: /captive напрямую (не через handle_captive_probe) — тоже НЕ
+// активность (сама лёгкая captive-landing, http_activity_plan.h). Обёртка, а
+// не правка макроса EMBED_HTML_HANDLER — он общий для реальных UI-страниц.
+// (web_server_cancel_activity определена ниже, тот же раздел, что open_fn.)
+static void web_server_cancel_activity(httpd_req_t *req);
+static esp_err_t handle_captive_page_route(httpd_req_t *req)
+{
+    if (!http_uri_is_activity(req->uri)) web_server_cancel_activity(req);
+    return handle_captive_page(req);
+}
 
 // #FIELD-5: общий JS авто-синхронизации времени (application/javascript, не text/html).
 static esp_err_t handle_common_time_js(httpd_req_t *req)
@@ -1185,6 +1196,7 @@ static esp_err_t handle_export_csv(httpd_req_t *req)
 static esp_err_t handle_saved_export_xml(httpd_req_t *req);
 static esp_err_t handle_saved_export_csv(httpd_req_t *req);
 static esp_err_t handle_saved_json(httpd_req_t *req);
+// AWF-2a captive: прототип уже объявлен выше (рядом с handle_captive_page_route).
 
 static esp_err_t handle_saved_get(httpd_req_t *req)
 {
@@ -2075,6 +2087,8 @@ static esp_err_t handle_time_set(httpd_req_t *req)
 // клиент, проба до неё не доходит; для чистоты отвечаем 204 (как настоящий generate_204).
 static esp_err_t handle_captive_probe(httpd_req_t *req)
 {
+    // AWF-2a captive (дефект в 98e42cf): проба ОС — НЕ человеческая активность.
+    if (!http_uri_is_activity(req->uri)) web_server_cancel_activity(req);
     if (wifi_manager_is_ap_mode()) {
         // #FIELD-10/#FIELD-11: вместо 302 на тяжёлый index отдаём лёгкую captive-landing
         // прямо в мини-браузере ОС — крупный адрес 192.168.4.1 (виден сразу) + авто-редирект
@@ -2175,17 +2189,40 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
     return ESP_OK;
 }
 
-// AWF-2a доработка (живой тест 25.09): метка последней HTTP-активности —
-// ОДНО место (open_fn на каждое новое соединение), не правка каждого
-// обработчика. Соединение — надёжный proxy: браузер открывает сокет прямо
-// перед запросом. Читает wifi_manager через web_server_ms_since_http_activity().
+// AWF-2a доработка + дефект в 98e42cf (живой тест 25.09): DNS-hijack в Field AP
+// заворачивает все имена на 192.168.4.1 — OS-пробы связности (generate_204 и
+// т.п., web_server.c:2291-2297) телефон шлёт САМ, без человека, и тоже открывает
+// соединение -> простаивающий телефон держал плату в Field AP как раньше,
+// только иначе. Фикс ниже: open_fn коммитит метку ОПТИМИСТИЧНО, но помнит
+// ПРЕДЫДУЩЕЕ значение per-sockfd; captive-обработчики откатывают её.
 static volatile int64_t s_last_http_activity_us = -1;   // -1 = активности не было
+// max_open_sockets=11 (config ниже) — 16 слотов с запасом.
+#define ACTIVITY_SOCK_SLOTS 16
+static struct { int fd; int64_t prev_us; bool used; } s_activity_prev[ACTIVITY_SOCK_SLOTS];
 
 static esp_err_t web_server_note_open(httpd_handle_t hd, int sockfd)
 {
-    (void)hd; (void)sockfd;
+    (void)hd;
+    int slot = ((unsigned)sockfd) % ACTIVITY_SOCK_SLOTS;
+    s_activity_prev[slot].fd = sockfd;
+    s_activity_prev[slot].prev_us = s_last_http_activity_us;
+    s_activity_prev[slot].used = true;
     s_last_http_activity_us = esp_timer_get_time();
     return ESP_OK;
+}
+
+// Зовут ТОЛЬКО captive-проба/landing-обработчики (по http_activity_plan.h).
+// Откатывает метку к значению ДО этого соединения — но только если с тех пор
+// её не переписала другая, более новая активность (trade-off: не потерять
+// реальную активность важнее, чем безупречно откатить редкую гонку).
+static void web_server_cancel_activity(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+    int slot = ((unsigned)fd) % ACTIVITY_SOCK_SLOTS;
+    if (s_activity_prev[slot].used && s_activity_prev[slot].fd == fd) {
+        s_last_http_activity_us = s_activity_prev[slot].prev_us;
+        s_activity_prev[slot].used = false;
+    }
 }
 
 uint32_t web_server_ms_since_http_activity(void)
@@ -2294,7 +2331,7 @@ void web_server_init(void)
         {"/library/test/success.html",   HTTP_GET,  handle_captive_probe,    NULL},  // iOS/macOS
         {"/ncsi.txt",                    HTTP_GET,  handle_captive_probe,    NULL},  // Windows
         {"/connecttest.txt",             HTTP_GET,  handle_captive_probe,    NULL},  // Windows
-        {"/captive",                     HTTP_GET,  handle_captive_page,     NULL},  // #FIELD-10/11 landing
+        {"/captive",                     HTTP_GET,  handle_captive_page_route, NULL},  // #FIELD-10/11 landing
         {"/healthcheck",                 HTTP_GET,  handle_healthcheck,      NULL},
         {"/saved",                       HTTP_GET,  handle_saved_page,       NULL},
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
