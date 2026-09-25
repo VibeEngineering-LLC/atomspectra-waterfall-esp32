@@ -285,7 +285,17 @@ an "Open device →" button is there too.
 3. **On a fresh (unconfigured) board** — a **"Field mode (Outdoor)"** button in the setup portal.
 
 Return to Indoor with the same header toggle (or, for the fallback case, simply reboot within
-range of the home network).
+range of the home network). Return from the fallback AP waits for HTTP activity on the board's
+web server to go quiet (10 minutes) — a phone merely connected to the AP (e.g. its saved Wi-Fi
+network reconnecting on its own) does not block the return.
+
+**"Fall back to the field access point when Wi-Fi is lost" setting** (System → Board start →
+Network, `/api/boot-config`) — on by default (as described above). Turned off, it cancels
+automatic fallback ONLY while the board has connected to the home network at least once in
+the current boot: it keeps reconnecting forever with a growing backoff (capped at 60 s) and
+never enters Field AP. The safety net still applies either way: if Wi-Fi hasn't come up for
+5 straight minutes since power-on/reboot, the board still raises the field AP — otherwise it
+would be unreachable after a router or password change.
 
 **Full field workflow:** at home in Indoor, set up waterfall recording → switch to Outdoor →
 take the board + phone (+ power bank) into the field → join `AtomSpectra-Outdoor` → the

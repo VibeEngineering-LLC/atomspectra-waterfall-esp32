@@ -162,6 +162,9 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <label class="boot-row"><input type="checkbox" id="bc-clr-wf"><span data-i18n="boot.clrWf">Очищать водопад при старте</span></label>
 </div>
 </div>
+<div style="font-size:12px;color:#8a9686;margin:10px 0 8px" data-i18n="boot.secNet">Сеть</div>
+<label class="boot-row"><input type="checkbox" id="bc-ap-fallback"><span data-i18n="boot.apFallback">Переходить в полевую точку доступа при потере Wi-Fi</span></label>
+<div class="mut" style="font-size:11px;line-height:1.5;margin:4px 0 0" data-i18n="boot.apFallbackHint">Выкл — плата переподключается бесконечно, в Field AP не уходит, пока хоть раз подключалась в этой сессии. Возврат после смены роутера/пароля всё равно работает, если Wi-Fi не заработал 5 минут подряд с момента включения.</div>
 <div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
 <button class="btn green" onclick="saveBootConfig('bc-status')" data-i18n="boot.save">Сохранить</button>
 <div class="mut" id="bc-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
@@ -263,7 +266,9 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra на ПК подключаются к <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> вместо COM-порта.",
   "tcp.clientConnected":"клиент подключён","tcp.free":"свободен",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Обновить",
-  "boot.titleBoot":"Старт платы","boot.secSpec":"Спектр","boot.secWf":"Водопад",
+  "boot.titleBoot":"Старт платы","boot.secSpec":"Спектр","boot.secWf":"Водопад","boot.secNet":"Сеть",
+  "boot.apFallback":"Переходить в полевую точку доступа при потере Wi-Fi",
+  "boot.apFallbackHint":"Выкл — плата переподключается бесконечно, в Field AP не уходит, пока хоть раз подключалась в этой сессии. Возврат после смены роутера/пароля всё равно работает, если Wi-Fi не заработал 5 минут подряд с момента включения.",
   "boot.titleSpec":"Старт платы · Спектр",
   "boot.titleWf":"Старт платы · Водопад",
   "boot.asSpec":"Автозапуск набора спектра",
@@ -313,7 +318,9 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra on PC connect to <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> instead of COM port.",
   "tcp.clientConnected":"client connected","tcp.free":"free",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Refresh",
-  "boot.titleBoot":"Board start","boot.secSpec":"Spectrum","boot.secWf":"Waterfall",
+  "boot.titleBoot":"Board start","boot.secSpec":"Spectrum","boot.secWf":"Waterfall","boot.secNet":"Network",
+  "boot.apFallback":"Fall back to the field access point when Wi-Fi is lost",
+  "boot.apFallbackHint":"Off — the board keeps reconnecting forever and never enters Field AP once it has connected in this session. Return still works after a router/password change if Wi-Fi fails to come up for 5 straight minutes from power-on.",
   "boot.titleSpec":"Board start · Spectrum",
   "boot.titleWf":"Board start · Waterfall",
   "boot.asSpec":"Autostart spectrum acquisition",
@@ -526,6 +533,8 @@ async function loadBootConfig(){
   document.getElementById("bc-as-wf").checked=!!r.autostart_waterfall;
   document.getElementById("bc-clr-spec").checked=!!r.clear_spectrum;
   document.getElementById("bc-clr-wf").checked=!!r.clear_waterfall;
+  var fb=document.getElementById("bc-ap-fallback");
+  if(fb)fb.checked=(r.field_ap_fallback!==false);   /* нет ключа (апгрейд) = ВКЛ */
   /* issue #52: те же данные несут настройки резервных снимков. */
   var k=document.getElementById("bk-keep"),h=document.getElementById("bk-hours"),
       se=document.getElementById("bk-session");
@@ -576,7 +585,8 @@ async function saveBootConfig(statusId){
   autostart_spectrum:document.getElementById("bc-as-spec").checked,
   autostart_waterfall:document.getElementById("bc-as-wf").checked,
   clear_spectrum:document.getElementById("bc-clr-spec").checked,
-  clear_waterfall:document.getElementById("bc-clr-wf").checked
+  clear_waterfall:document.getElementById("bc-clr-wf").checked,
+  field_ap_fallback:document.getElementById("bc-ap-fallback").checked
  };
  try{
   var r=await(await post("/api/boot-config",{headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
