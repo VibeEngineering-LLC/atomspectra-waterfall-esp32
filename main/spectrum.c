@@ -1504,7 +1504,19 @@ static void spectrum_base_snapshot(spectrum_data_t *buf)
 // F4 (итоговое ревью 25.09): молча пропускал запись базы, если занят
 // http_io_gate — RAM (B1) и flash (B0) расходились до следующего fold.
 // Теперь: флаг + ESP_LOGW + повтор на ближайшем тике main.c.
+// N3 (ревью-2): main держит gate и пишет B1, CDC после НОВОГО fold видит gate
+// занят и ставит pending=true (B2 не попал в этот заход) — затем main
+// заканчивает и раньше слепо писал pending=!ok=false, СТИРАЯ true от CDC.
+// Фикс: pending СНИМАЕТСЯ сразу при входе в критическую секцию (сразу после
+// захвата gate, ДО самой записи на flash — окно гонки схлопывается с «вся
+// запись» до одной строки под SPEC_LOCK), а НЕ после записи; завершение
+// пишет флаг ТОЛЬКО при неудаче (SET, никогда unconditional CLEAR) — успешная
+// запись никогда не стирает true, выставленный конкурентом. Рейт-лимит 10с
+// на повтор (доп. защёлка поверх main.c 10с-тика).
 static volatile bool s_base_save_pending = false;
+static uint32_t s_base_save_last_attempt_ms = 0;
+#define BASE_SAVE_RETRY_MIN_MS (10u * 1000u)
+
 static void spectrum_base_save(void)
 {
     if (!s_base_bins) return;
@@ -1512,22 +1524,31 @@ static void spectrum_base_save(void)
     if (!buf) { ESP_LOGE(TAG, "base save: malloc failed"); return; }
     spectrum_base_snapshot(buf);
     if (!http_io_gate_try_enter()) {
-        s_base_save_pending = true;
+        SPEC_LOCK(); s_base_save_pending = true; SPEC_UNLOCK();
         ESP_LOGW(TAG, "base save: http_io_gate busy, deferred (retry on next tick)");
         free(buf);
         return;
     }
+    // Claim ДО записи (не после) — сужает окно гонки с конкурентным fold+save.
+    SPEC_LOCK(); s_base_save_pending = false; SPEC_UNLOCK();
     bool ok = atomic_write_snapshot(BASE_TMP_FILE, BASE_FILE, buf);
-    if (!ok) ESP_LOGE(TAG, "base save: write failed (errno=%d)", errno);
-    s_base_save_pending = !ok;
+    if (!ok) {
+        ESP_LOGE(TAG, "base save: write failed (errno=%d)", errno);
+        SPEC_LOCK(); s_base_save_pending = true; SPEC_UNLOCK();
+    }
     http_io_gate_leave();
     free(buf);
 }
 
-// Вызывать раз в main-тик (main.c) — no-op, если ничего не отложено.
+// Вызывать раз в main-тик (main.c) — no-op, если ничего не отложено, либо
+// последняя попытка была < BASE_SAVE_RETRY_MIN_MS назад.
 void spectrum_base_save_retry_tick(void)
 {
-    if (s_base_save_pending) spectrum_base_save();
+    if (!s_base_save_pending) return;
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now_ms - s_base_save_last_attempt_ms < BASE_SAVE_RETRY_MIN_MS) return;
+    s_base_save_last_attempt_ms = now_ms;
+    spectrum_base_save();
 }
 
 static void spectrum_base_apply_loaded(const spectrum_data_t *buf)
