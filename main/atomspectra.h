@@ -117,13 +117,19 @@ void wifi_manager_try_return_to_sta(void);
 const char *wifi_manager_return_block_reason(void);
 
 void web_server_init(void);
-// AWF-2a доработка: мс с последнего HTTP-запроса к веб-серверу этой сессии
-// (open_fn каждого нового соединения); UINT32_MAX = активности ещё не было.
-uint32_t web_server_ms_since_http_activity(void);
-// То же, абсолютной меткой esp_timer (мс) для беззнакового вычитания в паре с
-// esp_timer_get_time() у вызывающего (wifi_manager) — тот же приём, что
-// wifi_return_backoff_elapsed(now_ms, last_attempt_ms). 0 = "активности не было".
-uint32_t web_server_last_http_activity_ms(void);
+// F1 (итоговое ревью 25.09): активность — на уровне СОКЕТА, не соединения
+// (main/http_activity_plan.h). threshold_ms — обычно WIFI_RETURN_ACTIVITY_
+// QUIET_MS (wifi_return_plan.h). true = тишина >= threshold_ms И нет ни
+// одного открытого «пользовательского» сокета прямо сейчас.
+bool web_server_http_activity_quiet(uint32_t threshold_ms);
+// Секунды с последнего user-события; 0, пока открыт хоть один user-сокет
+// (для /api/system, справочно — не для гейта возврата).
+uint32_t web_server_http_idle_s(void);
+// Единственная точка, где запрос СЧИТАЕТСЯ (классификация по URI + поднятие
+// is_user сокета) — вызывается из общего трамплина над uris[] в web_server.c
+// и из choke point'ов web_waterfall.c (reg()/h_ws), без правки тел ~70
+// обработчиков.
+void web_server_note_request_activity(int sockfd, const char *uri);
 
 void tcp_bridge_init(void);
 bool tcp_bridge_client_connected(void);
@@ -311,3 +317,6 @@ void spectrum_restore_autosave(void);
 void spectrum_restore_base(void);
 // #7: наблюдаемость для /api/status.
 void spectrum_get_base_info(uint32_t *base_time, uint32_t *base_counts, uint32_t *dev_resets);
+// F4 (итоговое ревью 25.09): повтор отложенной записи base.bin (http_io_gate
+// был занят) — вызывать раз в main-тик, no-op если нечего повторять.
+void spectrum_base_save_retry_tick(void);

@@ -669,13 +669,15 @@ static bool scan_for_saved_ssid(const char *ssid)
     return found;
 }
 
-// Сканирует и решает, перепроверив клиентов ПОСЛЕ скана (могли подключиться
-// во время него — AP на это время уходит с канала).
-static void wifi_return_finish(bool entered_by_fallback, const char *ssid,
-                               uint32_t now_ms, uint32_t last_activity_ms)
+// Сканирует и решает, перепроверив активность ПОСЛЕ скана (F8, итоговое
+// ревью 25.09: раньше переиспользовался снимок activity ДО скана — скан
+// блокирующий (esp_wifi_scan_start(...,true)), активность во время него не
+// видна, комментарий "перепроверка" был декоративным. Теперь свежий снимок.
+static void wifi_return_finish(bool entered_by_fallback, const char *ssid)
 {
     bool found = scan_for_saved_ssid(ssid);
-    if (!wifi_return_should_reboot_to_sta(entered_by_fallback, now_ms, last_activity_ms, found)) {
+    bool quiet_now = web_server_http_activity_quiet(WIFI_RETURN_ACTIVITY_QUIET_MS);
+    if (!wifi_return_should_reboot_to_sta(entered_by_fallback, quiet_now, found)) {
         note_return_block(found ? "activity" : "ssid_not_found");
         return;
     }
@@ -712,11 +714,13 @@ void wifi_manager_try_return_to_sta(void)
         note_return_block("backoff");
         return;
     }
-    // AWF-2a доработка: блокирует АКТИВНОСТЬ (HTTP-запрос за 10 мин), не сам
-    // факт подключения клиента к Field AP (живой тест 25.09 — простаивающий
-    // телефон блокировал возврат 11 минут).
-    uint32_t last_activity_ms = web_server_last_http_activity_ms();
-    if (!wifi_return_scan_allowed(entered_by_fallback, now_ms, last_activity_ms)) {
+    // F1 (итоговое ревью 25.09): блокирует АКТИВНОСТЬ на уровне СОКЕТА (см.
+    // main/http_activity_plan.h) — открытый keep-alive/WS держит активность
+    // БЕЗУСЛОВНО, не по метке момента открытия. Не сам факт подключения
+    // клиента к Field AP (живой тест 25.09 — простаивающий телефон блокировал
+    // возврат 11 минут при прежней, по-соединению, модели).
+    bool quiet = web_server_http_activity_quiet(WIFI_RETURN_ACTIVITY_QUIET_MS);
+    if (!wifi_return_scan_allowed(entered_by_fallback, quiet)) {
         note_return_block("activity");
         return;
     }
@@ -726,5 +730,5 @@ void wifi_manager_try_return_to_sta(void)
         note_return_block("no_saved_ssid");
         return;
     }
-    wifi_return_finish(entered_by_fallback, ssid, now_ms, last_activity_ms);
+    wifi_return_finish(entered_by_fallback, ssid);
 }

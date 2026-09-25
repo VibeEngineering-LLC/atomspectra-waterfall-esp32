@@ -6,24 +6,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// AWF-2a настройка (живой тест 25.09, шаг 2): раньше блокировал ЛЮБОЙ
-// подключённый к Field AP клиент (ap_clients>0) — телефон оператора, САМ
-// подключившийся к сохранённой сети, блокировал возврат 10+ минут, хотя
-// ничего не запрашивал у веб-сервера платы. Теперь блокирует только
-// АКТИВНОСТЬ — HTTP-запрос к веб-серверу за последние 10 минут, не сам факт
-// подключения к AP. Простаивающий клиент возврат не блокирует: скан уводит
-// AP с канала на пару секунд, он переподключится сам.
+// AWF-2a настройка + F1 (итоговое ревью 25.09): раньше блокировал ЛЮБОЙ
+// подключённый к Field AP клиент (ap_clients>0), потом — метка активности на
+// уровне ОТКРЫТИЯ соединения (застревала при keep-alive/WS часами, F1).
+// Теперь решение «тихо ли» полностью считает main/http_activity_plan.h
+// (модель на уровне СОКЕТА) — сюда приходит уже готовый bool, эти функции
+// его только комбинируют с остальными условиями возврата.
 #define WIFI_RETURN_ACTIVITY_QUIET_MS (600u * 1000u)   // 10 минут без HTTP-активности
-
-// true, если с last_activity_ms (монотонные мс ЭТОЙ Field-AP сессии; 0 =
-// «активности ещё не было» с начала сессии) прошло >= порога тишины.
-// Вычитание в uint32 переживает переполнение millis — тот же приём, что
-// wifi_return_backoff_elapsed.
-static inline bool wifi_return_activity_quiet(uint32_t now_ms, uint32_t last_activity_ms)
-{
-    uint32_t elapsed_ms = now_ms - last_activity_ms;
-    return elapsed_ms >= WIFI_RETURN_ACTIVITY_QUIET_MS;
-}
 
 // P1 (независимое ревью f091b01): SSID виден, но STA не держится (пароль
 // сменился, DHCP молчит) -> без бэкоффа каждый цикл проверки уходил бы в
@@ -61,22 +50,20 @@ static inline uint32_t wifi_return_fail_count_bump(uint32_t fail_count)
 
 // Сканировать эфир на сохранённый SSID можно, только когда HTTP-активность
 // на Field AP стихла (сканирование уводит AP с рабочего канала).
-static inline bool wifi_return_scan_allowed(bool entered_by_fallback,
-                                             uint32_t now_ms, uint32_t last_activity_ms)
+static inline bool wifi_return_scan_allowed(bool entered_by_fallback, bool activity_quiet)
 {
     if (!entered_by_fallback) return false;
-    return wifi_return_activity_quiet(now_ms, last_activity_ms);
+    return activity_quiet;
 }
 
 // Ребут обратно в STA — только когда вход был по fallback (не forced
 // Outdoor), HTTP-активность стихла, и сохранённый SSID РЕАЛЬНО увиден
 // сканированием. Слепой возврат по таймеру запрещён: ребут рвёт связь с
 // прибором каждый раз.
-static inline bool wifi_return_should_reboot_to_sta(bool entered_by_fallback,
-                                                     uint32_t now_ms, uint32_t last_activity_ms,
+static inline bool wifi_return_should_reboot_to_sta(bool entered_by_fallback, bool activity_quiet,
                                                      bool saved_ssid_visible)
 {
     if (!entered_by_fallback) return false;
-    if (!wifi_return_activity_quiet(now_ms, last_activity_ms)) return false;
+    if (!activity_quiet) return false;
     return saved_ssid_visible;
 }

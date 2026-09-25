@@ -41,6 +41,7 @@ void spectrum_base_plan_suite(void);
 // AWF-2a captive: классификация URI активность/проба (main/http_activity_plan.h).
 void test_http_activity_plan(void);
 void test_http_404_activity(void);
+void test_http_activity_socket_model(void);
 // AWF-2a финал: семантика missing-key boot-флага (main/boot_flag_plan.h).
 void test_boot_flag_plan(void);
 
@@ -212,6 +213,7 @@ int main(void)
     spectrum_base_plan_suite();
     test_http_activity_plan();
     test_http_404_activity();
+    test_http_activity_socket_model();
     test_boot_flag_plan();
 
     if (g_failures) {

@@ -753,16 +753,11 @@ EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
 EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
 EMBED_HTML_HANDLER(handle_captive_page, captive_html)   // #FIELD-10/#FIELD-11: лёгкая captive-landing
-// AWF-2a captive: /captive напрямую (не через handle_captive_probe) — тоже НЕ
-// активность (сама лёгкая captive-landing, http_activity_plan.h). Обёртка, а
-// не правка макроса EMBED_HTML_HANDLER — он общий для реальных UI-страниц.
-// (web_server_cancel_activity определена ниже, тот же раздел, что open_fn.)
-static void web_server_cancel_activity(httpd_req_t *req);
-static esp_err_t handle_captive_page_route(httpd_req_t *req)
-{
-    if (!http_uri_is_activity(req->uri)) web_server_cancel_activity(req);
-    return handle_captive_page(req);
-}
+// F1 (итоговое ревью 25.09): обёртка handle_captive_page_route (откат метки
+// активности через prev-таблицу) убрана вместе со всей prev/cancel-моделью —
+// активность теперь поднимает ТОЛЬКО общий трамплин над uris[] (ниже,
+// web_server_init), который классифицирует URI ДО вызова любого обработчика;
+// /captive регистрируется как раньше, напрямую на handle_captive_page.
 
 // #FIELD-5: общий JS авто-синхронизации времени (application/javascript, не text/html).
 static esp_err_t handle_common_time_js(httpd_req_t *req)
@@ -1195,7 +1190,6 @@ static esp_err_t handle_export_csv(httpd_req_t *req)
 static esp_err_t handle_saved_export_xml(httpd_req_t *req);
 static esp_err_t handle_saved_export_csv(httpd_req_t *req);
 static esp_err_t handle_saved_json(httpd_req_t *req);
-// AWF-2a captive: прототип уже объявлен выше (рядом с handle_captive_page_route).
 // AWF-2a финал: обработчик ошибки 404 esp_http_server (регистрация ниже, у
 // httpd_register_err_handler — определение рядом с open_fn/activity slots).
 // Срабатывает ТОЛЬКО когда uri_match_fn не нашёл НИ ОДНОГО зарегистрированного
@@ -1544,11 +1538,9 @@ static esp_err_t handle_system(httpd_req_t *req)
     // AWF-2a доработка: диагностика застревания в Field AP (живой тест 25.09,
     // 11 минут без следа) — причина последнего блока возврата + давность HTTP.
     cJSON_AddStringToObject(root, "return_block_reason", wifi_manager_return_block_reason());
-    {
-        uint32_t idle_ms = web_server_ms_since_http_activity();
-        cJSON_AddNumberToObject(root, "http_idle_s",
-            (idle_ms == UINT32_MAX) ? -1.0 : (double)(idle_ms / 1000));
-    }
+    // F1: справочные поля — 0/false, пока открыт хоть один user-сокет
+    // (гейт возврата смотрит НЕ на них, а на web_server_http_activity_quiet()).
+    cJSON_AddNumberToObject(root, "http_idle_s", (double)web_server_http_idle_s());
     cJSON_AddStringToObject(root, "time_source",    net_time_source_str());
     cJSON_AddBoolToObject(root,   "sntp_synced",    net_time_sntp_synced());
     // #PERF-1/#PERF-2: observability for multi-tab spectrum cache + HEAVY gate
@@ -2093,8 +2085,8 @@ static esp_err_t handle_time_set(httpd_req_t *req)
 // клиент, проба до неё не доходит; для чистоты отвечаем 204 (как настоящий generate_204).
 static esp_err_t handle_captive_probe(httpd_req_t *req)
 {
-    // AWF-2a captive (дефект в 98e42cf): проба ОС — НЕ человеческая активность.
-    if (!http_uri_is_activity(req->uri)) web_server_cancel_activity(req);
+    // F1 (итоговое ревью 25.09): классификация теперь идёт ДО дispatch, в
+    // общем трамплине (web_server_init) — здесь ничего откатывать не нужно.
     if (wifi_manager_is_ap_mode()) {
         // #FIELD-10/#FIELD-11: вместо 302 на тяжёлый index отдаём лёгкую captive-landing
         // прямо в мини-браузере ОС — крупный адрес 192.168.4.1 (виден сразу) + авто-редирект
@@ -2195,68 +2187,71 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
     return ESP_OK;
 }
 
-// AWF-2a доработка + дефект в 98e42cf (живой тест 25.09): DNS-hijack в Field AP
-// заворачивает все имена на 192.168.4.1 — OS-пробы связности (generate_204 и
-// т.п., web_server.c:2291-2297) телефон шлёт САМ, без человека, и тоже открывает
-// соединение -> простаивающий телефон держал плату в Field AP как раньше,
-// только иначе. Фикс ниже: open_fn коммитит метку ОПТИМИСТИЧНО, но помнит
-// ПРЕДЫДУЩЕЕ значение per-sockfd; captive-обработчики откатывают её.
-static volatile int64_t s_last_http_activity_us = -1;   // -1 = активности не было
-// max_open_sockets=11 (config ниже) — 16 слотов с запасом.
-#define ACTIVITY_SOCK_SLOTS 16
-static struct { int fd; int64_t prev_us; bool used; } s_activity_prev[ACTIVITY_SOCK_SLOTS];
-
+// F1 (итоговое ревью 25.09): активность — на уровне СОКЕТА (прежняя модель
+// метила ОТКРЫТИЕ соединения; keep-alive-опрос и WS водопада держат одно
+// соединение часами, метка не обновлялась — через 10 мин работающий
+// пользователь считался бездействующим). Модель и host-тесты —
+// http_activity_plan.h. open_fn/close_fn метят открытие/закрытие;
+// web_server_note_request_activity() — ЕДИНСТВЕННАЯ точка, где запрос
+// СЧИТАЕТСЯ (общий трамплин над uris[] ниже + choke points web_waterfall.c).
+static http_activity_state_t s_activity;
 static esp_err_t web_server_note_open(httpd_handle_t hd, int sockfd)
 {
     (void)hd;
-    int slot = ((unsigned)sockfd) % ACTIVITY_SOCK_SLOTS;
-    s_activity_prev[slot].fd = sockfd;
-    s_activity_prev[slot].prev_us = s_last_http_activity_us;
-    s_activity_prev[slot].used = true;
-    s_last_http_activity_us = esp_timer_get_time();
+    http_activity_open(&s_activity, sockfd);
     return ESP_OK;
 }
 
-// Зовут ТОЛЬКО captive-проба/landing-обработчики (по http_activity_plan.h).
-// Откатывает метку к значению ДО этого соединения — но только если с тех пор
-// её не переписала другая, более новая активность (trade-off: не потерять
-// реальную активность важнее, чем безупречно откатить редкую гонку).
-static void web_server_cancel_activity(httpd_req_t *req)
+// #UI-15 P0: раньше был единственным close_fn (чистка WS-реестра); теперь
+// сначала метим close активности, ПОТОМ зовём исходный (свой реестр по fd,
+// порядок с s_activity не связан).
+static void web_server_note_close(httpd_handle_t hd, int sockfd)
 {
-    int fd = httpd_req_to_sockfd(req);
-    int slot = ((unsigned)fd) % ACTIVITY_SOCK_SLOTS;
-    if (s_activity_prev[slot].used && s_activity_prev[slot].fd == fd) {
-        s_last_http_activity_us = s_activity_prev[slot].prev_us;
-        s_activity_prev[slot].used = false;
-    }
+    http_activity_close(&s_activity, sockfd, (uint32_t)(esp_timer_get_time() / 1000));
+    web_waterfall_on_close(hd, sockfd);
 }
 
-// AWF-2a финал: незарегистрированный URI (Firefox detectportal /success.txt,
-// /canonical.html и т.п.) — тоже НЕ активность (http_404_is_activity()).
-// Ответ 404 сохраняется как раньше (дефолтное поведение esp_http_server).
+void web_server_note_request_activity(int sockfd, const char *uri)
+{
+    http_activity_request(&s_activity, sockfd, http_uri_is_activity(uri),
+                           (uint32_t)(esp_timer_get_time() / 1000));
+}
+
+// Незарегистрированный URI структурно НЕ проходит через трамплин (тот висит
+// только на СОВПАВШИХ обработчиках) — не поднимает активность без единой
+// лишней строчки здесь. http_404_is_activity() остаётся тестируемым
+// инвариантом-документацией (всегда false).
 static esp_err_t handle_404(httpd_req_t *req, httpd_err_code_t err)
 {
     (void)err;
-    if (!http_404_is_activity(req->uri)) web_server_cancel_activity(req);
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
     return ESP_OK;
 }
 
-uint32_t web_server_ms_since_http_activity(void)
+// F1: общий трамплин над uris[] (регистрация ниже, web_server_init) — индекс
+// в user_ctx выбирает исходный обработчик из простого массива функций (без
+// malloc/struct); 80 = запас max_uri_handlers (комментарий ниже, ~53 факт).
+#define WEB_SERVER_URI_MAX 80
+static esp_err_t (*s_wrap_handlers[WEB_SERVER_URI_MAX])(httpd_req_t *);
+
+static esp_err_t activity_trampoline(httpd_req_t *req)
 {
-    int64_t last = s_last_http_activity_us;
-    if (last < 0) return UINT32_MAX;
-    int64_t elapsed_us = esp_timer_get_time() - last;
-    if (elapsed_us < 0) elapsed_us = 0;
-    int64_t elapsed_ms = elapsed_us / 1000;
-    return (elapsed_ms > UINT32_MAX) ? UINT32_MAX : (uint32_t)elapsed_ms;
+    size_t idx = (size_t)(intptr_t)req->user_ctx;
+    web_server_note_request_activity(httpd_req_to_sockfd(req), req->uri);
+    return s_wrap_handlers[idx](req);
 }
 
-uint32_t web_server_last_http_activity_ms(void)
+bool web_server_http_activity_quiet(uint32_t threshold_ms)
 {
-    int64_t last = s_last_http_activity_us;
-    if (last < 0) return 0;
-    return (uint32_t)(last / 1000);
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    return http_activity_quiet(&s_activity, now_ms, threshold_ms);
+}
+
+uint32_t web_server_http_idle_s(void)
+{
+    if (http_activity_any_user_open(&s_activity)) return 0;
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    return (now_ms - s_activity.last_user_event_ms) / 1000;
 }
 
 void web_server_init(void)
@@ -2286,7 +2281,7 @@ void web_server_init(void)
     config.uri_match_fn = httpd_uri_match_wildcard;
     // #UI-15 P0: чистим WS-реестр при ЛЮБОМ закрытии сокета (RST/FIN/LRU/F5);
     // без callback зомбирующиеся fd ломают broadcast после нескольких F5.
-    config.close_fn = web_waterfall_on_close;
+    config.close_fn = web_server_note_close;   // F1: чистка WS-реестра + close активности
     // AWF-2a доработка: единая точка метки HTTP-активности (не было own open_fn).
     config.open_fn = web_server_note_open;
     // #UI-15 P2: сжимаем default recv/send (~5 c) — освобождаем сокеты быстрее
@@ -2348,7 +2343,7 @@ void web_server_init(void)
         {"/library/test/success.html",   HTTP_GET,  handle_captive_probe,    NULL},  // iOS/macOS
         {"/ncsi.txt",                    HTTP_GET,  handle_captive_probe,    NULL},  // Windows
         {"/connecttest.txt",             HTTP_GET,  handle_captive_probe,    NULL},  // Windows
-        {"/captive",                     HTTP_GET,  handle_captive_page_route, NULL},  // #FIELD-10/11 landing
+        {"/captive",                     HTTP_GET,  handle_captive_page,     NULL},  // #FIELD-10/11 landing
         {"/healthcheck",                 HTTP_GET,  handle_healthcheck,      NULL},
         {"/saved",                       HTTP_GET,  handle_saved_page,       NULL},
         {"/system",                      HTTP_GET,  handle_system_page,      NULL},
@@ -2358,8 +2353,17 @@ void web_server_init(void)
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };
 
-    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++)
-        httpd_register_uri_handler(server, &uris[i]);
+    // F1: трамплин маркирует активность (по http_uri_is_activity(req->uri))
+    // ДО вызова настоящего обработчика — правка ТОЛЬКО регистрации (эта
+    // петля), не тел ~53 обработчиков. user_ctx — индекс в s_wrap_handlers
+    // (иначе он свободен у всех записей uris[], проверено до внедрения).
+    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
+        s_wrap_handlers[i] = uris[i].handler;
+        httpd_uri_t entry = uris[i];
+        entry.handler = activity_trampoline;
+        entry.user_ctx = (void *)(intptr_t)i;
+        httpd_register_uri_handler(server, &entry);
+    }
 
     web_waterfall_register(server);      // /waterfall, /api/waterfall/*, /ws/waterfall
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_404);
