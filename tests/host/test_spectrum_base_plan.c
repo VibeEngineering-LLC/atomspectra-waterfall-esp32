@@ -32,37 +32,75 @@ static void test_merge(void)
     CHECK(spectrum_base_merge(0, 0) == 0);
 }
 
-// Сценарий целиком: старт с восстановленного D (4451с) -> первый STAT прибора
-// (11с) распознан как сброс -> база=D, показано=D+прибор; затем обычный рост
-// прибора без сброса; затем очистка (всё по нулям).
+// P2: насыщение на границе UINT32_MAX.
+static void test_merge_overflow(void)
+{
+    CHECK(spectrum_base_merge(0xFFFFFFFFu, 1) == 0xFFFFFFFFu);
+    CHECK(spectrum_base_merge(0xFFFFFFF0u, 0x20) == 0xFFFFFFFFu);
+    CHECK(spectrum_base_merge(0xFFFFFFFFu, 0) == 0xFFFFFFFFu);
+    CHECK(spectrum_base_merge(100, 200) == 300);
+}
+
+// P1-b: сброс по СЧЁТУ, независимо от STAT.
+static void test_counts_reset(void)
+{
+    CHECK(spectrum_base_reset_detected_by_counts(9, 0, 267049));       // живой сценарий 25.09
+    CHECK(!spectrum_base_reset_detected_by_counts(267049, 0, 267049)); // ровно догнал — не сброс
+    CHECK(!spectrum_base_reset_detected_by_counts(267100, 0, 267049)); // обогнал — рост, не сброс
+    CHECK(spectrum_base_reset_detected_by_counts(267048, 0, 267049));  // на 1 меньше — сброс (допуск 0)
+    CHECK(!spectrum_base_reset_detected_by_counts(5, 267049, 267054)); // после fold: expected=5 — не сброс
+}
+
+// Сценарий целиком (через ОРКЕСТРАЦИЮ spectrum_base_commit — тот же порядок,
+// что spectrum.c): D восстановлен -> первый коммит сворачивает базу -> рост
+// без сворачивания. Время после fold — забота caller (spectrum.c #FW-12).
 static void test_sequence(void)
 {
-    uint32_t base_time = 0, base_bins[3] = {0, 0, 0};
-    uint32_t shown_time = 4451, shown_bins[3] = {100, 200, 300};
+    uint32_t base_bins[3] = {0, 0, 0};
+    uint32_t shown_bins[3] = {100, 200, 300};
+    spectrum_base_state_t st = { base_bins, 0, 600, shown_bins, 4451, 600 };
 
     uint32_t dev_bins[3] = {1, 0, 2};
-    CHECK(spectrum_base_reset_detected(11, base_time, shown_time));
-    for (int i = 0; i < 3; i++) base_bins[i] = shown_bins[i];   // база = ПОКАЗАННЫЙ спектр
-    base_time = shown_time;
-    for (int i = 0; i < 3; i++) shown_bins[i] = spectrum_base_merge(base_bins[i], dev_bins[i]);
-    shown_time = spectrum_base_merge(base_time, 11);
-    CHECK(shown_bins[0] == 101 && shown_bins[2] == 302 && shown_time == 4462);
+    CHECK(spectrum_base_commit(&st, dev_bins, 3, 3, true, 11));
+    CHECK(st.base_counts == 600 && base_bins[0] == 100 && base_bins[2] == 300);
+    st.base_time = st.shown_time = 4451 + 11;
+    CHECK(shown_bins[0] == 101 && shown_bins[2] == 302 && st.shown_counts == 603);
 
     uint32_t dev_bins2[3] = {5, 0, 2};
-    CHECK(!spectrum_base_reset_detected(15, base_time, shown_time));
-    for (int i = 0; i < 3; i++) shown_bins[i] = spectrum_base_merge(base_bins[i], dev_bins2[i]);
-    shown_time = spectrum_base_merge(base_time, 15);
-    CHECK(base_time == 4451);   // база НЕ менялась
-    CHECK(shown_bins[0] == 105 && shown_time == 4466);
+    CHECK(!spectrum_base_commit(&st, dev_bins2, 7, 3, true, 15));
+    CHECK(st.base_counts == 600);
+    // dev_total(7) — накопительный СЧЁТ прибора с его последнего сброса (не
+    // приращение к прошлому shown), поэтому shown = base(600)+dev(7) = 607.
+    CHECK(shown_bins[0] == 105 && st.shown_counts == 607);
+}
 
-    base_time = 0; shown_time = 0;
-    for (int i = 0; i < 3; i++) { base_bins[i] = 0; shown_bins[i] = 0; }
-    CHECK(base_time == 0 && shown_time == 0 && shown_bins[0] == 0 && shown_bins[2] == 0);
+// Живой сценарий 25.09 (второй прогон): D восстановлен (267049,1634с) ->
+// ПЕРВАЯ гистограмма прибора после сброса (маленькая, 9) БЕЗ свежего STAT на
+// этом коммите. До фикса merge клеил dev поверх базы 0 ДО проверки сброса —
+// база получала 9 вместо 267049. Проверка — именно base_counts == D.
+static void test_live_bug_no_stat_first_commit(void)
+{
+    uint32_t base_bins[3] = {0, 0, 0};
+    uint32_t shown_bins[3] = {100000, 100000, 67049};   // сумма 267049, как D
+    // база ещё НЕ сворачивала ничего (base_counts=0, base_bins=0) — восстановлен
+    // именно ПОКАЗЫВАЕМЫЙ (shown) спектр D, база пуста до первого fold.
+    spectrum_base_state_t st = { base_bins, 0, 0, shown_bins, 1634, 267049 };
+
+    uint32_t dev_bins[3] = {3, 2, 4};   // крошечный свежий свип, сумма 9
+    bool did = spectrum_base_commit(&st, dev_bins, 9, 3, /*stat_fresh=*/false, 0);
+
+    CHECK(did);
+    CHECK(st.base_counts == 267049);   // НЕ 9
+    CHECK(base_bins[0] == 100000 && base_bins[2] == 67049);
+    CHECK(st.shown_counts == 267049 + 9);
 }
 
 void spectrum_base_plan_suite(void)
 {
     test_reset_detection();
     test_merge();
+    test_merge_overflow();
+    test_counts_reset();
     test_sequence();
+    test_live_bug_no_stat_first_commit();
 }
