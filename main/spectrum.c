@@ -42,6 +42,8 @@ static device_info_t   s_device_info;
 // AWF-1 (#3): LittleFS была отформатирована при этой загрузке (mount без
 // format_if_mount_failed не удался) — /api/status обязан показать это явно.
 static bool s_fs_formatted;
+// P2: определение — у backup_scan() ниже (тот же раздел, тот же DIR/readdir).
+static void cleanup_orphan_backup_tmp(void);
 static uint32_t s_t1_session_inf;
 static bool     s_t1_refresh_sent;
 static uint32_t s_t1_open_ms;
@@ -162,6 +164,7 @@ void spectrum_init(void)
             ESP_LOGE(TAG, "LittleFS was reformatted this boot — accumulated data on flash is LOST");
         mkdir(SPEC_DIR, 0777);   // #FW-24: подкаталог сохранённых спектров (отделение от calib/current/wf_state в корне)
         mkdir(BACKUP_DIR, 0777); // issue #52: автоснимки — отдельно от ручных, чтобы ротация их не касалась
+        cleanup_orphan_backup_tmp();  // P2: осиротевшие bk_*.bin.tmp после обрыва питания
     }
 }
 
@@ -698,6 +701,38 @@ static void sanitize_loaded(spectrum_data_t *out)
 // Решение «какие файлы удалить» вынесено в host-тестируемый backup_plan.c; здесь
 // только ввод-вывод. Вся функция работает под http_io_gate (держит вызывающий).
 
+// P2: осиротевшие bk_*.bin.tmp (обрыв питания между fopen(tmp) и rename в
+// atomic_write_snapshot) — backup_parse_name их не видит (".bin.tmp" != ".bin"),
+// поэтому ни ротация, ни restore их никогда не тронут; чистим раз на старте.
+// Путь восстанавливаем из РАЗОБРАННЫХ чисел, не из d_name (%s до 255 Б) —
+// иначе -Werror=format-truncation (тот же приём, что web_server.c:654).
+static bool cleanup_one_backup_tmp(const char *name)
+{
+    size_t len = strlen(name);
+    if (len < 5 || strcmp(name + len - 4, ".tmp") != 0) return false;
+    char stripped[64];
+    if (len - 4 >= sizeof(stripped)) return false;
+    memcpy(stripped, name, len - 4);
+    stripped[len - 4] = '\0';
+    backup_id_t id;
+    if (!backup_parse_name(stripped, &id)) return false;
+    char path[88];
+    snprintf(path, sizeof(path), "%s/" BACKUP_NAME_FMT ".tmp", BACKUP_DIR, id.sess, id.seq);
+    return remove(path) == 0;
+}
+
+static void cleanup_orphan_backup_tmp(void)
+{
+    DIR *dir = opendir(BACKUP_DIR);
+    if (!dir) return;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL)
+        if (cleanup_one_backup_tmp(de->d_name)) n++;
+    closedir(dir);
+    if (n > 0) ESP_LOGW(TAG, "backup: removed %d orphaned tmp file(s) at boot", n);
+}
+
 // Собирает идентификаторы снимков каталога. Возвращает число найденных, либо -1
 // при ошибке открытия каталога. Файлы, не подходящие под шаблон (в т.ч. чужие
 // .bak), пропускаются и в ротацию не попадают.
@@ -715,6 +750,23 @@ static int backup_scan(backup_id_t *out, int cap)
     }
     closedir(dir);
     return n;
+}
+
+// P2 (второе независимое ревью 9453113): атомарная запись spectrum_data_t —
+// общий хелпер для autosave (current.bin) и резервных снимков (bk_*.bin).
+// tmp_path обязан быть уникален для вызывающего. true при успехе; при любой
+// неудаче tmp_path подчищен (unlink), final_path не тронут.
+static bool atomic_write_snapshot(const char *tmp_path, const char *final_path,
+                                  const spectrum_data_t *data)
+{
+    unlink(tmp_path);
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) return false;
+    size_t wr = fwrite(data, sizeof(*data), 1, f);
+    int cl = fclose(f);
+    if (wr != 1 || cl != 0) { unlink(tmp_path); return false; }
+    if (rename(tmp_path, final_path) != 0) { unlink(tmp_path); return false; }
+    return true;
 }
 
 int spectrum_backup_save(uint32_t sess, uint32_t seq, int keep)
@@ -801,22 +853,14 @@ int spectrum_backup_save(uint32_t sess, uint32_t seq, int keep)
                  ndel, keep);
     }
 
-    char path[80];
+    // P2: tmp+rename (atomic_write_snapshot) — обрыв питания портит только
+    // tmp, боевое имя bk_<sess>_<seq>.bin либо целое, либо отсутствует;
+    // обрезанный файл под боевым именем раньше навсегда занимал слот ротации.
+    char path[80], tmp_path[88];
     snprintf(path, sizeof(path), "%s/" BACKUP_NAME_FMT, BACKUP_DIR, sess, seq);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        ESP_LOGE(TAG, "backup: cannot create %s", path);
-        flash_quiet_writer_unlock();
-        free(snap);
-        return -3;
-    }
-    size_t wr = fwrite(snap, sizeof(*snap), 1, f);
-    int fc = fclose(f);
-    if (wr != 1 || fc != 0) {
-        // Обрезанный файл хуже отсутствующего: он займёт слот ротации и вытеснит
-        // годный снимок, а прочитаться не сможет.
-        ESP_LOGE(TAG, "backup: write %s failed (wr=%zu fc=%d), removing", path, wr, fc);
-        remove(path);
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (!atomic_write_snapshot(tmp_path, path, snap)) {
+        ESP_LOGE(TAG, "backup: write %s failed (errno=%d)", path, errno);
         flash_quiet_writer_unlock();
         free(snap);
         return -3;
@@ -1230,45 +1274,15 @@ void spectrum_autosave(void)
         spectrum_autosave_note_fail();
         return;
     }
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t t_open0 = esp_timer_get_time();
-#endif
-    // AWF-1 (#1): атомарная запись — во tmp, затем rename поверх основного
-    // файла (тот же приём, что и в sliced pump-пути ниже). Обрыв питания
-    // между fopen и fclose портит только tmp; current.bin остаётся прежним
-    // и годным для восстановления.
-    unlink(AUTOSAVE_TMP_FILE);
-    FILE *f = fopen(AUTOSAVE_TMP_FILE, "wb");
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t open_us = esp_timer_get_time() - t_open0;
-#endif
-    if (!f) {
-        http_io_gate_leave();
-        ESP_LOGE(TAG, "Autosave tmp open failed");
-        free(snap);
-        return;
-    }
-
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t t_wr0 = esp_timer_get_time();
-#endif
-    size_t wr = fwrite(snap, sizeof(*snap), 1, f);
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t write_us = esp_timer_get_time() - t_wr0;
-    int64_t t_cl0 = esp_timer_get_time();
-#endif
-    int cl = fclose(f);
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t close_us = esp_timer_get_time() - t_cl0;
-    ESP_LOGI(TAG, "autosave split open_us=%lld write_us=%lld close_us=%lld wr=%zu",
-             (long long)open_us, (long long)write_us, (long long)close_us, wr);
-#endif
-    if (cl != 0 || wr != 1) {
-        ESP_LOGE(TAG, "Autosave write failed (wr=%zu)", wr);
-        unlink(AUTOSAVE_TMP_FILE);
-        http_io_gate_leave();
-    } else if (rename(AUTOSAVE_TMP_FILE, AUTOSAVE_FILE) != 0) {
-        ESP_LOGE(TAG, "Autosave rename failed (errno=%d)", errno);
+    // P2 (второе независимое ревью 9453113): тот же atomic_write_snapshot,
+    // что и spectrum_backup_save() — не копия. Обрыв питания портит только
+    // tmp; current.bin остаётся прежним и годным для восстановления.
+    // #FW-8 I2 split-timing диагностика (open/write/close us, HIST_DROP_DIAG,
+    // default OFF) вместе с этим убрана — измеряла именно инлайновый путь,
+    // который здесь больше не существует; при необходимости меряется заново
+    // снаружи atomic_write_snapshot() (esp_timer_get_time() вокруг вызова).
+    if (!atomic_write_snapshot(AUTOSAVE_TMP_FILE, AUTOSAVE_FILE, snap)) {
+        ESP_LOGE(TAG, "Autosave write failed (errno=%d)", errno);
         http_io_gate_leave();
     } else {
         http_io_gate_leave();
