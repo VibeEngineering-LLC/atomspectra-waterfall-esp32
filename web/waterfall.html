@@ -1190,7 +1190,8 @@ function updDiskInd(){
 }
 
 var csrfToken="";
-function post(url,body){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});}
+/* CSRF-1: токен меняется при каждом старте платы — на 403 берём новый и повторяем один раз. */
+async function post(url,body){var f=function(){return fetch(url,{method:"POST",headers:{"X-CSRF-Token":csrfToken,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined})};var r=await f();if(r.status===403){await loadCsrf();r=await f()}return r}
 async function loadCsrf(){try{var r=await(await fetch("/api/csrf-token")).json();csrfToken=r.token||"";}catch(e){}}
 async function loadPrefix(){try{var r=await(await fetch("/api/boot-config")).json();var e=document.getElementById("fx-prefix");if(e)e.value=r.name_prefix||"";}catch(_){}}
 async function savePrefix(){var e=document.getElementById("fx-prefix"),st=document.getElementById("fx-prefix-st");if(!e)return;st.textContent="…";try{var r=await post("/api/boot-config",{name_prefix:e.value});st.textContent=r.ok?"✓":"✗";}catch(_){st.textContent="✗";}}
