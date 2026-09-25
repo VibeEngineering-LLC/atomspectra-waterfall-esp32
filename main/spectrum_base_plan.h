@@ -67,15 +67,19 @@ typedef struct {
     uint32_t  shown_counts;
 } spectrum_base_state_t;
 
-// true, если этот коммит свернул базу. Проверка сброса (по счёту — ВСЕГДА;
-// по времени — только если STAT свежий) идёт строго ДО merge.
+// F3 (итоговое ревью 25.09): свёртка ТОЛЬКО по счёту. Раньше просадка ОДНОГО
+// времени (при согласованном счёте) тоже триггерила fold — a base:=shown
+// (в shown УЖЕ есть dev), новый shown=base+dev=старая_база+2·dev: удвоение.
+// Просадка STAT при согласованном счёте — пересинхронизация времени (было
+// до ветки: «принимаем абсолют»), её отдельно делает caller (spectrum.c
+// commit_apply_time_stat_fresh_locked), fold она больше не триггерит.
+// stat_fresh/dev_time_now остаются в сигнатуре для caller'а (не в решении).
 static inline bool spectrum_base_commit(spectrum_base_state_t *st, const uint32_t *dev_bins,
                                         uint32_t dev_total, size_t n,
                                         bool stat_fresh, uint32_t dev_time_now)
 {
+    (void)stat_fresh; (void)dev_time_now;
     bool reset = spectrum_base_reset_detected_by_counts(dev_total, st->base_counts, st->shown_counts);
-    if (!reset && stat_fresh)
-        reset = spectrum_base_reset_detected(dev_time_now, st->base_time, st->shown_time);
     if (reset) {
         for (size_t i = 0; i < n; i++) st->base_bins[i] = st->shown_bins[i];
         st->base_time = st->shown_time;

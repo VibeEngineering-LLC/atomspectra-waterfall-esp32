@@ -54,11 +54,15 @@ static void test_counts_reset(void)
 // Сценарий целиком (через ОРКЕСТРАЦИЮ spectrum_base_commit — тот же порядок,
 // что spectrum.c): D восстановлен -> первый коммит сворачивает базу -> рост
 // без сворачивания. Время после fold — забота caller (spectrum.c #FW-12).
+// F3 (итоговое ревью 25.09): база=0 до первого коммита (не 600, как раньше) —
+// свёртка теперь триггерится ТОЛЬКО по счёту (dev=3 < expected=600-0=600),
+// не по времени; со старой базой=600 expected был бы 0 и тест держался бы
+// на времени, которое spectrum_base_commit больше не смотрит.
 static void test_sequence(void)
 {
     uint32_t base_bins[3] = {0, 0, 0};
     uint32_t shown_bins[3] = {100, 200, 300};
-    spectrum_base_state_t st = { base_bins, 0, 600, shown_bins, 4451, 600 };
+    spectrum_base_state_t st = { base_bins, 0, 0, shown_bins, 4451, 600 };
 
     uint32_t dev_bins[3] = {1, 0, 2};
     CHECK(spectrum_base_commit(&st, dev_bins, 3, 3, true, 11));
@@ -95,6 +99,24 @@ static void test_live_bug_no_stat_first_commit(void)
     CHECK(st.shown_counts == 267049 + 9);
 }
 
+// F3 (итоговое ревью 25.09): счёт растёт СОГЛАСОВАННО (dev=610 >= expected
+// 600), а STAT-время отстало на 10с (590 < 600-5=595, старый код счёл бы это
+// сбросом) — база НЕ должна измениться, счёт НЕ должен удвоиться.
+static void test_time_only_regression_no_fold(void)
+{
+    uint32_t base_bins[3] = {50, 20, 30};       // сумма 100
+    uint32_t shown_bins[3] = {350, 200, 150};   // сумма 700 (100 база + 600 dev)
+    spectrum_base_state_t st = { base_bins, 1000, 100, shown_bins, 1600, 700 };
+
+    uint32_t dev_bins[3] = {305, 200, 105};     // сумма 610 (>= expected 600)
+    bool did = spectrum_base_commit(&st, dev_bins, 610, 3, /*stat_fresh=*/true,
+                                     /*dev_time_now=*/590);
+
+    CHECK(!did);
+    CHECK(st.base_counts == 100 && base_bins[0] == 50 && base_bins[2] == 30);
+    CHECK(st.shown_counts == 100 + 610);   // НЕ 100+610+610 (было бы при баге)
+}
+
 void spectrum_base_plan_suite(void)
 {
     test_reset_detection();
@@ -103,4 +125,5 @@ void spectrum_base_plan_suite(void)
     test_counts_reset();
     test_sequence();
     test_live_bug_no_stat_first_commit();
+    test_time_only_regression_no_fold();
 }
