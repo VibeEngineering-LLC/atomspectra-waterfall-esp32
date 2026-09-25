@@ -35,6 +35,8 @@ void test_restore_plan(void);
 void test_wifi_reconnect_plan(void);
 void test_wifi_return_plan(void);
 void test_wifi_return_backoff(void);
+// AWF-3: сброс прибора и слияние база+прибор (main/spectrum_base_plan.h).
+void spectrum_base_plan_suite(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -200,6 +202,7 @@ int main(void)
     test_wifi_reconnect_plan();
     test_wifi_return_plan();
     test_wifi_return_backoff();
+    spectrum_base_plan_suite();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);
