@@ -22,6 +22,12 @@ static EventGroupHandle_t s_wifi_events;
 
 // AWF-2a (#1): счётчик попыток (индекс в расписании пауз) и таймер,
 // планирующий следующий esp_wifi_connect() без блокировки обработчика событий.
+// P1 (независимое ревью f091b01): счётчик неудачных попыток возврата в STA
+// из fallback Field AP — растёт, если после esp_restart() в STA плата снова
+// свалилась в fallback (SSID виден, но не держится: пароль/DHCP). Сброс —
+// только по IP_EVENT_STA_GOT_IP (см. wifi_return_plan.h).
+static uint32_t s_return_fail_count = 0;
+
 static int s_retry_count = 0;
 static int64_t s_disconnect_started_us = 0;   // 0 = сейчас не в серии реконнектов
 static esp_timer_handle_t s_reconnect_timer = NULL;
@@ -374,6 +380,39 @@ static void ensure_reconnect_timer(void)
         ESP_LOGE(TAG, "reconnect timer create failed");
 }
 
+// P1: STA реально держит IP — закрыть серию неудачных попыток возврата.
+static void wifi_return_note_connected(void)
+{
+    s_return_fail_count = 0;
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) != ESP_OK) return;
+    nvs_set_u8(nvs, "ret_fail", 0);
+    nvs_erase_key(nvs, "ret_pend");   // ENOENT молча проглатывается esp-idf
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+// P1: вызывать РОВНО когда плата входит в fallback Field AP (ap_fb_once).
+// ret_pend от прошлой попытки возврата означает, что STA не удержалась —
+// бампим счётчик задержки; иначе (обычный первый уход в поле) счётчик не
+// трогаем, только подгружаем его текущее значение в RAM.
+static void wifi_return_note_fallback_entered(void)
+{
+    uint8_t ret_pend = 0, ret_fail = 0;
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) != ESP_OK) { s_return_fail_count = 0; return; }
+    nvs_get_u8(nvs, "ret_pend", &ret_pend);
+    nvs_get_u8(nvs, "ret_fail", &ret_fail);
+    if (ret_pend) {
+        ret_fail = (uint8_t)wifi_return_fail_count_bump(ret_fail);
+        nvs_set_u8(nvs, "ret_fail", ret_fail);
+        nvs_erase_key(nvs, "ret_pend");
+    }
+    nvs_commit(nvs);
+    nvs_close(nvs);
+    s_return_fail_count = ret_fail;
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
 {
@@ -409,6 +448,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_retry_count = 0;
         s_disconnect_started_us = 0;   // AWF-2a (#1): серия реконнектов закрыта
         if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
+        wifi_return_note_connected();  // P1: единственная точка сброса ret_fail/ret_pend
         // #FIELD-2a: STA поднялась — отменить fallback-таймер
         if (s_fallback_timer) esp_timer_stop(s_fallback_timer);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
@@ -444,12 +484,14 @@ void wifi_manager_init(void)
     // #FIELD-2a: одноразовый fallback после неудачной STA — войти в поле, сбросить флаг.
     // Не липкий: следующий ребут снова пробует STA (FIELD-3).
     if (ap_fb_once) {
+        wifi_return_note_fallback_entered();   // P1: детектирует неудачную попытку возврата
         if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
             nvs_erase_key(nvs, "ap_fb_once");
             nvs_commit(nvs);
             nvs_close(nvs);
         }
-        ESP_LOGW(TAG, "FIELD-2a: entering field AP (one-shot fallback)");
+        ESP_LOGW(TAG, "FIELD-2a: entering field AP (one-shot fallback, ret_fail=%u)",
+                 (unsigned)s_return_fail_count);
         s_ap_forced = false;   // #FIELD-6: это fallback, не липкий forced
         start_field_ap();
         return;
@@ -599,6 +641,15 @@ static void wifi_return_finish(bool entered_by_fallback, const char *ssid)
     if (!wifi_return_should_reboot_to_sta(entered_by_fallback, clients, found)) return;
 
     ESP_LOGW(TAG, "FIELD-2a: saved SSID '%s' visible again, no AP clients -> reboot to STA", ssid);
+    // P1: помечаем ПОПЫТКУ до ребута — если STA не удержится и плата опять
+    // свалится в fallback, wifi_return_note_fallback_entered() увидит флаг и
+    // взведёт бэкофф. Успешный коннект чистит флаг сам (wifi_return_note_connected).
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "ret_pend", 1);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
     spectrogram_prepare_reboot();
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
@@ -611,6 +662,14 @@ void wifi_manager_try_return_to_sta(void)
 {
     if (s_mode != NET_MODE_FIELD_AP) return;
     bool entered_by_fallback = !s_ap_forced;
+    if (!entered_by_fallback) return;
+
+    // P1: бэкофф от начала ЭТОЙ Field-AP сессии (esp_timer сбрасывается на
+    // каждом ребуте, ret_fail персистентен в NVS) — не сканировать/не решать
+    // о возврате, пока не прошёл нужный интервал после N неудачных попыток.
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (!wifi_return_backoff_elapsed(s_return_fail_count, now_ms, 0)) return;
+
     int clients = wifi_manager_ap_clients();
     if (!wifi_return_scan_allowed(entered_by_fallback, clients)) return;
 

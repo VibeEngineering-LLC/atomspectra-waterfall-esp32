@@ -1298,18 +1298,6 @@ static bool restore_from_latest_backup_scanned(backup_id_t *have, int n, spectru
     return false;
 }
 
-// AWF-1 (#2): последняя линия обороны — самый свежий ГОДНЫЙ резервный снимок
-// (issue #52).
-static bool restore_from_latest_backup(spectrum_data_t *out)
-{
-    backup_id_t have[BACKUP_KEEP_MAX * 2];
-    int n = backup_scan(have, (int)(sizeof(have) / sizeof(have[0])));
-    if (n <= 0) return false;
-    if (n > (int)(sizeof(have) / sizeof(have[0])))
-        n = (int)(sizeof(have) / sizeof(have[0]));
-    return restore_from_latest_backup_scanned(have, n, out);
-}
-
 // Читает файл целиком в *out; true только если размер точен и valid==true —
 // тот же критерий, что и раньше для current.bin, теперь общий для main/tmp.
 static bool load_valid_snapshot(const char *path, spectrum_data_t *out)
@@ -1321,45 +1309,80 @@ static bool load_valid_snapshot(const char *path, spectrum_data_t *out)
     return rd == sizeof(*out) && out->valid;
 }
 
-// Применяет выбор restore_pick_source к s_spectrum. Вызывать под SPEC_LOCK.
-static void restore_apply(restore_source_t src, spectrum_data_t *main_data,
-                          spectrum_data_t *tmp_data, spectrum_data_t *backup_data)
+// P0 review fix: один буфер (heap, у вызывающего), не три копии по источникам.
+// Лог для BACKUP уже дан restore_from_latest_backup_scanned. Вызывать под SPEC_LOCK.
+static void restore_apply(restore_source_t src, spectrum_data_t *data)
 {
     switch (src) {
     case RESTORE_SRC_MAIN:
-        s_spectrum = *main_data;
+        s_spectrum = *data;
         ESP_LOGI(TAG, "Restored autosave from current.bin: %" PRIu32 " counts, %" PRIu32 "s",
                  s_spectrum.total_counts, s_spectrum.total_time_sec);
         return;
     case RESTORE_SRC_TMP:
-        s_spectrum = *tmp_data;
+        s_spectrum = *data;
         ESP_LOGW(TAG, "Restored autosave from tmp (power loss mid-write): %" PRIu32 " counts, %" PRIu32 "s",
                  s_spectrum.total_counts, s_spectrum.total_time_sec);
         return;
     case RESTORE_SRC_BACKUP:
-        if (restore_from_latest_backup(backup_data)) {
-            s_spectrum = *backup_data;
-            return;
-        }
-        ESP_LOGE(TAG, "Autosave restore: main+tmp invalid, backup listed but unreadable");
-        break;
+        s_spectrum = *data;
+        return;
     default:
-        break;
+        memset(&s_spectrum, 0, sizeof(s_spectrum));
+        return;
     }
-    memset(&s_spectrum, 0, sizeof(s_spectrum));
+}
+
+// Хвост restore_resolve(): main/tmp уже проверены — если оба негодны, ровно
+// ОДИН обход BACKUP_DIR (P3) и попытка прочитать самый новый годный снимок.
+static restore_source_t restore_resolve_backup(spectrum_data_t *buf, bool main_valid, bool tmp_valid)
+{
+    backup_id_t have[BACKUP_KEEP_MAX * 2];
+    int n = 0;
+    if (!main_valid && !tmp_valid) {
+        n = backup_scan(have, (int)(sizeof(have) / sizeof(have[0])));
+        if (n > (int)(sizeof(have) / sizeof(have[0])))
+            n = (int)(sizeof(have) / sizeof(have[0]));
+    }
+    restore_source_t src = restore_pick_source(main_valid, tmp_valid, n > 0);
+    if (src == RESTORE_SRC_BACKUP && !restore_from_latest_backup_scanned(have, n, buf)) {
+        ESP_LOGE(TAG, "Autosave restore: main+tmp invalid, backup listed but unreadable");
+        src = RESTORE_SRC_NONE;
+    }
+    return src;
+}
+
+// Заполняет *buf данными выбранного источника (или не трогает его для NONE) и
+// возвращает какой источник выбран; P3: один обход BACKUP_DIR (не два, как в
+// f091b01: там max_session() и restore_from_latest_backup() сканировали дважды).
+static restore_source_t restore_resolve(spectrum_data_t *buf)
+{
+    bool main_valid = load_valid_snapshot(AUTOSAVE_FILE, buf);
+    bool tmp_valid = !main_valid && load_valid_snapshot(AUTOSAVE_TMP_FILE, buf);
+    return restore_resolve_backup(buf, main_valid, tmp_valid);
 }
 
 void spectrum_restore_autosave(void)
 {
-    spectrum_data_t main_data, tmp_data, backup_data;
-    bool main_valid = load_valid_snapshot(AUTOSAVE_FILE, &main_data);
-    bool tmp_valid = !main_valid && load_valid_snapshot(AUTOSAVE_TMP_FILE, &tmp_data);
-    bool have_backup = !main_valid && !tmp_valid && spectrum_backup_max_session() > 0;
-    restore_source_t src = restore_pick_source(main_valid, tmp_valid, have_backup);
+    // P0 (независимое ревью f091b01): раньше 3×spectrum_data_t (~32.8 КБ
+    // каждый, bins[8192]) лежали на стеке app_main разом — ~98 КБ против
+    // CONFIG_ESP_MAIN_TASK_STACK_SIZE=3584. Теперь один буфер в куче,
+    // источники проверяются последовательно, друг друга не переживая.
+    spectrum_data_t *buf = malloc(sizeof(*buf));
+    if (!buf) {
+        ESP_LOGE(TAG, "Autosave restore: malloc(%u) failed, starting empty",
+                 (unsigned)sizeof(*buf));
+        SPEC_LOCK();
+        memset(&s_spectrum, 0, sizeof(s_spectrum));
+        SPEC_UNLOCK();
+        return;
+    }
+    restore_source_t src = restore_resolve(buf);
 
     SPEC_LOCK();
-    restore_apply(src, &main_data, &tmp_data, &backup_data);
+    restore_apply(src, buf);
     SPEC_UNLOCK();
+    free(buf);
 }
 
 int spectrum_delete_from_flash(int index)

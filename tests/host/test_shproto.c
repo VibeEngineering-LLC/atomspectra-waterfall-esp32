@@ -34,6 +34,7 @@ void acq_intent_suite(void);
 void test_restore_plan(void);
 void test_wifi_reconnect_plan(void);
 void test_wifi_return_plan(void);
+void test_wifi_return_backoff(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -198,6 +199,7 @@ int main(void)
     test_restore_plan();
     test_wifi_reconnect_plan();
     test_wifi_return_plan();
+    test_wifi_return_backoff();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);
