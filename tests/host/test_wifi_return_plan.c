@@ -5,21 +5,34 @@
 void test_wifi_return_plan(void)
 {
     // forced Outdoor (ap_mode) — липкий по замыслу, сканировать/возвращаться нельзя никогда.
-    CHECK(!wifi_return_scan_allowed(false, 0));
-    CHECK(!wifi_return_should_reboot_to_sta(false, 0, true));
+    CHECK(!wifi_return_scan_allowed(false, 0, 0));
+    CHECK(!wifi_return_should_reboot_to_sta(false, 0, 0, true));
 
-    // fallback, есть клиенты — сканировать нельзя (увело бы AP с канала под пользователем).
-    CHECK(!wifi_return_scan_allowed(true, 1));
-    CHECK(!wifi_return_should_reboot_to_sta(true, 1, true));
+    // AWF-2a доработка (живой тест 25.09): раньше блокировал ЛЮБОЙ клиент,
+    // теперь — только АКТИВНОСТЬ (HTTP за последние 10 мин = 600000 мс).
+    // Активность 0с назад (только что) — блокирует.
+    CHECK(!wifi_return_scan_allowed(true, 0, 0));
+    CHECK(!wifi_return_should_reboot_to_sta(true, 0, 0, true));
+    // 599с назад — всё ещё блокирует (граница снизу).
+    CHECK(!wifi_return_scan_allowed(true, 599000u, 0));
+    // 601с назад — тишина, можно.
+    CHECK(wifi_return_scan_allowed(true, 601000u, 0));
+    // Телефон подключён без активности (клиент есть, но не листает страницы) —
+    // возврат теперь РАЗРЕШЁН, если активности не было достаточно долго.
+    CHECK(wifi_return_scan_allowed(true, 700000u, 0));
 
-    // fallback, клиентов нет — можно сканировать.
-    CHECK(wifi_return_scan_allowed(true, 0));
+    // SSID не виден — не возвращаемся, даже если активность стихла.
+    CHECK(!wifi_return_should_reboot_to_sta(true, 700000u, 0, false));
 
-    // SSID не виден — не возвращаемся, даже если клиентов нет.
-    CHECK(!wifi_return_should_reboot_to_sta(true, 0, false));
+    // Единственный законный путь к возврату: fallback + активность стихла + SSID виден.
+    CHECK(wifi_return_should_reboot_to_sta(true, 700000u, 0, true));
 
-    // Единственный законный путь к возврату: fallback + 0 клиентов + SSID виден.
-    CHECK(wifi_return_should_reboot_to_sta(true, 0, true));
+    // Переполнение uint32 мс: last_activity_ms почти на границе, now перевалило
+    // через 0 — беззнаковая разность всё равно корректна (тот же приём, что
+    // wifi_return_backoff_elapsed).
+    uint32_t last = 0xFFFFFFF0u;
+    CHECK(wifi_return_scan_allowed(true, last + 700000u, last));   // далеко за порог, за 0
+    CHECK(!wifi_return_scan_allowed(true, last + 100u, last));     // рядом, тоже за 0
 }
 
 // P1: расписание бэкоффа возврата (счётчик неудач, переполнение uint32 мс).

@@ -14,10 +14,20 @@ void test_wifi_reconnect_plan(void)
     CHECK(wifi_reconnect_delay_s(100) == 60);
     CHECK(wifi_reconnect_delay_s(-1) == 1);   // защита от мусора
 
-    // Сумма 1+2+5+10+30+60 = 108с < 300с порога — расписание одно фазу fallback не покрывает.
-    CHECK(!wifi_reconnect_should_fallback(108));
-    CHECK(!wifi_reconnect_should_fallback(299));
-    CHECK(wifi_reconnect_should_fallback(300));
-    CHECK(wifi_reconnect_should_fallback(301));
-    CHECK(!wifi_reconnect_should_fallback(0));
+    // Сумма 1+2+5+10+30+60 = 108с < 300с порога — расписание одну фазу fallback не покрывает.
+    // ВКЛ (ap_fallback_enabled=true) — прежнее поведение, got_ip_this_boot не влияет.
+    CHECK(!wifi_reconnect_should_fallback(true, true,  108));
+    CHECK(!wifi_reconnect_should_fallback(true, false, 299));
+    CHECK( wifi_reconnect_should_fallback(true, true,  300));
+    CHECK( wifi_reconnect_should_fallback(true, false, 301));
+    CHECK(!wifi_reconnect_should_fallback(true, true,  0));
+
+    // AWF-2a настройка ВЫКЛ + IP УЖЕ БЫЛА в этой загрузке -> НИКОГДА, даже
+    // сильно за порогом (живой тест 25.09, шаг 2).
+    CHECK(!wifi_reconnect_should_fallback(false, true, 300));
+    CHECK(!wifi_reconnect_should_fallback(false, true, 100000));
+
+    // ВЫКЛ, но IP в этой загрузке ЕЩЁ НЕ БЫЛО (страховка) -> прежний порог.
+    CHECK(!wifi_reconnect_should_fallback(false, false, 299));
+    CHECK( wifi_reconnect_should_fallback(false, false, 300));
 }
