@@ -21,3 +21,18 @@ void acq_intent_suite(void)
         CHECK(got == c[i].exp);
     }
 }
+
+// P1-a: cmd_is_device_reset — «-rst» с пробелами/CR/LF, соседние команды НЕ сброс.
+void cmd_is_device_reset_suite(void)
+{
+    const struct { const char *cmd; bool exp; } c[] = {
+        {"-rst",     true},   {"-rst ",  true}, {"-rst\r\n", true}, {"-rst\t", true},
+        {" -rst",    false},  {"-rsto",  false}, {"-rs",      false}, {"-rst1", false},
+        {"-sta",     false},  {"-sto",   false}, {"-inf",     false}, {"",      false},
+    };
+    for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+        bool got = cmd_is_device_reset(c[i].cmd);
+        if (got != c[i].exp) printf("cmd_is_device_reset case %u ('%s'): got %d\n", i, c[i].cmd, got);
+        CHECK(got == c[i].exp);
+    }
+}

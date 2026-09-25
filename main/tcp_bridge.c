@@ -1,4 +1,6 @@
 #include "atomspectra.h"
+#include "shproto.h"
+#include "acq_intent.h"      /* P1-a: cmd_is_device_reset() */
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "lwip/sockets.h"
@@ -101,6 +103,37 @@ static void tcp_tx_task(void *arg)
     }
 }
 
+// P1-a: PC-клиент (BecqMoni/AtomSpectra) шлёт байты СЫРЫМ проходом (см. #TCP-1
+// выше) прямо usb_host_cdc_send() — мимо usb_host_send_text_command(), поэтому
+// его «-rst» не чистит базу, если не декодировать CMD_TEXT здесь тоже. Свой
+// декодер, отдельный от s_rx_packet в usb_host_cdc.c (тот — для device→gateway).
+static uint8_t s_pc_cmd_buf[512];
+static shproto_struct s_pc_cmd_decoder;
+static bool s_pc_cmd_decoder_init;
+// Скормить сырые байты клиента декодеру; при полном CMD_TEXT с «-rst» —
+// spectrum_reset(), как от кнопки UI «Сброс».
+static void tcp_scan_for_reset_cmd(const uint8_t *data, size_t n)
+{
+    if (!s_pc_cmd_decoder_init) {
+        shproto_init(&s_pc_cmd_decoder, s_pc_cmd_buf, sizeof(s_pc_cmd_buf));
+        s_pc_cmd_decoder_init = true;
+    }
+    for (size_t i = 0; i < n; i++) {
+        shproto_byte_received(&s_pc_cmd_decoder, data[i]);
+        if (s_pc_cmd_decoder.ready) {
+            s_pc_cmd_decoder.ready = false;
+            if (s_pc_cmd_decoder.cmd == CMD_TEXT && s_pc_cmd_decoder.len > 0 &&
+                s_pc_cmd_decoder.data[s_pc_cmd_decoder.len - 1] == '\0' &&
+                cmd_is_device_reset((const char *)s_pc_cmd_decoder.data)) {
+                ESP_LOGW(TAG, "TCP client sent -rst -- clearing base");
+                spectrum_reset();
+            }
+        } else if (s_pc_cmd_decoder.dropped) {
+            s_pc_cmd_decoder.dropped = false;
+        }
+    }
+}
+
 static void tcp_rx_task(void *arg)
 {
     uint8_t buf[1024];
@@ -124,6 +157,7 @@ static void tcp_rx_task(void *arg)
         // Прибором управляет внешнее приложение: шлюз не знает, запущен ли набор,
         // и сторож набора не должен перебивать его «Стоп» своим -sta.
         usb_host_cdc_acq_intent_external();
+        tcp_scan_for_reset_cmd(buf, n);
         usb_host_cdc_send(buf, n);
     }
 }

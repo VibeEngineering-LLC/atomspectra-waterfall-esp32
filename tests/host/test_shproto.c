@@ -30,6 +30,7 @@ void fuzz_backup_name(void);
 // Сторож набора после перезагрузки прибора (main/acq_watch.h).
 void acq_watch_suite(void);
 void acq_intent_suite(void);
+void cmd_is_device_reset_suite(void);
 // AWF-1/2a: восстановление спектра и реконнект/возврат Field AP.
 void test_restore_plan(void);
 void test_wifi_reconnect_plan(void);
@@ -198,6 +199,7 @@ int main(void)
     fuzz_backup_name();
     acq_watch_suite();
     acq_intent_suite();
+    cmd_is_device_reset_suite();
     test_restore_plan();
     test_wifi_reconnect_plan();
     test_wifi_return_plan();
