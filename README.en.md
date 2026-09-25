@@ -386,6 +386,7 @@ A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect t
 - One client at a time
 - The Web UI works in parallel with the TCP bridge
 - `TCP_NODELAY` for minimal latency
+- The bridge forwards the analyzer's raw stream transparently: a PC client only sees the analyzer's own acquisition since its last reset, WITHOUT the Web UI's base (AWF-3) — after a power cut or -rst the counter in BecqMoni/AtomSpectra starts over even though the web UI already shows a continuous spectrum.
 
 ## Waterfall (spectrogram)
 
