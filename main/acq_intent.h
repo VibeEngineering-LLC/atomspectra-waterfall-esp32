@@ -19,15 +19,27 @@ static inline uint8_t acq_intent_for_cmd(const char *cmd, uint8_t cur)
     return cur;
 }
 
-/* P1-a: команда — «-rst» (сброс прибора, PROTOCOL.md:43, без параметров).
- * Тот же приём обрезки хвостовых пробелов/CR/LF, что acq_intent_for_cmd —
- * любой путь, которым «-rst» уходит прибору (свои команды, /api/command,
- * TCP-мост), обязан очищать базу так же, как кнопка UI. Ведущие пробелы НЕ
- * обрезаются (симметрично acq_intent_for_cmd) — " -rst" не считается. */
+/* P1-a + F5 (итоговое ревью 25.09): команды, обнуляющие прибор — «-rst»
+ * (PROTOCOL.md:43, без параметров) И «-sta [xx] [-r] [-s]» с флагом «-r»
+ * (PROTOCOL.md:39: «-r — сброс спектра перед стартом»), в любой позиции
+ * среди пробельно-разделённых аргументов после -sta. До F5 «-sta ... -r»
+ * не распознавался: прибор обнулялся, шлюз по счёту видел «сброс» и
+ * сворачивал старый спектр в базу — пользователь чистил прибор, а Web UI
+ * показывал старый спектр плюс новый. Тот же приём обрезки хвостовых
+ * пробелов/CR/LF, что acq_intent_for_cmd; ведущие НЕ обрезаются. */
 static inline bool cmd_is_device_reset(const char *cmd)
 {
     size_t n = strlen(cmd);
     while (n > 0 && (cmd[n - 1] == ' ' || cmd[n - 1] == '\t' || cmd[n - 1] == '\r' || cmd[n - 1] == '\n'))
         n--;
-    return n == 4 && strncmp(cmd, "-rst", 4) == 0;
+    if (n == 4 && strncmp(cmd, "-rst", 4) == 0) return true;
+    if (!(n >= 4 && strncmp(cmd, "-sta", 4) == 0 && (n == 4 || cmd[4] == ' '))) return false;
+    size_t i = 4;
+    while (i < n) {
+        while (i < n && cmd[i] == ' ') i++;
+        size_t start = i;
+        while (i < n && cmd[i] != ' ') i++;
+        if (i - start == 2 && cmd[start] == '-' && cmd[start + 1] == 'r') return true;
+    }
+    return false;
 }

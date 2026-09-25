@@ -29,6 +29,13 @@ void cmd_is_device_reset_suite(void)
         {"-rst",     true},   {"-rst ",  true}, {"-rst\r\n", true}, {"-rst\t", true},
         {" -rst",    false},  {"-rsto",  false}, {"-rs",      false}, {"-rst1", false},
         {"-sta",     false},  {"-sto",   false}, {"-inf",     false}, {"",      false},
+        // F5 (итоговое ревью 25.09): «-sta ... -r ...» — сброс перед стартом
+        // (PROTOCOL.md:39), -r в любой позиции среди аргументов.
+        {"-sta -r",       true}, {"-sta 60 -r",   true}, {"-sta -r -s",  true},
+        {"-sta -s -r 60", true}, {"-sta -r\r\n",  true}, {"-sta  -r",    true},
+        {"-sta -s",       false}, {"-sta 60",     false}, {"-sta",        false},
+        {"-sta -rrandom", false}, {"-sta -run",   false}, // "-r" внутри другого токена — не флаг
+        {"-startxyz -r",  false},                          // не -sta вовсе
     };
     for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
         bool got = cmd_is_device_reset(c[i].cmd);
