@@ -2,6 +2,7 @@
 #include "spectrogram.h"   // #FW-55 (P-016): spectrogram_prepare_reboot()
 #include "wifi_reconnect_plan.h"  // AWF-2a (#1): расписание пауз реконнекта
 #include "wifi_return_plan.h"     // AWF-2a (#2): решение о возврате из Field AP
+#include "boot_config.h"          // AWF-2a доработка: настройка ap_fallback
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -27,6 +28,12 @@ static EventGroupHandle_t s_wifi_events;
 // свалилась в fallback (SSID виден, но не держится: пароль/DHCP). Сброс —
 // только по IP_EVENT_STA_GOT_IP (см. wifi_return_plan.h).
 static uint32_t s_return_fail_count = 0;
+// AWF-2a доработка: STA хоть раз получила IP в ЭТОЙ загрузке (сбрасывается
+// ребутом) — вход в решение wifi_reconnect_should_fallback().
+static bool s_got_ip_this_boot = false;
+// Диагностика застревания в Field AP (живой тест 25.09): причина последнего
+// блока возврата, для /api/system. Лог — только при смене причины.
+static const char *s_return_block_reason = "none";
 
 static int s_retry_count = 0;
 static int64_t s_disconnect_started_us = 0;   // 0 = сейчас не в серии реконнектов
@@ -359,6 +366,29 @@ static void fallback_timer_cb(void *arg)
         set_fb_flag_and_reboot();
 }
 
+// AWF-2a доработка: настройка «Переходить в Field AP при потере Wi-Fi» из
+// /api/boot-config (инвертированный disabled-флаг, см. boot_config.h).
+static bool ap_fallback_enabled(void)
+{
+    boot_config_t bc;
+    boot_config_load(&bc);
+    return !bc.field_ap_fallback_disabled;
+}
+
+const char *wifi_manager_return_block_reason(void)
+{
+    return s_return_block_reason;
+}
+// Лог ТОЛЬКО при смене причины (живой тест 25.09: 11 мин застревания не
+// оставили следа — молчаливые ранние выходы). Не чаще раза на причину.
+static void note_return_block(const char *reason)
+{
+    if (s_return_block_reason != reason) {
+        ESP_LOGW(TAG, "FIELD return blocked: %s", reason);
+        s_return_block_reason = reason;
+    }
+}
+
 // AWF-2a (#1): очередная попытка по расписанию пауз — не блокирует обработчик
 // событий (эта функция сама вызывается из таска esp_timer, не из handler'а).
 static void reconnect_timer_cb(void *arg)
@@ -431,7 +461,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         // уводить плату в поле раньше, чем роутер успевает подняться.
         if (s_disconnect_started_us == 0) s_disconnect_started_us = esp_timer_get_time();
         uint32_t elapsed_s = (uint32_t)((esp_timer_get_time() - s_disconnect_started_us) / 1000000);
-        if (wifi_reconnect_should_fallback(elapsed_s)) {
+        if (wifi_reconnect_should_fallback(ap_fallback_enabled(), s_got_ip_this_boot, elapsed_s)) {
             ESP_LOGE(TAG, "WiFi down %us (reason=%u) -> field AP", (unsigned)elapsed_s, (unsigned)reason);
             set_fb_flag_and_reboot();
         } else {
@@ -448,6 +478,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "Connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_got_ip_this_boot = true;   // AWF-2a доработка
         s_retry_count = 0;
         s_disconnect_started_us = 0;   // AWF-2a (#1): серия реконнектов закрыта
         if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
@@ -638,13 +669,16 @@ static bool scan_for_saved_ssid(const char *ssid)
 
 // Сканирует и решает, перепроверив клиентов ПОСЛЕ скана (могли подключиться
 // во время него — AP на это время уходит с канала).
-static void wifi_return_finish(bool entered_by_fallback, const char *ssid)
+static void wifi_return_finish(bool entered_by_fallback, const char *ssid,
+                               uint32_t now_ms, uint32_t last_activity_ms)
 {
     bool found = scan_for_saved_ssid(ssid);
-    int clients = wifi_manager_ap_clients();
-    if (!wifi_return_should_reboot_to_sta(entered_by_fallback, clients, found)) return;
+    if (!wifi_return_should_reboot_to_sta(entered_by_fallback, now_ms, last_activity_ms, found)) {
+        note_return_block(found ? "activity" : "ssid_not_found");
+        return;
+    }
 
-    ESP_LOGW(TAG, "FIELD-2a: saved SSID '%s' visible again, no AP clients -> reboot to STA", ssid);
+    ESP_LOGW(TAG, "FIELD-2a: saved SSID '%s' visible again, HTTP quiet -> reboot to STA", ssid);
     // P1: помечаем ПОПЫТКУ до ребута — если STA не удержится и плата опять
     // свалится в fallback, wifi_return_note_fallback_entered() увидит флаг и
     // взведёт бэкофф. Успешный коннект чистит флаг сам (wifi_return_note_connected).
@@ -666,18 +700,29 @@ void wifi_manager_try_return_to_sta(void)
 {
     if (s_mode != NET_MODE_FIELD_AP) return;
     bool entered_by_fallback = !s_ap_forced;
-    if (!entered_by_fallback) return;
+    if (!entered_by_fallback) { note_return_block("mode"); return; }
 
     // P1: бэкофф от начала ЭТОЙ Field-AP сессии (esp_timer сбрасывается на
     // каждом ребуте, ret_fail персистентен в NVS) — не сканировать/не решать
     // о возврате, пока не прошёл нужный интервал после N неудачных попыток.
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-    if (!wifi_return_backoff_elapsed(s_return_fail_count, now_ms, 0)) return;
-
-    int clients = wifi_manager_ap_clients();
-    if (!wifi_return_scan_allowed(entered_by_fallback, clients)) return;
+    if (!wifi_return_backoff_elapsed(s_return_fail_count, now_ms, 0)) {
+        note_return_block("backoff");
+        return;
+    }
+    // AWF-2a доработка: блокирует АКТИВНОСТЬ (HTTP-запрос за 10 мин), не сам
+    // факт подключения клиента к Field AP (живой тест 25.09 — простаивающий
+    // телефон блокировал возврат 11 минут).
+    uint32_t last_activity_ms = web_server_last_http_activity_ms();
+    if (!wifi_return_scan_allowed(entered_by_fallback, now_ms, last_activity_ms)) {
+        note_return_block("activity");
+        return;
+    }
 
     char ssid[WIFI_SSID_MAX] = {0};
-    if (!load_saved_sta_ssid(ssid, sizeof(ssid))) return;
-    wifi_return_finish(entered_by_fallback, ssid);
+    if (!load_saved_sta_ssid(ssid, sizeof(ssid))) {
+        note_return_block("no_saved_ssid");
+        return;
+    }
+    wifi_return_finish(entered_by_fallback, ssid, now_ms, last_activity_ms);
 }

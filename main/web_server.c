@@ -497,13 +497,16 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
 {
     boot_config_t bc;
     boot_config_load(&bc);
-    char resp[320];
+    char resp[380];
     // #FW-42: name_prefix санитизирован в NVS ([A-Za-z0-9_-]) → JSON-escape не нужен.
     // issue #52: + настройки резервных снимков и текущий номер сессии (read-only).
+    // AWF-2a: field_ap_fallback — ПОЛОЖИТЕЛЬНАЯ семантика наружу (true=ВКЛ), хотя
+    // в NVS/структуре хранится инвертированный disabled-флаг (см. boot_config.h).
     snprintf(resp, sizeof(resp),
         "{\"autostart_spectrum\":%s,\"autostart_waterfall\":%s,"
         "\"clear_spectrum\":%s,\"clear_waterfall\":%s,\"name_prefix\":\"%s\","
         "\"backup_keep\":%u,\"backup_hours\":%u,\"backup_test_minutes\":%s,"
+        "\"field_ap_fallback\":%s,"
         "\"session\":%" PRIu32 "}",
         bc.autostart_spectrum  ? "true" : "false",
         bc.autostart_waterfall ? "true" : "false",
@@ -512,6 +515,7 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
         bc.name_prefix,
         (unsigned)bc.backup_keep, (unsigned)bc.backup_hours,
         bc.backup_test_minutes ? "true" : "false",
+        bc.field_ap_fallback_disabled ? "false" : "true",
         boot_config_get_session());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
@@ -569,6 +573,9 @@ static esp_err_t handle_boot_config_set(httpd_req_t *req)
     // Стендовый режим: Y читается как минуты. В UI поля нет намеренно — только API.
     if ((it = cJSON_GetObjectItem(root, "backup_test_minutes")))
         bc.backup_test_minutes = cJSON_IsTrue(it);
+    // AWF-2a: приходит положительным (true=ВКЛ), в структуре хранится инвертированно.
+    if ((it = cJSON_GetObjectItem(root, "field_ap_fallback")))
+        bc.field_ap_fallback_disabled = !cJSON_IsTrue(it);
     cJSON_Delete(root);
     int rc = boot_config_save(&bc);
     httpd_resp_set_type(req, "application/json");
@@ -1516,6 +1523,14 @@ static esp_err_t handle_system(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "ap_clients",     wifi_manager_ap_clients());
     cJSON_AddBoolToObject(root,   "ap_pass_default", wifi_manager_ap_pass_is_default());
     cJSON_AddBoolToObject(root,   "ap_forced",      wifi_manager_ap_forced());
+    // AWF-2a доработка: диагностика застревания в Field AP (живой тест 25.09,
+    // 11 минут без следа) — причина последнего блока возврата + давность HTTP.
+    cJSON_AddStringToObject(root, "return_block_reason", wifi_manager_return_block_reason());
+    {
+        uint32_t idle_ms = web_server_ms_since_http_activity();
+        cJSON_AddNumberToObject(root, "http_idle_s",
+            (idle_ms == UINT32_MAX) ? -1.0 : (double)(idle_ms / 1000));
+    }
     cJSON_AddStringToObject(root, "time_source",    net_time_source_str());
     cJSON_AddBoolToObject(root,   "sntp_synced",    net_time_sntp_synced());
     // #PERF-1/#PERF-2: observability for multi-tab spectrum cache + HEAVY gate
@@ -2160,6 +2175,36 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
     return ESP_OK;
 }
 
+// AWF-2a доработка (живой тест 25.09): метка последней HTTP-активности —
+// ОДНО место (open_fn на каждое новое соединение), не правка каждого
+// обработчика. Соединение — надёжный proxy: браузер открывает сокет прямо
+// перед запросом. Читает wifi_manager через web_server_ms_since_http_activity().
+static volatile int64_t s_last_http_activity_us = -1;   // -1 = активности не было
+
+static esp_err_t web_server_note_open(httpd_handle_t hd, int sockfd)
+{
+    (void)hd; (void)sockfd;
+    s_last_http_activity_us = esp_timer_get_time();
+    return ESP_OK;
+}
+
+uint32_t web_server_ms_since_http_activity(void)
+{
+    int64_t last = s_last_http_activity_us;
+    if (last < 0) return UINT32_MAX;
+    int64_t elapsed_us = esp_timer_get_time() - last;
+    if (elapsed_us < 0) elapsed_us = 0;
+    int64_t elapsed_ms = elapsed_us / 1000;
+    return (elapsed_ms > UINT32_MAX) ? UINT32_MAX : (uint32_t)elapsed_ms;
+}
+
+uint32_t web_server_last_http_activity_ms(void)
+{
+    int64_t last = s_last_http_activity_us;
+    if (last < 0) return 0;
+    return (uint32_t)(last / 1000);
+}
+
 void web_server_init(void)
 {
     csrf_generate();
@@ -2188,6 +2233,8 @@ void web_server_init(void)
     // #UI-15 P0: чистим WS-реестр при ЛЮБОМ закрытии сокета (RST/FIN/LRU/F5);
     // без callback зомбирующиеся fd ломают broadcast после нескольких F5.
     config.close_fn = web_waterfall_on_close;
+    // AWF-2a доработка: единая точка метки HTTP-активности (не было own open_fn).
+    config.open_fn = web_server_note_open;
     // #UI-15 P2: сжимаем default recv/send (~5 c) — освобождаем сокеты быстрее
     // под давлением F5+poll, иначе пул держит «полудохлые» соединения долго.
     config.recv_wait_timeout = 3;

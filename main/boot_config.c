@@ -43,6 +43,7 @@ void boot_config_load(boot_config_t *out)
     out->backup_keep         = 0;    // issue #52: из коробки выключено
     out->backup_hours        = 24;
     out->backup_test_minutes = false;
+    out->field_ap_fallback_disabled = false;   // AWF-2a: по умолчанию ВКЛ
 
     nvs_handle_t h;
     if (nvs_open(BOOT_NS, NVS_READONLY, &h) != ESP_OK) return;   // namespace ещё нет → все false / ""
@@ -71,6 +72,7 @@ void boot_config_load(boot_config_t *out)
     if (nvs_get_u16(h, "bk_h", &hrs) == ESP_OK && hrs >= BOOT_BACKUP_HOURS_MIN)
         out->backup_hours = (hrs > BOOT_BACKUP_HOURS_MAX) ? BOOT_BACKUP_HOURS_MAX : hrs;
     out->backup_test_minutes = get_flag(h, "bk_tm");
+    out->field_ap_fallback_disabled = get_flag(h, "fap_dis");
     nvs_close(h);
 }
 
@@ -100,6 +102,7 @@ int boot_config_save(const boot_config_t *in)
         e |= nvs_set_u16(h, "bk_h",  hrs);
         e |= nvs_set_u8 (h, "bk_tm", in->backup_test_minutes ? 1 : 0);
     }
+    e |= nvs_set_u8(h, "fap_dis", in->field_ap_fallback_disabled ? 1 : 0);
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
     if (e != ESP_OK) { ESP_LOGW(TAG, "save failed (0x%x)", (int)e); return -1; }

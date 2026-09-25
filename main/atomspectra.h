@@ -110,10 +110,20 @@ const char *wifi_manager_ap_ssid(void);    // #FIELD-6: SSID активного 
 bool wifi_manager_ap_pass_is_default(void);// #SEC-2: пароль AP не менялся (дефолт)
 bool wifi_manager_ap_forced(void);         // #FIELD-6: field_ap липкий (ap_mode=1) vs fallback
 // AWF-2a (#2): периодическая (main.c tick) попытка вернуться из fallback Field AP
-// в STA, когда сохранённый роутер снова виден и на точке нет клиентов.
+// в STA, когда сохранённый роутер снова виден и HTTP-активность на нём стихла.
 void wifi_manager_try_return_to_sta(void);
+// AWF-2a доработка: причина последнего блока возврата, для /api/system
+// (диагностика зависаний — живой тест 25.09, застревание 10+ мин без следа).
+const char *wifi_manager_return_block_reason(void);
 
 void web_server_init(void);
+// AWF-2a доработка: мс с последнего HTTP-запроса к веб-серверу этой сессии
+// (open_fn каждого нового соединения); UINT32_MAX = активности ещё не было.
+uint32_t web_server_ms_since_http_activity(void);
+// То же, абсолютной меткой esp_timer (мс) для беззнакового вычитания в паре с
+// esp_timer_get_time() у вызывающего (wifi_manager) — тот же приём, что
+// wifi_return_backoff_elapsed(now_ms, last_attempt_ms). 0 = "активности не было".
+uint32_t web_server_last_http_activity_ms(void);
 
 void tcp_bridge_init(void);
 bool tcp_bridge_client_connected(void);
