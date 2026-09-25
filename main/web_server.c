@@ -2194,27 +2194,16 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
 // http_activity_plan.h. open_fn/close_fn метят открытие/закрытие;
 // web_server_note_request_activity() — ЕДИНСТВЕННАЯ точка, где запрос
 // СЧИТАЕТСЯ (общий трамплин над uris[] ниже + choke points web_waterfall.c).
+// N1 (ревью-2): open_fn/close_fn для активности БОЛЬШЕ НЕ НУЖНЫ — модель
+// упрощена до метки последнего запроса (http_activity_plan.h), сокет ей не
+// нужен вовсе. close_fn остаётся ТОЛЬКО ради чистки WS-реестра водопада
+// (web_waterfall_on_close) — config.close_fn ниже указывает на него напрямую.
 static http_activity_state_t s_activity;
-static esp_err_t web_server_note_open(httpd_handle_t hd, int sockfd)
-{
-    (void)hd;
-    http_activity_open(&s_activity, sockfd);
-    return ESP_OK;
-}
 
-// #UI-15 P0: раньше был единственным close_fn (чистка WS-реестра); теперь
-// сначала метим close активности, ПОТОМ зовём исходный (свой реестр по fd,
-// порядок с s_activity не связан).
-static void web_server_note_close(httpd_handle_t hd, int sockfd)
+void web_server_note_request_activity(const char *uri)
 {
-    http_activity_close(&s_activity, sockfd, (uint32_t)(esp_timer_get_time() / 1000));
-    web_waterfall_on_close(hd, sockfd);
-}
-
-void web_server_note_request_activity(int sockfd, const char *uri)
-{
-    http_activity_request(&s_activity, sockfd, http_uri_is_activity(uri),
-                           (uint32_t)(esp_timer_get_time() / 1000));
+    http_activity_note_request(&s_activity, http_uri_is_activity(uri),
+                                (uint32_t)(esp_timer_get_time() / 1000));
 }
 
 // Незарегистрированный URI структурно НЕ проходит через трамплин (тот висит
@@ -2237,7 +2226,7 @@ static esp_err_t (*s_wrap_handlers[WEB_SERVER_URI_MAX])(httpd_req_t *);
 static esp_err_t activity_trampoline(httpd_req_t *req)
 {
     size_t idx = (size_t)(intptr_t)req->user_ctx;
-    web_server_note_request_activity(httpd_req_to_sockfd(req), req->uri);
+    web_server_note_request_activity(req->uri);
     return s_wrap_handlers[idx](req);
 }
 
@@ -2249,7 +2238,6 @@ bool web_server_http_activity_quiet(uint32_t threshold_ms)
 
 uint32_t web_server_http_idle_s(void)
 {
-    if (http_activity_any_user_open(&s_activity)) return 0;
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     return (now_ms - s_activity.last_user_event_ms) / 1000;
 }
@@ -2281,13 +2269,21 @@ void web_server_init(void)
     config.uri_match_fn = httpd_uri_match_wildcard;
     // #UI-15 P0: чистим WS-реестр при ЛЮБОМ закрытии сокета (RST/FIN/LRU/F5);
     // без callback зомбирующиеся fd ломают broadcast после нескольких F5.
-    config.close_fn = web_server_note_close;   // F1: чистка WS-реестра + close активности
-    // AWF-2a доработка: единая точка метки HTTP-активности (не было own open_fn).
-    config.open_fn = web_server_note_open;
+    config.close_fn = web_waterfall_on_close;   // N1: активности тут больше не нужно
     // #UI-15 P2: сжимаем default recv/send (~5 c) — освобождаем сокеты быстрее
     // под давлением F5+poll, иначе пул держит «полудохлые» соединения долго.
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
+    // N1 (ревью-2): TCP keepalive — зомби-сокет (телефон ушёл из зоны, FIN не
+    // пришёл, ACK последнего ответа получен, lwIP не ретранслирует) теперь
+    // корректно обнуляется гейтом возврата (активность по метке запроса, не
+    // по факту, что сокет ещё открыт), но keepalive всё равно освобождает
+    // занятый слот httpd раньше, чем это сделал бы LRU (только при 11/11).
+    // Значения IDF-дефолтов (esp_http_server.h): idle/interval 5с, count 3.
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 5;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) != ESP_OK) {
@@ -2352,6 +2348,13 @@ void web_server_init(void)
         {"/common-time.js",              HTTP_GET,  handle_common_time_js,   NULL},  // #FIELD-5
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };
+
+    // N4 (ревью-2): uris[] — статический литерал, его размер ИЗВЕСТЕН на
+    // сборке (в отличие от web_waterfall.c's reg(), тут нужен ровно
+    // _Static_assert, не рантайм-guard) — лишняя запись без пересмотра
+    // WEB_SERVER_URI_MAX раньше молча переполнила бы s_wrap_handlers[].
+    _Static_assert(sizeof(uris) / sizeof(uris[0]) <= WEB_SERVER_URI_MAX,
+                   "WEB_SERVER_URI_MAX меньше числа записей uris[]");
 
     // F1: трамплин маркирует активность (по http_uri_is_activity(req->uri))
     // ДО вызова настоящего обработчика — правка ТОЛЬКО регистрации (эта

@@ -117,19 +117,17 @@ void wifi_manager_try_return_to_sta(void);
 const char *wifi_manager_return_block_reason(void);
 
 void web_server_init(void);
-// F1 (итоговое ревью 25.09): активность — на уровне СОКЕТА, не соединения
-// (main/http_activity_plan.h). threshold_ms — обычно WIFI_RETURN_ACTIVITY_
-// QUIET_MS (wifi_return_plan.h). true = тишина >= threshold_ms И нет ни
-// одного открытого «пользовательского» сокета прямо сейчас.
+// N1 (ревью-2): активность — метка ПОСЛЕДНЕГО пользовательского запроса, не
+// состояние сокета (main/http_activity_plan.h; упрощено из F1 socket-модели,
+// которая держала плату в Field AP вечно при зомби-сокете). threshold_ms —
+// обычно WIFI_RETURN_ACTIVITY_QUIET_MS (wifi_return_plan.h).
 bool web_server_http_activity_quiet(uint32_t threshold_ms);
-// Секунды с последнего user-события; 0, пока открыт хоть один user-сокет
-// (для /api/system, справочно — не для гейта возврата).
+// Секунды с последнего пользовательского запроса (для /api/system, справочно).
 uint32_t web_server_http_idle_s(void);
-// Единственная точка, где запрос СЧИТАЕТСЯ (классификация по URI + поднятие
-// is_user сокета) — вызывается из общего трамплина над uris[] в web_server.c
-// и из choke point'ов web_waterfall.c (reg()/h_ws), без правки тел ~70
-// обработчиков.
-void web_server_note_request_activity(int sockfd, const char *uri);
+// Единственная точка, где запрос СЧИТАЕТСЯ (классификация по URI) —
+// вызывается из общего трамплина над uris[] в web_server.c и из choke
+// point'ов web_waterfall.c (reg()/h_ws), без правки тел ~70 обработчиков.
+void web_server_note_request_activity(const char *uri);
 
 void tcp_bridge_init(void);
 bool tcp_bridge_client_connected(void);

@@ -48,83 +48,40 @@ static inline bool http_404_is_activity(const char *uri)
     return false;
 }
 
-// F1 (итоговое ревью 25.09): метка активности на уровне СОКЕТА, не запроса и
-// не открытия соединения. Прежняя модель метила открытие сокета — keep-alive
-// (index.html опрос раз в 2с) и WS водопада держат ОДНО соединение часами,
-// метка не обновлялась, через 10 мин работающий пользователь считался
-// бездействующим. Модель: сокет становится «пользовательским» на ПЕРВОМ
-// неpробном запросе; пока открыт хоть один такой сокет — активность есть
-// БЕЗУСЛОВНО; отсчёт тишины — с последнего user-события среди закрытых.
-#define HTTP_ACTIVITY_MAX_SOCKS 16
+// N1 (ревью-2, находка по F1): «активен, пока открыт хоть один
+// пользовательский сокет» не имело верхней границы — полуоткрытый (zombie)
+// сокет ушедшего телефона держал плату в Field AP НАВСЕГДА (зонд:
+// quiet_after_24h=0), close_fn не срабатывал. Модель УПРОЩЕНА по указанию
+// координатора: активность = МЕТКА ПОСЛЕДНЕГО пользовательского ЗАПРОСА
+// (не сокета), одна uint32 мс. Тихо — если прошло >= порога, НЕЗАВИСИМО от
+// того, открыт ли сокет. index.html опрашивает раз в 2с (web/index.html:778
+// `setInterval(update,2000)`), system.html — раз в 2с (web/system.html:725
+// `setInterval(refreshSystem,2000)`) — метка у работающего пользователя
+// обновляется намного чаще 10-минутного порога.
 typedef struct {
-    int  fd;
-    bool used;      // слот занят (сокет открыт СЕЙЧАС)
-    bool is_user;   // был хотя бы один НЕ-пробный запрос
-} http_activity_sock_t;
-
-typedef struct {
-    http_activity_sock_t socks[HTTP_ACTIVITY_MAX_SOCKS];
-    uint32_t last_user_event_ms;   // последний user-запрос ИЛИ close user-сокета
+    uint32_t last_user_event_ms;
 } http_activity_state_t;
-
-static inline int http_activity_slot(int fd)
-{
-    return (int)(((unsigned)fd) % HTTP_ACTIVITY_MAX_SOCKS);
-}
 
 static inline void http_activity_init(http_activity_state_t *st)
 {
-    memset(st, 0, sizeof(*st));
+    st->last_user_event_ms = 0;
 }
 
-// Сокет открылся (httpd open_fn). Слот переиспользуется по fd%N — ДОЛЖЕН
-// вызываться на каждый accept, иначе устаревший is_user другого fd в этом же
-// слоте протечёт в новый сокет.
-static inline void http_activity_open(http_activity_state_t *st, int fd)
+// is_activity_uri — уже посчитанный вердикт http_uri_is_activity()/
+// http_404_is_activity() (URI-парсинг ВНЕ этой функции). Проба не двигает
+// метку. Для WS — звать на КАЖДЫЙ входящий кадр (main/web_waterfall.c h_ws),
+// не только на handshake.
+static inline void http_activity_note_request(http_activity_state_t *st,
+                                               bool is_activity_uri, uint32_t now_ms)
 {
-    int i = http_activity_slot(fd);
-    st->socks[i].fd = fd;
-    st->socks[i].used = true;
-    st->socks[i].is_user = false;
+    if (is_activity_uri) st->last_user_event_ms = now_ms;
 }
 
-// Запрос на сокете fd, is_activity_uri — уже посчитанный вердикт
-// http_uri_is_activity()/http_404_is_activity() (URI-парсинг ВНЕ этой
-// функции). Проба (is_activity_uri=false) НЕ понижает is_user, если он уже
-// true — только не поднимает его на этом запросе.
-static inline void http_activity_request(http_activity_state_t *st, int fd,
-                                          bool is_activity_uri, uint32_t now_ms)
-{
-    int i = http_activity_slot(fd);
-    if (!(st->socks[i].used && st->socks[i].fd == fd) || !is_activity_uri) return;
-    st->socks[i].is_user = true;
-    st->last_user_event_ms = now_ms;
-}
-
-// Сокет закрылся (httpd close_fn). Если он был user — момент закрытия и есть
-// «последнее user-событие» (пока сокет открыт, activity_any_user_open() уже
-// даёт true без таймера — «позже» из требования оказывается здесь, при close).
-static inline void http_activity_close(http_activity_state_t *st, int fd, uint32_t now_ms)
-{
-    int i = http_activity_slot(fd);
-    if (!(st->socks[i].used && st->socks[i].fd == fd)) return;
-    if (st->socks[i].is_user) st->last_user_event_ms = now_ms;
-    st->socks[i].used = false;
-}
-
-static inline bool http_activity_any_user_open(const http_activity_state_t *st)
-{
-    for (int i = 0; i < HTTP_ACTIVITY_MAX_SOCKS; i++)
-        if (st->socks[i].used && st->socks[i].is_user) return true;
-    return false;
-}
-
-// Тишина >= threshold_ms: НЕТ открытого user-сокета И now-last_user_event_ms
-// >= порога. Вычитание в uint32 переживает переполнение millis (тот же приём,
-// что wifi_return_backoff_elapsed).
+// Тишина >= threshold_ms с последнего пользовательского запроса. Вычитание
+// в uint32 переживает переполнение millis (тот же приём, что
+// wifi_return_backoff_elapsed).
 static inline bool http_activity_quiet(const http_activity_state_t *st,
                                         uint32_t now_ms, uint32_t threshold_ms)
 {
-    if (http_activity_any_user_open(st)) return false;
     return (now_ms - st->last_user_event_ms) >= threshold_ms;
 }
