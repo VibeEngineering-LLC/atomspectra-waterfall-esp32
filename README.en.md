@@ -279,7 +279,7 @@ an "Open device →" button is there too.
 
 1. **Toggle** Indoor → Outdoor in the start-page header. The board reboots and raises the
    access point; this is a **"sticky"** mode — it persists across reboots until you toggle back;
-2. **Automatically (fallback)** — if the home network is unreachable for ≥ 90 s, the board
+2. **Automatically (fallback)** — if the home network is unreachable for ≥ 5 min, the board
    raises the field AP **one-shot**: the next reboot tries the home network again. Handy when
    you carried the board out of router range without touching settings;
 3. **On a fresh (unconfigured) board** — a **"Field mode (Outdoor)"** button in the setup portal.

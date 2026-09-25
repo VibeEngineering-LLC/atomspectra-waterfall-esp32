@@ -32,8 +32,11 @@ static int s_retry_count = 0;
 static int64_t s_disconnect_started_us = 0;   // 0 = сейчас не в серии реконнектов
 static esp_timer_handle_t s_reconnect_timer = NULL;
 
-// #FIELD-2a: STA не получила IP за FALLBACK_SEC → ребут в полевой AP.
-#define FALLBACK_SEC 90
+// #FIELD-2a (ревью-2): единый источник порога — WIFI_RECONNECT_FALLBACK_S
+// (wifi_reconnect_plan.h, 300с), а не своя константа. Было 90с — короче, чем
+// расписание реконнекта (WIFI_RECONNECT_STEPS суммарно ~108с и растёт), из-за
+// чего startup-таймер уводил плату в Field AP раньше событийного пути:
+// "моргнул свет", роутер поднимается 1-2 мин — 90с не хватало.
 
 // #FIELD-1: текущий сетевой режим. Дефолт STA, устанавливается в развилке init.
 static net_run_mode_t s_mode = NET_MODE_STA;
@@ -522,7 +525,7 @@ void wifi_manager_init(void)
         return;
     }
 
-    // #FIELD-1: Indoor (STA) + fallback-таймер 90с (FIELD-2a).
+    // #FIELD-1: Indoor (STA) + fallback-таймер WIFI_RECONNECT_FALLBACK_S (FIELD-2a).
     esp_event_handler_instance_t inst_any, inst_got_ip;
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
         &wifi_event_handler, NULL, &inst_any);
@@ -550,16 +553,17 @@ void wifi_manager_init(void)
     start_mdns();
     s_mode = NET_MODE_STA;
 
-    // fallback-таймер: нет IP за 90с → ребут в полевой AP
+    // fallback-таймер: нет IP за WIFI_RECONNECT_FALLBACK_S -> ребут в полевой AP
+    // (тот же порог, что и событийный путь STA_DISCONNECTED — единый источник).
     const esp_timer_create_args_t targs = {
         .callback = fallback_timer_cb,
         .name = "wifi_fb",
     };
     if (esp_timer_create(&targs, &s_fallback_timer) == ESP_OK)
-        esp_timer_start_once(s_fallback_timer, (uint64_t)FALLBACK_SEC * 1000000);
+        esp_timer_start_once(s_fallback_timer, (uint64_t)WIFI_RECONNECT_FALLBACK_S * 1000000);
 
-    ESP_LOGI(TAG, "WiFi STA starting, SSID=%s (fallback %ds)",
-             wifi_config.sta.ssid, FALLBACK_SEC);
+    ESP_LOGI(TAG, "WiFi STA starting, SSID=%s (fallback %us)",
+             wifi_config.sta.ssid, (unsigned)WIFI_RECONNECT_FALLBACK_S);
 }
 
 bool wifi_is_connected(void)

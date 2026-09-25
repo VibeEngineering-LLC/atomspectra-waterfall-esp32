@@ -137,7 +137,7 @@ function doConnect(){
 }
 // #FIELD-2c: запуск полевого AP-режима с фреш-платы без ввода домашней WiFi.
 // POST /api/field-mode (captive httpd, без CSRF) ставит NVS ap_mode=1 и ребутит —
-// плата поднимается в Outdoor (AtomSpectra-Outdoor). Fallback STA→Outdoor (90 с)
+// плата поднимается в Outdoor (AtomSpectra-Outdoor). Fallback STA→Outdoor (5 мин)
 // покрывает уже настроенные платы; эта кнопка — для свежих, где сети нет вовсе.
 function doField(){
     if(!confirm(t("field.confirm")))return;
