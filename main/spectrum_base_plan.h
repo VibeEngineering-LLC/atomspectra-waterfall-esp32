@@ -93,6 +93,23 @@ static inline bool spectrum_base_reset_detected_bounded(uint32_t dev_time_now,
     return dev_time_now < dev_elapsed_since_base / 2;
 }
 
+// R1 (ревью-3): коммит БЕЗ свежего STAT, чей count НЕ подтверждает сброс,
+// двусмысленный — возможен настоящий сброс с горячим источником (свежий
+// dev_total уже БОЛЬШЕ старого expected), куда N2 без времени не
+// дотягивается (только count-check выше видит только ПРОСАДКУ, не рост).
+// caller обязан ПРОПУСТИТЬ публикацию такого коммита целиком (не звать
+// spectrum_base_commit) — следующий коммит либо явно увидит просадку по
+// счёту, либо к нему подоспеет STAT и сработает N2 (бонус: от НЕПОВРЕЖДЁННОГО
+// base/shown, не от уже слитого этим двусмысленным коммитом — F3-удвоение).
+static inline bool spectrum_base_commit_should_defer(uint32_t dev_total_now,
+                                                      uint32_t base_counts,
+                                                      uint32_t shown_total_counts,
+                                                      bool stat_fresh)
+{
+    if (stat_fresh) return false;
+    return !spectrum_base_reset_detected_by_counts(dev_total_now, base_counts, shown_total_counts);
+}
+
 // stat_fresh/dev_time_now — время участвует в решении ЧЕРЕЗ ограниченный
 // сигнал (см. ниже), только когда stat_fresh (несвежий STAT не значит ничего).
 static inline bool spectrum_base_commit(spectrum_base_state_t *st, const uint32_t *dev_bins,

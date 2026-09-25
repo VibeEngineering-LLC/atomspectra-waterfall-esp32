@@ -138,6 +138,43 @@ static void test_n2_count_grew_time_catches(void)
     CHECK(st.shown_counts == 100000 + 200000);
 }
 
+// R1 (ревью-3): spectrum_base_commit_should_defer() сама по себе.
+static void test_r1_defer_predicate(void)
+{
+    // !stat_fresh, count НЕ говорит «сброс» (вырос) -> defer.
+    CHECK(spectrum_base_commit_should_defer(150000, 0, 100000, false));
+    // !stat_fresh, count говорит «сброс» (просадка, как test_live_bug) -> НЕ defer.
+    CHECK(!spectrum_base_commit_should_defer(9, 0, 267049, false));
+    // stat_fresh=true -> никогда не defer, N2 сам разберётся.
+    CHECK(!spectrum_base_commit_should_defer(150000, 0, 100000, true));
+}
+// R1: полная последовательность коммитов caller'а (spectrum.c) на пуре —
+// коммит1 (двусмысленный, без STAT) должен быть ПРОПУЩЕН (state не
+// меняется), коммит2 (STAT свежий) видит НЕПОВРЕЖДЁННые base/shown и
+// корректно сворачивает по времени (N2). Сценарий ревью: фон 10ч/100000,
+// сброс, горячий источник 300с растёт до 200000 к коммиту2. Итог — РОВНО
+// 300000 (100000 сессии 1 + 200000 сессии 2), не 400600 и не 300600.
+static void test_r1_defer_and_two_commit_sequence(void)
+{
+    uint32_t base_bins[3] = {0, 0, 0};
+    uint32_t shown_bins[3] = {40000, 30000, 30000};  // сумма 100000
+    spectrum_base_state_t st = { base_bins, 0, 0, shown_bins, 36000, 100000 };
+
+    // коммит1: !stat_fresh, dev уже вырос (150000) -> caller обязан ПРОПУСТИТЬ.
+    CHECK(spectrum_base_commit_should_defer(150000, st.base_counts, st.shown_counts, false));
+    // state НЕ ТРОНУТ (caller не звал spectrum_base_commit вовсе).
+    CHECK(st.shown_counts == 100000 && st.base_counts == 0);
+
+    // коммит2: STAT свежий, dev=200000, t=301 (сессия 2 продолжается).
+    CHECK(!spectrum_base_commit_should_defer(200000, st.base_counts, st.shown_counts, true));
+    uint32_t dev_bins2[3] = {80000, 60000, 60000};   // сумма 200000
+    bool did = spectrum_base_commit(&st, dev_bins2, 200000, 3, /*stat_fresh=*/true,
+                                     /*dev_time_now=*/301);
+    CHECK(did);
+    CHECK(st.base_counts == 100000);
+    CHECK(st.shown_counts == 300000);   // РОВНО 300000, не 400600/300600
+}
+
 void spectrum_base_plan_suite(void)
 {
     test_reset_detection();
@@ -148,4 +185,6 @@ void spectrum_base_plan_suite(void)
     test_live_bug_no_stat_first_commit();
     test_time_only_regression_no_fold();
     test_n2_count_grew_time_catches();
+    test_r1_defer_predicate();
+    test_r1_defer_and_two_commit_sequence();
 }

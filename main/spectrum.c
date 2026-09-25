@@ -340,6 +340,15 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
             // AWF-3: свернуть базу (если прибор перезапустился), слить
             // база+свип, обновить время (#FW-12, обобщено на dev-время).
             bool stat_fresh = s_stat_stage.fresh;
+            // R1 (ревью-3): двусмысленный коммит (без STAT, count не сказал
+            // «сброс») — не публикуем, ждём следующего (spectrum_base_plan.h).
+            if (s_base_bins &&
+                spectrum_base_commit_should_defer((uint32_t)total, s_base_total_counts,
+                                                   s_spectrum.total_counts, stat_fresh)) {
+                SPEC_UNLOCK();
+                spectrum_hist_stage_reset(&s_hist_stage);
+                return;
+            }
             uint32_t t_new_raw = stat_fresh ? s_stat_stage.total_time_sec : 0;
             bool did_reset = commit_fold_and_merge_locked(stat_fresh, t_new_raw, total);
             commit_time_locked(stat_fresh, t_new_raw);
