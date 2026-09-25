@@ -200,35 +200,32 @@ bool spectrum_fs_was_formatted(void)
     return s_fs_formatted;
 }
 
-// AWF-3: сброс прибора — свернуть ПОКАЗАННЫЙ спектр в базу ДО слияния этого
-// свипа (иначе первый свип нового набора прибора затирает накопленное —
-// issue 25.09). Вызывать под SPEC_LOCK, после проверки reset_gen. true —
-// свернули (caller сохранит base.bin вне лока).
-static bool commit_fold_base_locked(bool stat_fresh, uint32_t t_new_raw)
+// AWF-3 доработка (живой тест 25.09): свёртка базы и слияние — ОДНОЙ функцией
+// spectrum_base_commit() (main/spectrum_base_plan.h). До фикса fold (по STAT)
+// и merge шли раздельно: merge выполнялся ВСЕГДА, а fold — только при свежем
+// STAT; на первом коммите после реального сброса без свежего STAT merge
+// затирал восстановленный показанный спектр нулевой базой ДО того, как fold
+// успевал его сохранить (issue 25.09, база получила 9 вместо 267049).
+// spectrum_base_commit() проверяет сброс (по счёту — ВСЕГДА; по времени —
+// если STAT свежий) СТРОГО до merge — тот же код, что и host-тест.
+static bool commit_fold_and_merge_locked(bool stat_fresh, uint32_t t_new_raw, uint64_t dev_total)
 {
-    if (!s_base_bins || !stat_fresh || !s_spectrum.valid) return false;
-    if (!spectrum_base_reset_detected(t_new_raw, s_base_time_sec, s_spectrum.total_time_sec))
-        return false;
-    memcpy(s_base_bins, s_spectrum.bins, SPECTRUM_CHANNELS * sizeof(uint32_t));
-    s_base_time_sec = s_spectrum.total_time_sec;
-    s_base_total_counts = s_spectrum.total_counts;
-    s_dev_resets++;
-    return true;
-}
-
-// Слить base (возможно только что свёрнутую) + свежий свип прибора.
-static void commit_merge_bins_locked(uint64_t dev_total)
-{
-    if (s_base_bins) {
-        for (size_t i = 0; i < SPECTRUM_CHANNELS; i++)
-            s_spectrum.bins[i] = spectrum_base_merge(s_base_bins[i], s_hist_staging[i]);
-        s_spectrum.total_counts = spectrum_base_merge(s_base_total_counts, (uint32_t)dev_total);
-    } else {
+    if (!s_base_bins) {
         // Деградация: alloc базы не удался (spectrum_init) — старое прямое
         // зеркалирование прибора без базы, как до AWF-3.
         memcpy(s_spectrum.bins, s_hist_staging, SPECTRUM_CHANNELS * sizeof(uint32_t));
         s_spectrum.total_counts = (uint32_t)dev_total;
+        return false;
     }
+    spectrum_base_state_t st = { s_base_bins, s_base_time_sec, s_base_total_counts,
+                                  s_spectrum.bins, s_spectrum.total_time_sec, s_spectrum.total_counts };
+    bool did_reset = spectrum_base_commit(&st, s_hist_staging, (uint32_t)dev_total,
+                                           SPECTRUM_CHANNELS, stat_fresh, t_new_raw);
+    s_base_time_sec = st.base_time;
+    s_base_total_counts = st.base_counts;
+    s_spectrum.total_counts = st.shown_counts;
+    if (did_reset) s_dev_resets++;
+    return did_reset;
 }
 
 static void commit_apply_time_stat_fresh_locked(uint32_t t_new_raw, uint32_t base_now,
@@ -260,7 +257,7 @@ static void commit_apply_time_locked(bool stat_fresh, uint32_t t_new_raw, uint32
 // прибавляется в конце). Тождественно старому поведению при base=0, и
 // корректно сразу после сворачивания: dev_prev==0 автоматически. Откат >=5с
 // раньше трактовался как рестарт прибора — теперь база сворачивается
-// (commit_fold_base_locked), не молча принимается t_new абсолютом.
+// (commit_fold_and_merge_locked), не молча принимается t_new абсолютом.
 static void commit_time_locked(bool stat_fresh, uint32_t t_new_raw)
 {
     static uint32_t s_drops_at_commit = 0;
@@ -344,8 +341,7 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
             // база+свип, обновить время (#FW-12, обобщено на dev-время).
             bool stat_fresh = s_stat_stage.fresh;
             uint32_t t_new_raw = stat_fresh ? s_stat_stage.total_time_sec : 0;
-            bool did_reset = commit_fold_base_locked(stat_fresh, t_new_raw);
-            commit_merge_bins_locked(total);
+            bool did_reset = commit_fold_and_merge_locked(stat_fresh, t_new_raw, total);
             commit_time_locked(stat_fresh, t_new_raw);
             s_spectrum.valid = true;
             SPEC_UNLOCK();
