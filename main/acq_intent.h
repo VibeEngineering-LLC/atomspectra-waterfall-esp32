@@ -27,18 +27,25 @@ static inline uint8_t acq_intent_for_cmd(const char *cmd, uint8_t cur)
  * сворачивал старый спектр в базу — пользователь чистил прибор, а Web UI
  * показывал старый спектр плюс новый. Тот же приём обрезки хвостовых
  * пробелов/CR/LF, что acq_intent_for_cmd; ведущие НЕ обрезаются. */
+// F5 residual (ревью-2): разделитель токенов после -sta был ТОЛЬКО ' ' —
+// «-sta\t-r» (таб) не распознавался. Тот же класс пробельных, что уже трим
+// хвоста этой же функции (space/tab/CR/LF) — единообразно с ним.
+static inline bool acq_intent_is_ws(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
 static inline bool cmd_is_device_reset(const char *cmd)
 {
     size_t n = strlen(cmd);
-    while (n > 0 && (cmd[n - 1] == ' ' || cmd[n - 1] == '\t' || cmd[n - 1] == '\r' || cmd[n - 1] == '\n'))
-        n--;
+    while (n > 0 && acq_intent_is_ws(cmd[n - 1])) n--;
     if (n == 4 && strncmp(cmd, "-rst", 4) == 0) return true;
-    if (!(n >= 4 && strncmp(cmd, "-sta", 4) == 0 && (n == 4 || cmd[4] == ' '))) return false;
+    if (!(n >= 4 && strncmp(cmd, "-sta", 4) == 0 && (n == 4 || acq_intent_is_ws(cmd[4])))) return false;
     size_t i = 4;
     while (i < n) {
-        while (i < n && cmd[i] == ' ') i++;
+        while (i < n && acq_intent_is_ws(cmd[i])) i++;
         size_t start = i;
-        while (i < n && cmd[i] != ' ') i++;
+        while (i < n && !acq_intent_is_ws(cmd[i])) i++;
         if (i - start == 2 && cmd[start] == '-' && cmd[start + 1] == 'r') return true;
     }
     return false;

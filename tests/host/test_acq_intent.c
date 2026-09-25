@@ -36,6 +36,8 @@ void cmd_is_device_reset_suite(void)
         {"-sta -s",       false}, {"-sta 60",     false}, {"-sta",        false},
         {"-sta -rrandom", false}, {"-sta -run",   false}, // "-r" внутри другого токена — не флаг
         {"-startxyz -r",  false},                          // не -sta вовсе
+        // F5 residual (ревью-2): разделитель — любой пробельный (таб тоже).
+        {"-sta\t-r",      true}, {"-sta\t60\t-r", true}, {"-sta\t\t-r", true},
     };
     for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
         bool got = cmd_is_device_reset(c[i].cmd);
