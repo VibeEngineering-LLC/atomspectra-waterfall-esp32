@@ -29,3 +29,13 @@ void test_http_activity_plan(void)
     CHECK(http_uri_is_activity("/generate_204x"));
     CHECK(http_uri_is_activity(NULL) == true);
 }
+
+// Обработчик 404 (незарегистрированный URI) — Firefox detectportal и любой
+// другой пробник вне нашего списка исключений тоже НЕ активность.
+void test_http_404_activity(void)
+{
+    CHECK(!http_404_is_activity("/success.txt"));
+    CHECK(!http_404_is_activity("/canonical.html"));
+    CHECK(!http_404_is_activity("/whatever-random-junk"));
+    CHECK(!http_404_is_activity(NULL));
+}

@@ -501,8 +501,8 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
     char resp[380];
     // #FW-42: name_prefix санитизирован в NVS ([A-Za-z0-9_-]) → JSON-escape не нужен.
     // issue #52: + настройки резервных снимков и текущий номер сессии (read-only).
-    // AWF-2a: field_ap_fallback — ПОЛОЖИТЕЛЬНАЯ семантика наружу (true=ВКЛ), хотя
-    // в NVS/структуре хранится инвертированный disabled-флаг (см. boot_config.h).
+    // AWF-2a финал: field_ap_fallback — прямая семантика (structура тоже
+    // положительная теперь, см. boot_config.h), отсутствие ключа в NVS = ВЫКЛ.
     snprintf(resp, sizeof(resp),
         "{\"autostart_spectrum\":%s,\"autostart_waterfall\":%s,"
         "\"clear_spectrum\":%s,\"clear_waterfall\":%s,\"name_prefix\":\"%s\","
@@ -516,7 +516,7 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
         bc.name_prefix,
         (unsigned)bc.backup_keep, (unsigned)bc.backup_hours,
         bc.backup_test_minutes ? "true" : "false",
-        bc.field_ap_fallback_disabled ? "false" : "true",
+        bc.field_ap_fallback_enabled ? "true" : "false",
         boot_config_get_session());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
@@ -574,9 +574,8 @@ static esp_err_t handle_boot_config_set(httpd_req_t *req)
     // Стендовый режим: Y читается как минуты. В UI поля нет намеренно — только API.
     if ((it = cJSON_GetObjectItem(root, "backup_test_minutes")))
         bc.backup_test_minutes = cJSON_IsTrue(it);
-    // AWF-2a: приходит положительным (true=ВКЛ), в структуре хранится инвертированно.
     if ((it = cJSON_GetObjectItem(root, "field_ap_fallback")))
-        bc.field_ap_fallback_disabled = !cJSON_IsTrue(it);
+        bc.field_ap_fallback_enabled = cJSON_IsTrue(it);
     cJSON_Delete(root);
     int rc = boot_config_save(&bc);
     httpd_resp_set_type(req, "application/json");
@@ -1197,6 +1196,13 @@ static esp_err_t handle_saved_export_xml(httpd_req_t *req);
 static esp_err_t handle_saved_export_csv(httpd_req_t *req);
 static esp_err_t handle_saved_json(httpd_req_t *req);
 // AWF-2a captive: прототип уже объявлен выше (рядом с handle_captive_page_route).
+// AWF-2a финал: обработчик ошибки 404 esp_http_server (регистрация ниже, у
+// httpd_register_err_handler — определение рядом с open_fn/activity slots).
+// Срабатывает ТОЛЬКО когда uri_match_fn не нашёл НИ ОДНОГО зарегистрированного
+// обработчика; httpd_resp_send_err(...,HTTPD_404_NOT_FOUND,...) ВНУТРИ уже
+// СОВПАВШЕГО обработчика (web_server.c/web_waterfall.c/spectrum_http_cache.c) —
+// другой путь esp_http_server, этим handle_404 не перехватывается, не трогать.
+static esp_err_t handle_404(httpd_req_t *req, httpd_err_code_t err);
 
 static esp_err_t handle_saved_get(httpd_req_t *req)
 {
@@ -2225,6 +2231,17 @@ static void web_server_cancel_activity(httpd_req_t *req)
     }
 }
 
+// AWF-2a финал: незарегистрированный URI (Firefox detectportal /success.txt,
+// /canonical.html и т.п.) — тоже НЕ активность (http_404_is_activity()).
+// Ответ 404 сохраняется как раньше (дефолтное поведение esp_http_server).
+static esp_err_t handle_404(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void)err;
+    if (!http_404_is_activity(req->uri)) web_server_cancel_activity(req);
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+    return ESP_OK;
+}
+
 uint32_t web_server_ms_since_http_activity(void)
 {
     int64_t last = s_last_http_activity_us;
@@ -2345,6 +2362,7 @@ void web_server_init(void)
         httpd_register_uri_handler(server, &uris[i]);
 
     web_waterfall_register(server);      // /waterfall, /api/waterfall/*, /ws/waterfall
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_404);
 
     ESP_LOGI(TAG, "Web server started on port %d", config.server_port);
 }

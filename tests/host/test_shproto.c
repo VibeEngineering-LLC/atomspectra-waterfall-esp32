@@ -40,6 +40,9 @@ void test_wifi_return_backoff(void);
 void spectrum_base_plan_suite(void);
 // AWF-2a captive: классификация URI активность/проба (main/http_activity_plan.h).
 void test_http_activity_plan(void);
+void test_http_404_activity(void);
+// AWF-2a финал: семантика missing-key boot-флага (main/boot_flag_plan.h).
+void test_boot_flag_plan(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -208,6 +211,8 @@ int main(void)
     test_wifi_return_backoff();
     spectrum_base_plan_suite();
     test_http_activity_plan();
+    test_http_404_activity();
+    test_boot_flag_plan();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);

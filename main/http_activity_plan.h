@@ -32,3 +32,17 @@ static inline bool http_uri_is_activity(const char *uri)
         if (strcmp(path, NOT_ACTIVITY[i]) == 0) return false;
     return true;
 }
+
+// Незарегистрированный URI (реальный 404 — esp_http_server вызывает это ТОЛЬКО
+// когда uri_match_fn не нашёл НИ ОДНОГО обработчика; 404, который шлёт САМ
+// зарегистрированный обработчик через httpd_resp_send_err — другой путь, сюда
+// не попадает, это настоящая активность). Незарегистрированный путь почти
+// всегда — ещё один OS/браузер-пробник вне нашего списка (Firefox
+// detectportal `/success.txt`, `/canonical.html` и т.п.), а не UI/API
+// человека: у реальной страницы все ссылки/ресурсы — на зарегистрированные
+// пути. Поэтому default здесь ПРОТИВОПОЛОЖНЫЙ http_uri_is_activity() — ложь.
+static inline bool http_404_is_activity(const char *uri)
+{
+    (void)uri;
+    return false;
+}
