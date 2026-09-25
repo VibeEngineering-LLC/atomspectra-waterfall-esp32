@@ -653,10 +653,25 @@ void spectrum_reset(void)
     // silently resurrected the pre-reset spectrum — the Reset undid itself.
     if (unlink(AUTOSAVE_FILE) != 0 && errno != ENOENT)
         ESP_LOGW(TAG, "Reset: current.bin unlink failed (errno=%d)", errno);
+    // F2 (итоговое ревью 25.09): restore_resolve() читает current.bin.tmp как
+    // запасной источник, если current.bin негоден (spectrum.c restore_resolve:
+    // load_valid_snapshot(AUTOSAVE_TMP_FILE,...)) — Reset обязан удалять ВСЕ
+    // файлы, которые читает восстановление, иначе нарезанный tmp, дописанный
+    // ДО Reset, переживает Reset и при следующей загрузке «воскрешает»
+    // сброшенный спектр (тот же класс, что #FW-58 «Reset undid itself»,
+    // другим путём — tmp, а не current.bin).
+    if (unlink(AUTOSAVE_TMP_FILE) != 0 && errno != ENOENT)
+        ESP_LOGW(TAG, "Reset: current.bin.tmp unlink failed (errno=%d)", errno);
     // AWF-3 (#4): очистка спектра обязана обнулить и базу — иначе первый же
     // коммит после Reset «восстановит» старый спектр через base+dev.
     if (unlink(BASE_FILE) != 0 && errno != ENOENT)
         ESP_LOGW(TAG, "Reset: base.bin unlink failed (errno=%d)", errno);
+    // F2: base.bin.tmp — restore не читает его СЕЙЧАС (spectrum_restore_base()
+    // проверяет только BASE_FILE, без tmp-фолбэка), но удаляем на случай
+    // будущего добавления такого фолбэка и для чистоты (тот же принцип
+    // «Reset обязан удалить всё, что могло бы быть прочитано»).
+    if (unlink(BASE_TMP_FILE) != 0 && errno != ENOENT)
+        ESP_LOGW(TAG, "Reset: base.bin.tmp unlink failed (errno=%d)", errno);
     SPEC_LOCK();
     s_reset_gen++;
     memset(s_spectrum.bins, 0, sizeof(s_spectrum.bins));
@@ -1486,22 +1501,51 @@ static void spectrum_base_snapshot(spectrum_data_t *buf)
     buf->valid = true;
 }
 
+// F4 (итоговое ревью 25.09): молча пропускал запись базы, если занят
+// http_io_gate — RAM (B1) и flash (B0) расходились до следующего fold.
+// Теперь: флаг + ESP_LOGW + повтор на ближайшем тике main.c.
+static volatile bool s_base_save_pending = false;
 static void spectrum_base_save(void)
 {
     if (!s_base_bins) return;
     spectrum_data_t *buf = malloc(sizeof(*buf));
     if (!buf) { ESP_LOGE(TAG, "base save: malloc failed"); return; }
     spectrum_base_snapshot(buf);
-    if (!http_io_gate_try_enter()) { free(buf); return; }
-    if (!atomic_write_snapshot(BASE_TMP_FILE, BASE_FILE, buf))
-        ESP_LOGE(TAG, "base save: write failed (errno=%d)", errno);
+    if (!http_io_gate_try_enter()) {
+        s_base_save_pending = true;
+        ESP_LOGW(TAG, "base save: http_io_gate busy, deferred (retry on next tick)");
+        free(buf);
+        return;
+    }
+    bool ok = atomic_write_snapshot(BASE_TMP_FILE, BASE_FILE, buf);
+    if (!ok) ESP_LOGE(TAG, "base save: write failed (errno=%d)", errno);
+    s_base_save_pending = !ok;
     http_io_gate_leave();
     free(buf);
+}
+
+// Вызывать раз в main-тик (main.c) — no-op, если ничего не отложено.
+void spectrum_base_save_retry_tick(void)
+{
+    if (s_base_save_pending) spectrum_base_save();
 }
 
 static void spectrum_base_apply_loaded(const spectrum_data_t *buf)
 {
     SPEC_LOCK();
+    // F6 (итоговое ревью 25.09): shown (D) уже восстановлен autosave'ом РАНЬШЕ
+    // по порядку (main.c:69-70) — база обязана быть <= shown, иначе на первом
+    // же коммите shown_counts-base_counts уйдёт в отрицательное (uint32 wrap
+    // в spectrum_base_reset_detected_by_counts) и ложно свернёт МЕНЬШИЙ D
+    // поверх настоящего. Такая база сама негодна (прибор сбросился, D
+    // восстановлен меньшим через bk_*.bin, а на flash осталась база от
+    // прошлой, более долгой сессии) — обнуляем её, не жертвуем D.
+    if (buf->total_counts > s_spectrum.total_counts) {
+        ESP_LOGW(TAG, "Restored base (%" PRIu32 ") > shown (%" PRIu32 ") -- "
+                 "base invalid, zeroing", buf->total_counts, s_spectrum.total_counts);
+        SPEC_UNLOCK();
+        return;
+    }
     memcpy(s_base_bins, buf->bins, SPECTRUM_CHANNELS * sizeof(uint32_t));
     s_base_time_sec = buf->total_time_sec;
     s_base_total_counts = buf->total_counts;

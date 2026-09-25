@@ -153,6 +153,7 @@ void app_main(void)
             wifi_return_tick = 0;
             wifi_manager_try_return_to_sta();
         }
+        spectrum_base_save_retry_tick();   // F4: повтор отложенной base.bin
         const spectrum_data_t *sp = spectrum_get_current();
         ESP_LOGI(TAG, "USB:%s WiFi:%s TCP:%s counts:%" PRIu32 " cpu:%u%%",
             usb_host_cdc_is_connected() ? "OK" : "--",
