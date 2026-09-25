@@ -67,6 +67,7 @@ void app_main(void)
     if (boot_session == 0)
         ESP_LOGE(TAG, "backups disabled this boot: no usable session number");
     spectrum_restore_autosave();
+    spectrum_restore_base();   // AWF-3: база — после D, до clr_spec (тот сам чистит обе)
     spectrum_load_calibration();
     // #FW-3: очистка накопленного спектра при старте — после restore, до того как
     // спектрограмма снимет baseline. -rst прибору пошлётся на первом USB-коннекте.

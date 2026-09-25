@@ -296,3 +296,8 @@ int  spectrum_autosave_fail_streak(void);
 /** Seconds since last successful autosave; -1 if never. */
 int  spectrum_autosave_age_sec(void);
 void spectrum_restore_autosave(void);
+// AWF-3: восстановить базу (спектр до последнего сброса прибора) из base.bin.
+// Вызывать после spectrum_restore_autosave() (нужен смонтированный LittleFS).
+void spectrum_restore_base(void);
+// #7: наблюдаемость для /api/status.
+void spectrum_get_base_info(uint32_t *base_time, uint32_t *base_counts, uint32_t *dev_resets);

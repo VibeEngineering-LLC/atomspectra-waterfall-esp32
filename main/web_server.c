@@ -113,6 +113,16 @@ static int parse_saved_index(const char *uri)
     return atoi(p + 11);
 }
 
+// AWF-3 (#7): наблюдаемость слияния база+прибор в /api/status.
+static void status_add_base_info(cJSON *root)
+{
+    uint32_t base_time = 0, base_counts = 0, dev_resets = 0;
+    spectrum_get_base_info(&base_time, &base_counts, &dev_resets);
+    cJSON_AddNumberToObject(root, "base_time", base_time);
+    cJSON_AddNumberToObject(root, "base_counts", base_counts);
+    cJSON_AddNumberToObject(root, "dev_resets", dev_resets);
+}
+
 static esp_err_t handle_status(httpd_req_t *req)
 {
     const spectrum_data_t *sp = spectrum_get_current();
@@ -127,6 +137,11 @@ static esp_err_t handle_status(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "tcp_client", tcp_bridge_client_connected());
     // AWF-1 (#3): ФС отформатирована при этой загрузке — видимость сброса flash.
     cJSON_AddBoolToObject(root, "fs_formatted", spectrum_fs_was_formatted());
+    // AWF-3 (#8): раньше "time" был di->time_sec (из -inf, опрос раз в ~30 мин —
+    // застывало между опросами, пока spectrum.json со STAT рос каждую секунду;
+    // наблюдение 25.09: time=3611 неподвижно против растущего spectrum.json).
+    cJSON_AddNumberToObject(root, "time", sp->total_time_sec);
+    status_add_base_info(root);
 
     if (di->valid) {
         cJSON_AddNumberToObject(root, "dev", di->dev);
@@ -136,7 +151,6 @@ static esp_err_t handle_status(httpd_req_t *req)
         json_add_temp(root, "t1", di->t1);
         json_add_temp(root, "t2", di->t2);
         json_add_temp(root, "t3", di->t3);
-        cJSON_AddNumberToObject(root, "time", di->time_sec);
         cJSON_AddNumberToObject(root, "noise", di->noise);
         cJSON_AddNumberToObject(root, "max", di->max_integral);
     }
