@@ -117,6 +117,27 @@ static void test_time_only_regression_no_fold(void)
     CHECK(st.shown_counts == 100 + 610);   // НЕ 100+610+610 (было бы при баге)
 }
 
+// N2 (ревью-2): настоящий сброс, но НОВЫЙ свип успел набрать БОЛЬШЕ старого
+// (фон 10ч=36000с/100000 → сброс → горячий источник 300с/200000 > 100000) —
+// count-проверка одна видит «выросло», не ловит. Ограниченный сигнал по
+// времени (dev_time_now=300 < половины dev_elapsed=36000) обязан поймать.
+static void test_n2_count_grew_time_catches(void)
+{
+    uint32_t base_bins[3] = {0, 0, 0};
+    uint32_t shown_bins[3] = {40000, 30000, 30000};  // сумма 100000
+    spectrum_base_state_t st = { base_bins, 0, 0, shown_bins, 36000, 100000 };
+
+    uint32_t dev_bins[3] = {80000, 60000, 60000};    // сумма 200000
+    bool did = spectrum_base_commit(&st, dev_bins, 200000, 3, /*stat_fresh=*/true,
+                                     /*dev_time_now=*/300);
+
+    CHECK(did);
+    CHECK(st.base_counts == 100000);
+    CHECK(st.base_time == 36000);
+    CHECK(base_bins[0] == 40000 && base_bins[1] == 30000);
+    CHECK(st.shown_counts == 100000 + 200000);
+}
+
 void spectrum_base_plan_suite(void)
 {
     test_reset_detection();
@@ -126,4 +147,5 @@ void spectrum_base_plan_suite(void)
     test_sequence();
     test_live_bug_no_stat_first_commit();
     test_time_only_regression_no_fold();
+    test_n2_count_grew_time_catches();
 }

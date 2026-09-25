@@ -73,13 +73,35 @@ typedef struct {
 // Просадка STAT при согласованном счёте — пересинхронизация времени (было
 // до ветки: «принимаем абсолют»), её отдельно делает caller (spectrum.c
 // commit_apply_time_stat_fresh_locked), fold она больше не триггерит.
-// stat_fresh/dev_time_now остаются в сигнатуре для caller'а (не в решении).
+// N2 (ревью-2, находка по F1): count-only свёртка не ловит НАСТОЯЩИЙ сброс,
+// если новый свип успел набрать БОЛЬШЕ старого (фон 10ч=100000 → сброс →
+// горячий источник 300с=200000: count-проверка видит «выросло», не «упало»).
+// Второй, ОГРАНИЧЕННЫЙ сигнал по времени — не просадка >5с (это баг F3:
+// STAT-дрожание/пересинхронизация тоже просаживается на секунды при
+// согласованном счёте), а КАЧЕСТВЕННЫЙ обвал: dev_time_now < половины
+// времени, накопленного с последнего fold. Реальный рестарт роняет время
+// почти до нуля; дрожание протокола на секунды от многочасового
+// dev_elapsed половину не пересекает. Звать ТОЛЬКО когда count уже сказал
+// «не сброс» — иначе время само по себе заново открыло бы баг F3.
+static inline bool spectrum_base_reset_detected_bounded(uint32_t dev_time_now,
+                                                         uint32_t base_time_sec,
+                                                         uint32_t shown_time_sec)
+{
+    uint32_t dev_elapsed_since_base = shown_time_sec - base_time_sec;
+    if (!spectrum_base_reset_detected(dev_time_now, base_time_sec, shown_time_sec))
+        return false;
+    return dev_time_now < dev_elapsed_since_base / 2;
+}
+
+// stat_fresh/dev_time_now — время участвует в решении ЧЕРЕЗ ограниченный
+// сигнал (см. ниже), только когда stat_fresh (несвежий STAT не значит ничего).
 static inline bool spectrum_base_commit(spectrum_base_state_t *st, const uint32_t *dev_bins,
                                         uint32_t dev_total, size_t n,
                                         bool stat_fresh, uint32_t dev_time_now)
 {
-    (void)stat_fresh; (void)dev_time_now;
     bool reset = spectrum_base_reset_detected_by_counts(dev_total, st->base_counts, st->shown_counts);
+    if (!reset && stat_fresh)
+        reset = spectrum_base_reset_detected_bounded(dev_time_now, st->base_time, st->shown_time);
     if (reset) {
         for (size_t i = 0; i < n; i++) st->base_bins[i] = st->shown_bins[i];
         st->base_time = st->shown_time;
