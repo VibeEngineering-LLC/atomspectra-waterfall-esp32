@@ -366,13 +366,15 @@ static void fallback_timer_cb(void *arg)
         set_fb_flag_and_reboot();
 }
 
-// AWF-2a доработка: настройка «Переходить в Field AP при потере Wi-Fi» из
-// /api/boot-config (инвертированный disabled-флаг, см. boot_config.h).
+// AWF-2a финал (решение оператора 25.09): настройка «Переходить в Field AP при
+// потере Wi-Fi» из /api/boot-config — по умолчанию ВЫКЛ (отсутствующий ключ
+// в NVS = false, прямая семантика, см. boot_config.h). Страховка (STA без IP
+// 300с → Field AP) не зависит от этого флага, читается отдельно.
 static bool ap_fallback_enabled(void)
 {
     boot_config_t bc;
     boot_config_load(&bc);
-    return !bc.field_ap_fallback_disabled;
+    return bc.field_ap_fallback_enabled;
 }
 
 const char *wifi_manager_return_block_reason(void)
