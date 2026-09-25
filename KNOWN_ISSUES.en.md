@@ -170,18 +170,6 @@ starts in the wrong place. The limit is currently 80 against 73 actual routes (s
 `config.max_uri_handlers` in `web_server.c`, which carries the commands to recount). Fix: log the
 registration failure.
 
-### "Reboot instrument" wipes the accumulated spectrum
-
-**Status:** open (v1.2.23)
-
-On reboot the instrument clears its histogram, and the gateway accepts that reset: the current
-spectrum on the board (`current.bin`) starts over. On the bench on 2026-09-14 this lost 94 h of
-acquisition; the backup snapshots (issue #52) survived, so only the time since the latest of them was lost.
-Snapshots are off by default (`backup_keep` = 0) — then nothing survives except manually saved
-spectra. The button asks for confirmation but does not warn about losing the spectrum and takes no
-snapshot before sending the command. **Save the
-spectrum manually before rebooting the instrument** ("Save" on the "Spectrum" page).
-
 ### The acquisition watchdog is inactive after TCP-client commands and after `-sta` with parameters
 
 **Status:** limitation by design (v1.2.23)
@@ -202,9 +190,39 @@ The watchdog stays silent whenever the gateway cannot tell whether acquisition i
 
 Acquisition started by anything other than the gateway is not guarded either.
 
+### AWF-2a: the TCP bridge does not count as "using the board"
+
+**Status:** limitation (v1.2.24)
+
+The "Fall back to the field access point when Wi-Fi is lost" setting (off by default), when on,
+returns the board to the router only after 10 minutes without Web UI use. Working through the PC
+app (AtomSpectra/BecqMoni) over the TCP bridge does not count toward that. If the setting is on
+and you're using the TCP bridge while the board sits in the field AP, the link can drop from a
+reboot before you're done. Workaround: keep the setting off (the default), or open the board's
+web page occasionally.
+
+### AWF-3: rare double-count or delay around an instrument reset
+
+**Status:** limitation (v1.2.24)
+
+The "base" (see the "Spectrum after a power loss" section in the README) normally preserves the
+spectrum without loss. Two rare combinations can be imprecise: (1) if, after a real instrument
+reset, the time packet arrives more than a few seconds late, OR the lag persists for the first
+seconds of the new session — the count in that narrow window may double once; (2) if two base
+saves race each other, the flash can briefly hold a version older than the one in memory (it is
+overwritten by the next save). Neither case loses data permanently or affects normal operation.
+
 ---
 
 ## Fixed
+
+### "Reboot instrument" wipes the accumulated spectrum — FIXED (v1.2.24)
+
+The instrument clears its histogram on reboot (and on any other reset — power loss, a hang). As
+of v1.2.24 the gateway no longer accepts that silently: the accumulated spectrum is preserved in
+a "base", and the display becomes "base + the instrument's current run". "Reboot instrument" no
+longer loses data, the same way a power loss stopped losing it (issue AWF-1/AWF-3). Backup
+snapshots (issue #52) remain an extra safeguard, not the only one.
 
 ### #FW-63: an open segment was lost ENTIRELY on a sudden reset — FIXED (v1.2.17)
 

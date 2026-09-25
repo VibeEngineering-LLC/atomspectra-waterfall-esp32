@@ -279,13 +279,41 @@ an "Open device →" button is there too.
 
 1. **Toggle** Indoor → Outdoor in the start-page header. The board reboots and raises the
    access point; this is a **"sticky"** mode — it persists across reboots until you toggle back;
-2. **Automatically (fallback)** — if the home network is unreachable for ≥ 90 s, the board
+2. **Automatically (fallback)** — if the home network is unreachable for ≥ 5 min, the board
    raises the field AP **one-shot**: the next reboot tries the home network again. Handy when
    you carried the board out of router range without touching settings;
 3. **On a fresh (unconfigured) board** — a **"Field mode (Outdoor)"** button in the setup portal.
 
 Return to Indoor with the same header toggle (or, for the fallback case, simply reboot within
-range of the home network).
+range of the home network). Return from the fallback AP waits for HTTP activity on the board's
+web server to go quiet (10 minutes) — a phone merely connected to the AP (e.g. its saved Wi-Fi
+network reconnecting on its own) does not block the return.
+
+**"Fall back to the field access point when Wi-Fi is lost" setting** (System → Board start →
+Network, `/api/boot-config`) — **off by default** (operator decision; a missing NVS key, e.g.
+after an upgrade, also means off). Off, the board keeps reconnecting forever with a growing
+backoff (capped at 60 s) and never enters Field AP during operation. The safety net still
+applies either way: if Wi-Fi hasn't come up for 5 straight minutes since power-on/reboot, the
+board still raises the field AP — otherwise it would be unreachable after a router or password
+change. Turned on, the board enters Field AP after those same 5 minutes without the router and
+returns on its own once the router is visible again and no one has used the board's web server
+for 10 minutes. Takes effect immediately, no reboot needed. See the table below for the full
+picture.
+
+### Wi-Fi: what the board does when the router disappears
+
+| Situation | Setting OFF (default) | Setting ON |
+|---|---|---|
+| Router gone < 5 min (router reboot) | Reconnects on schedule, nothing else changes | Same |
+| Router gone > 5 min | Does **not** enter Field AP, keeps reconnecting forever (backoff up to 60 s) | Enters `AtomSpectra-Outdoor`, returns on its own once the router is visible again **and** no one has used the board's web page for 10 minutes |
+| Full power outage (router and board lose power together) | If Wi-Fi hasn't come up for 5 straight minutes after power returns — **safety net**: the board raises Field AP anyway (otherwise it would be unreachable) | Same |
+| Router or Wi-Fi password changed | Recovery: power the board off and on → after 5 minutes the safety net raises `AtomSpectra-Outdoor` (default password `atomspectra`, address `192.168.4.1`) → connect and reconfigure Wi-Fi | Same |
+
+**Recommendation:** where the router reboots often or the board sits at the edge of coverage,
+leave the setting **OFF** (the default) — the board won't spin up an access point for every
+short outage. A saved `AtomSpectra-Outdoor` network on the phone (it reconnects on its own
+whenever it sees the AP) does **not** block the return, as long as the board's web page isn't
+actually open — only real UI/API use blocks it (see above).
 
 **Full field workflow:** at home in Indoor, set up waterfall recording → switch to Outdoor →
 take the board + phone (+ power bank) into the field → join `AtomSpectra-Outdoor` → the
@@ -314,6 +342,23 @@ confirmation; applied after reboot). With the default password the Web UI shows 
 The board works over **USB only** (to the spectrometer) **and WiFi**. Bluetooth/BLE is
 not used and **not built** (`CONFIG_BT_ENABLED=n`): the ESP32-S3 BLE radio is not
 initialized in any mode and consumes no RAM or power.
+
+## Spectrum after a power loss
+
+The analyzer (USB-powered from the board) resets its own internal histogram and clock on
+any power loss. The board detects that reset and **folds** the spectrum accumulated up to
+that point into a **base**, then shows the analyzer's fresh (zeroed) histogram on top of it
+— in the Web UI, acquisition looks continuous.
+
+- **What is lost:** only whatever accumulated **between the last autosave and the power
+  cut** — autosave runs about every ~60 seconds, so **up to ~60 seconds** of acquisition
+  can be lost (worst case: the cut happens right after an autosave). Everything saved
+  before that is restored into the base on the next boot.
+- **`/api/status`**: `base_counts`/`base_time` — how much is stored in the base, `dev_resets`
+  — how many times the board has caught the analyzer resetting during this session.
+- **The Reset button** (in the Web UI **and** in BecqMoni/AtomSpectra over the TCP bridge,
+  see below) is the only way to actually zero the reading — a power loss by itself never
+  touches the base; if anything, it preserves whatever had already been accumulated.
 
 ## Web API
 
@@ -386,6 +431,8 @@ A transparent serial-over-WiFi bridge. BecqMoni or AtomSpectra on a PC connect t
 - One client at a time
 - The Web UI works in parallel with the TCP bridge
 - `TCP_NODELAY` for minimal latency
+- The bridge forwards the analyzer's raw stream transparently: a PC client only sees the analyzer's own acquisition since its last reset, WITHOUT the Web UI's base (AWF-3) — after a power cut the counter in BecqMoni/AtomSpectra starts over even though the web UI already shows a continuous spectrum.
+- The **Reset** button in BecqMoni/AtomSpectra sends `-rst` over the bridge — the board catches that command the same way it catches its own Web UI Reset button, and **clears the base too**: the web UI reading zeroes out in sync with the PC app, no "ghost" of the old spectrum is left behind.
 
 ## Waterfall (spectrogram)
 

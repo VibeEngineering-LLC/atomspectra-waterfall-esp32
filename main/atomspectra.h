@@ -109,8 +109,25 @@ int  wifi_manager_ap_clients(void);        // #FIELD-6: число STA-клие�
 const char *wifi_manager_ap_ssid(void);    // #FIELD-6: SSID активного AP ("" если STA)
 bool wifi_manager_ap_pass_is_default(void);// #SEC-2: пароль AP не менялся (дефолт)
 bool wifi_manager_ap_forced(void);         // #FIELD-6: field_ap липкий (ap_mode=1) vs fallback
+// AWF-2a (#2): периодическая (main.c tick) попытка вернуться из fallback Field AP
+// в STA, когда сохранённый роутер снова виден и HTTP-активность на нём стихла.
+void wifi_manager_try_return_to_sta(void);
+// AWF-2a доработка: причина последнего блока возврата, для /api/system
+// (диагностика зависаний — живой тест 25.09, застревание 10+ мин без следа).
+const char *wifi_manager_return_block_reason(void);
 
 void web_server_init(void);
+// N1 (ревью-2): активность — метка ПОСЛЕДНЕГО пользовательского запроса, не
+// состояние сокета (main/http_activity_plan.h; упрощено из F1 socket-модели,
+// которая держала плату в Field AP вечно при зомби-сокете). threshold_ms —
+// обычно WIFI_RETURN_ACTIVITY_QUIET_MS (wifi_return_plan.h).
+bool web_server_http_activity_quiet(uint32_t threshold_ms);
+// Секунды с последнего пользовательского запроса (для /api/system, справочно).
+uint32_t web_server_http_idle_s(void);
+// Единственная точка, где запрос СЧИТАЕТСЯ (классификация по URI) —
+// вызывается из общего трамплина над uris[] в web_server.c и из choke
+// point'ов web_waterfall.c (reg()/h_ws), без правки тел ~70 обработчиков.
+void web_server_note_request_activity(const char *uri);
 
 void tcp_bridge_init(void);
 bool tcp_bridge_client_connected(void);
@@ -202,6 +219,9 @@ void usb_host_cdc_log_pkt_stats(void);
 bool usb_host_cdc_spectrometer_dead(void);
 
 void spectrum_init(void);
+// AWF-1 (#3): true, если LittleFS была отформатирована на этой загрузке
+// (mount без format_if_mount_failed не удался) — для /api/status.
+bool spectrum_fs_was_formatted(void);
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len);
 void spectrum_process_stat_packet(const uint8_t *data, size_t len);
 // #FW-8: счётчики staging-сборки свипов гистограммы (полных commit / отброшенных
@@ -290,3 +310,11 @@ int  spectrum_autosave_fail_streak(void);
 /** Seconds since last successful autosave; -1 if never. */
 int  spectrum_autosave_age_sec(void);
 void spectrum_restore_autosave(void);
+// AWF-3: восстановить базу (спектр до последнего сброса прибора) из base.bin.
+// Вызывать после spectrum_restore_autosave() (нужен смонтированный LittleFS).
+void spectrum_restore_base(void);
+// #7: наблюдаемость для /api/status.
+void spectrum_get_base_info(uint32_t *base_time, uint32_t *base_counts, uint32_t *dev_resets);
+// F4 (итоговое ревью 25.09): повтор отложенной записи base.bin (http_io_gate
+// был занят) — вызывать раз в main-тик, no-op если нечего повторять.
+void spectrum_base_save_retry_tick(void);

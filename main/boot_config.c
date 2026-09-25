@@ -1,4 +1,5 @@
 #include "boot_config.h"
+#include "boot_flag_plan.h"   // AWF-2a финал: чистая семантика missing-key
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -11,7 +12,8 @@ static const char *TAG = "bootcfg";
 static bool get_flag(nvs_handle_t h, const char *key)
 {
     uint8_t v = 0;
-    return (nvs_get_u8(h, key, &v) == ESP_OK) && (v != 0);
+    esp_err_t rc = nvs_get_u8(h, key, &v);
+    return boot_flag_from_nvs(rc == ESP_OK, v);
 }
 
 // #FW-42: санитизация префикса — только [A-Za-z0-9_-], усечение до cap-1.
@@ -43,6 +45,7 @@ void boot_config_load(boot_config_t *out)
     out->backup_keep         = 0;    // issue #52: из коробки выключено
     out->backup_hours        = 24;
     out->backup_test_minutes = false;
+    out->field_ap_fallback_enabled = false;    // AWF-2a финал: по умолчанию ВЫКЛ
 
     nvs_handle_t h;
     if (nvs_open(BOOT_NS, NVS_READONLY, &h) != ESP_OK) return;   // namespace ещё нет → все false / ""
@@ -71,6 +74,7 @@ void boot_config_load(boot_config_t *out)
     if (nvs_get_u16(h, "bk_h", &hrs) == ESP_OK && hrs >= BOOT_BACKUP_HOURS_MIN)
         out->backup_hours = (hrs > BOOT_BACKUP_HOURS_MAX) ? BOOT_BACKUP_HOURS_MAX : hrs;
     out->backup_test_minutes = get_flag(h, "bk_tm");
+    out->field_ap_fallback_enabled = get_flag(h, "fap_en");
     nvs_close(h);
 }
 
@@ -100,6 +104,7 @@ int boot_config_save(const boot_config_t *in)
         e |= nvs_set_u16(h, "bk_h",  hrs);
         e |= nvs_set_u8 (h, "bk_tm", in->backup_test_minutes ? 1 : 0);
     }
+    e |= nvs_set_u8(h, "fap_en", in->field_ap_fallback_enabled ? 1 : 0);
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
     if (e != ESP_OK) { ESP_LOGW(TAG, "save failed (0x%x)", (int)e); return -1; }

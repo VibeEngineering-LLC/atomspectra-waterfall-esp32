@@ -906,6 +906,10 @@ int usb_host_send_text_command(const char *cmd)
         s_diag.last_tx_cmd[sizeof(s_diag.last_tx_cmd) - 1] = '\0';
         s_diag.acq_intent = acq_intent_for_cmd(cmd0, s_diag.acq_intent);
         DIAG_UNLOCK();
+        // P1-a (ревью 97b71d0..6426bb8): «-rst» ЛЮБЫМ путём (свои команды,
+        // /api/command через handle_command→сюда, TCP-мост — свой хук ниже)
+        // обязан чистить базу так же, как кнопка UI «Сброс».
+        if (cmd_is_device_reset(cmd0)) spectrum_reset();
     }
     return rc;
 }

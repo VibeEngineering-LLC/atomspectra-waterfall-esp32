@@ -162,7 +162,11 @@ nav .on{ font-weight:600; color:#e8efe2; border-bottom:2px solid var(--accent); 
 <label class="boot-row"><input type="checkbox" id="bc-clr-wf"><span data-i18n="boot.clrWf">Очищать водопад при старте</span></label>
 </div>
 </div>
-<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.</div>
+<div style="font-size:12px;color:#8a9686;margin:10px 0 8px" data-i18n="boot.secNet">Сеть</div>
+<label class="boot-row"><input type="checkbox" id="bc-ap-fallback"><span data-i18n="boot.apFallback">Переходить в полевую точку доступа при потере Wi-Fi</span></label>
+<div class="mut" style="font-size:11px;line-height:1.5;margin:4px 0 0" data-i18n="boot.apFallbackHint">Выкл (по умолчанию) — во время работы плата в Field AP не уходит, переподключается к роутеру бесконечно. Страховка сохраняется всегда: если Wi-Fi не заработал 5 минут с момента включения питания, Field AP поднимется в любом случае. Вкл — плата уходит в Field AP через 5 минут без роутера и возвращается сама, когда роутер снова виден и с платой никто не работает 10 минут.</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin:4px 0 0" data-i18n="boot.apFallbackApply">Действует сразу, без перезагрузки платы.</div>
+<div class="mut" style="font-size:11px;line-height:1.5;margin-top:10px" data-i18n="boot.hint">Спектр и Водопад выше — применяются один раз при включении / перезагрузке платы, по умолчанию выключены.</div>
 <button class="btn green" onclick="saveBootConfig('bc-status')" data-i18n="boot.save">Сохранить</button>
 <div class="mut" id="bc-status" style="font-size:11px;margin-top:7px;text-align:center;min-height:14px"></div>
 </section>
@@ -263,14 +267,17 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra на ПК подключаются к <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> вместо COM-порта.",
   "tcp.clientConnected":"клиент подключён","tcp.free":"свободен",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Обновить",
-  "boot.titleBoot":"Старт платы","boot.secSpec":"Спектр","boot.secWf":"Водопад",
+  "boot.titleBoot":"Старт платы","boot.secSpec":"Спектр","boot.secWf":"Водопад","boot.secNet":"Сеть",
+  "boot.apFallback":"Переходить в полевую точку доступа при потере Wi-Fi",
+  "boot.apFallbackHint":"Выкл (по умолчанию) — во время работы плата в Field AP не уходит, переподключается к роутеру бесконечно. Страховка сохраняется всегда: если Wi-Fi не заработал 5 минут с момента включения питания, Field AP поднимется в любом случае. Вкл — плата уходит в Field AP через 5 минут без роутера и возвращается сама, когда роутер снова виден и с платой никто не работает 10 минут.",
+  "boot.apFallbackApply":"Действует сразу, без перезагрузки платы.",
   "boot.titleSpec":"Старт платы · Спектр",
   "boot.titleWf":"Старт платы · Водопад",
   "boot.asSpec":"Автозапуск набора спектра",
   "boot.asWf":"Автозапуск записи водопада",
   "boot.clrSpec":"Очищать спектр при старте",
   "boot.clrWf":"Очищать водопад при старте",
-  "boot.hint":"Применяется один раз при включении / перезагрузке платы. По умолчанию всё выключено.",
+  "boot.hint":"Спектр и Водопад выше — применяются один раз при включении / перезагрузке платы, по умолчанию выключены.",
   "boot.save":"Сохранить","boot.saved":"Сохранено","boot.saveErr":"Ошибка сохранения",
   "boot.exportTitle":"Экспорт файлов","boot.exportPrefix":"Префикс имени файлов",
   "bk.title":"Резервные копии спектра","bk.keep":"Хранить снимков (0 — выключено)",
@@ -313,14 +320,17 @@ var DICT={
   "tcp.hint":"BecqMoni / AtomSpectra on PC connect to <span id=\"tcp-addr\" style=\"color:#aeb6a8\">—</span> instead of COM port.",
   "tcp.clientConnected":"client connected","tcp.free":"free",
   "btn.rebootEsp":"Reboot ESP","btn.refresh":"Refresh",
-  "boot.titleBoot":"Board start","boot.secSpec":"Spectrum","boot.secWf":"Waterfall",
+  "boot.titleBoot":"Board start","boot.secSpec":"Spectrum","boot.secWf":"Waterfall","boot.secNet":"Network",
+  "boot.apFallback":"Fall back to the field access point when Wi-Fi is lost",
+  "boot.apFallbackHint":"Off (default) — during operation the board never enters Field AP, it keeps reconnecting to the router forever. The safety net still applies: if Wi-Fi hasn't come up for 5 minutes from power-on, Field AP is raised regardless. On — the board enters Field AP after 5 minutes without the router and returns on its own once the router is visible again and no one has used the board for 10 minutes.",
+  "boot.apFallbackApply":"Takes effect immediately, no reboot needed.",
   "boot.titleSpec":"Board start · Spectrum",
   "boot.titleWf":"Board start · Waterfall",
   "boot.asSpec":"Autostart spectrum acquisition",
   "boot.asWf":"Autostart waterfall recording",
   "boot.clrSpec":"Clear spectrum on start",
   "boot.clrWf":"Clear waterfall on start",
-  "boot.hint":"Applied once on power-up / board reboot. Everything is off by default.",
+  "boot.hint":"Spectrum and Waterfall above are applied once on power-up / board reboot, off by default.",
   "boot.save":"Save","boot.saved":"Saved","boot.saveErr":"Save error",
   "boot.exportTitle":"File export","boot.exportPrefix":"Filename prefix",
   "bk.title":"Spectrum backups","bk.keep":"Snapshots to keep (0 = off)",
@@ -526,6 +536,8 @@ async function loadBootConfig(){
   document.getElementById("bc-as-wf").checked=!!r.autostart_waterfall;
   document.getElementById("bc-clr-spec").checked=!!r.clear_spectrum;
   document.getElementById("bc-clr-wf").checked=!!r.clear_waterfall;
+  var fb=document.getElementById("bc-ap-fallback");
+  if(fb)fb.checked=(r.field_ap_fallback===true);    /* нет ключа (апгрейд) = ВЫКЛ */
   /* issue #52: те же данные несут настройки резервных снимков. */
   var k=document.getElementById("bk-keep"),h=document.getElementById("bk-hours"),
       se=document.getElementById("bk-session");
@@ -576,7 +588,8 @@ async function saveBootConfig(statusId){
   autostart_spectrum:document.getElementById("bc-as-spec").checked,
   autostart_waterfall:document.getElementById("bc-as-wf").checked,
   clear_spectrum:document.getElementById("bc-clr-spec").checked,
-  clear_waterfall:document.getElementById("bc-clr-wf").checked
+  clear_waterfall:document.getElementById("bc-clr-wf").checked,
+  field_ap_fallback:document.getElementById("bc-ap-fallback").checked
  };
  try{
   var r=await(await post("/api/boot-config",{headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();

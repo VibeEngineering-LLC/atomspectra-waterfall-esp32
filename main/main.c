@@ -67,6 +67,7 @@ void app_main(void)
     if (boot_session == 0)
         ESP_LOGE(TAG, "backups disabled this boot: no usable session number");
     spectrum_restore_autosave();
+    spectrum_restore_base();   // AWF-3: база — после D, до clr_spec (тот сам чистит обе)
     spectrum_load_calibration();
     // #FW-3: очистка накопленного спектра при старте — после restore, до того как
     // спектрограмма снимет baseline. -rst прибору пошлётся на первом USB-коннекте.
@@ -143,8 +144,16 @@ void app_main(void)
     int      backup_fail_streak = 0;
     int64_t  backup_due_us = 0;          // 0 = срок ещё не назначен
     boot_config_t backup_cfg = bc;       // стартуем от прочитанного на boot
+    // AWF-2a (#2): проверка возврата из fallback Field AP — раз в 15 тиков
+    // (10с*15=150с, ~2.5 мин); функция сама no-op вне Field AP/при клиентах.
+    int wifi_return_tick = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
+        if (++wifi_return_tick >= 15) {
+            wifi_return_tick = 0;
+            wifi_manager_try_return_to_sta();
+        }
+        spectrum_base_save_retry_tick();   // F4: повтор отложенной base.bin
         const spectrum_data_t *sp = spectrum_get_current();
         ESP_LOGI(TAG, "USB:%s WiFi:%s TCP:%s counts:%" PRIu32 " cpu:%u%%",
             usb_host_cdc_is_connected() ? "OK" : "--",

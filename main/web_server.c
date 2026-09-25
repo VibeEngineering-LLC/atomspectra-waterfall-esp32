@@ -4,6 +4,7 @@
 #include "web_waterfall.h"
 #include "web_util.h"
 #include "boot_config.h"
+#include "http_activity_plan.h"   // AWF-2a captive: http_uri_is_activity()
 #include "spectrogram.h"    // #FIELD-5: spectrogram_time_synced() при установке времени
 #include "net_time.h"       // #FIELD-5: guard-логика источника времени
 #include "monitor.h"        // #MON-1: серия CPS-мониторинга (/api/monitor/series)
@@ -113,6 +114,16 @@ static int parse_saved_index(const char *uri)
     return atoi(p + 11);
 }
 
+// AWF-3 (#7): наблюдаемость слияния база+прибор в /api/status.
+static void status_add_base_info(cJSON *root)
+{
+    uint32_t base_time = 0, base_counts = 0, dev_resets = 0;
+    spectrum_get_base_info(&base_time, &base_counts, &dev_resets);
+    cJSON_AddNumberToObject(root, "base_time", base_time);
+    cJSON_AddNumberToObject(root, "base_counts", base_counts);
+    cJSON_AddNumberToObject(root, "dev_resets", dev_resets);
+}
+
 static esp_err_t handle_status(httpd_req_t *req)
 {
     const spectrum_data_t *sp = spectrum_get_current();
@@ -125,6 +136,13 @@ static esp_err_t handle_status(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "total_counts", sp->total_counts);
     cJSON_AddNumberToObject(root, "cpu_load", sp->cpu_load);
     cJSON_AddBoolToObject(root, "tcp_client", tcp_bridge_client_connected());
+    // AWF-1 (#3): ФС отформатирована при этой загрузке — видимость сброса flash.
+    cJSON_AddBoolToObject(root, "fs_formatted", spectrum_fs_was_formatted());
+    // AWF-3 (#8): раньше "time" был di->time_sec (из -inf, опрос раз в ~30 мин —
+    // застывало между опросами, пока spectrum.json со STAT рос каждую секунду;
+    // наблюдение 25.09: time=3611 неподвижно против растущего spectrum.json).
+    cJSON_AddNumberToObject(root, "time", sp->total_time_sec);
+    status_add_base_info(root);
 
     if (di->valid) {
         cJSON_AddNumberToObject(root, "dev", di->dev);
@@ -134,7 +152,6 @@ static esp_err_t handle_status(httpd_req_t *req)
         json_add_temp(root, "t1", di->t1);
         json_add_temp(root, "t2", di->t2);
         json_add_temp(root, "t3", di->t3);
-        cJSON_AddNumberToObject(root, "time", di->time_sec);
         cJSON_AddNumberToObject(root, "noise", di->noise);
         cJSON_AddNumberToObject(root, "max", di->max_integral);
     }
@@ -481,13 +498,16 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
 {
     boot_config_t bc;
     boot_config_load(&bc);
-    char resp[320];
+    char resp[380];
     // #FW-42: name_prefix санитизирован в NVS ([A-Za-z0-9_-]) → JSON-escape не нужен.
     // issue #52: + настройки резервных снимков и текущий номер сессии (read-only).
+    // AWF-2a финал: field_ap_fallback — прямая семантика (structура тоже
+    // положительная теперь, см. boot_config.h), отсутствие ключа в NVS = ВЫКЛ.
     snprintf(resp, sizeof(resp),
         "{\"autostart_spectrum\":%s,\"autostart_waterfall\":%s,"
         "\"clear_spectrum\":%s,\"clear_waterfall\":%s,\"name_prefix\":\"%s\","
         "\"backup_keep\":%u,\"backup_hours\":%u,\"backup_test_minutes\":%s,"
+        "\"field_ap_fallback\":%s,"
         "\"session\":%" PRIu32 "}",
         bc.autostart_spectrum  ? "true" : "false",
         bc.autostart_waterfall ? "true" : "false",
@@ -496,6 +516,7 @@ static esp_err_t handle_boot_config_get(httpd_req_t *req)
         bc.name_prefix,
         (unsigned)bc.backup_keep, (unsigned)bc.backup_hours,
         bc.backup_test_minutes ? "true" : "false",
+        bc.field_ap_fallback_enabled ? "true" : "false",
         boot_config_get_session());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
@@ -553,6 +574,8 @@ static esp_err_t handle_boot_config_set(httpd_req_t *req)
     // Стендовый режим: Y читается как минуты. В UI поля нет намеренно — только API.
     if ((it = cJSON_GetObjectItem(root, "backup_test_minutes")))
         bc.backup_test_minutes = cJSON_IsTrue(it);
+    if ((it = cJSON_GetObjectItem(root, "field_ap_fallback")))
+        bc.field_ap_fallback_enabled = cJSON_IsTrue(it);
     cJSON_Delete(root);
     int rc = boot_config_save(&bc);
     httpd_resp_set_type(req, "application/json");
@@ -730,6 +753,11 @@ EMBED_HTML_HANDLER(handle_system_page,  system_html)
 EMBED_HTML_HANDLER(handle_service_page, service_html)
 EMBED_HTML_HANDLER(handle_monitor_page, monitor_html)
 EMBED_HTML_HANDLER(handle_captive_page, captive_html)   // #FIELD-10/#FIELD-11: лёгкая captive-landing
+// F1 (итоговое ревью 25.09): обёртка handle_captive_page_route (откат метки
+// активности через prev-таблицу) убрана вместе со всей prev/cancel-моделью —
+// активность теперь поднимает ТОЛЬКО общий трамплин над uris[] (ниже,
+// web_server_init), который классифицирует URI ДО вызова любого обработчика;
+// /captive регистрируется как раньше, напрямую на handle_captive_page.
 
 // #FIELD-5: общий JS авто-синхронизации времени (application/javascript, не text/html).
 static esp_err_t handle_common_time_js(httpd_req_t *req)
@@ -1162,6 +1190,13 @@ static esp_err_t handle_export_csv(httpd_req_t *req)
 static esp_err_t handle_saved_export_xml(httpd_req_t *req);
 static esp_err_t handle_saved_export_csv(httpd_req_t *req);
 static esp_err_t handle_saved_json(httpd_req_t *req);
+// AWF-2a финал: обработчик ошибки 404 esp_http_server (регистрация ниже, у
+// httpd_register_err_handler — определение рядом с open_fn/activity slots).
+// Срабатывает ТОЛЬКО когда uri_match_fn не нашёл НИ ОДНОГО зарегистрированного
+// обработчика; httpd_resp_send_err(...,HTTPD_404_NOT_FOUND,...) ВНУТРИ уже
+// СОВПАВШЕГО обработчика (web_server.c/web_waterfall.c/spectrum_http_cache.c) —
+// другой путь esp_http_server, этим handle_404 не перехватывается, не трогать.
+static esp_err_t handle_404(httpd_req_t *req, httpd_err_code_t err);
 
 static esp_err_t handle_saved_get(httpd_req_t *req)
 {
@@ -1500,6 +1535,12 @@ static esp_err_t handle_system(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "ap_clients",     wifi_manager_ap_clients());
     cJSON_AddBoolToObject(root,   "ap_pass_default", wifi_manager_ap_pass_is_default());
     cJSON_AddBoolToObject(root,   "ap_forced",      wifi_manager_ap_forced());
+    // AWF-2a доработка: диагностика застревания в Field AP (живой тест 25.09,
+    // 11 минут без следа) — причина последнего блока возврата + давность HTTP.
+    cJSON_AddStringToObject(root, "return_block_reason", wifi_manager_return_block_reason());
+    // F1: справочные поля — 0/false, пока открыт хоть один user-сокет
+    // (гейт возврата смотрит НЕ на них, а на web_server_http_activity_quiet()).
+    cJSON_AddNumberToObject(root, "http_idle_s", (double)web_server_http_idle_s());
     cJSON_AddStringToObject(root, "time_source",    net_time_source_str());
     cJSON_AddBoolToObject(root,   "sntp_synced",    net_time_sntp_synced());
     // #PERF-1/#PERF-2: observability for multi-tab spectrum cache + HEAVY gate
@@ -2044,6 +2085,8 @@ static esp_err_t handle_time_set(httpd_req_t *req)
 // клиент, проба до неё не доходит; для чистоты отвечаем 204 (как настоящий generate_204).
 static esp_err_t handle_captive_probe(httpd_req_t *req)
 {
+    // F1 (итоговое ревью 25.09): классификация теперь идёт ДО дispatch, в
+    // общем трамплине (web_server_init) — здесь ничего откатывать не нужно.
     if (wifi_manager_is_ap_mode()) {
         // #FIELD-10/#FIELD-11: вместо 302 на тяжёлый index отдаём лёгкую captive-landing
         // прямо в мини-браузере ОС — крупный адрес 192.168.4.1 (виден сразу) + авто-редирект
@@ -2144,6 +2187,61 @@ static esp_err_t handle_net_mode(httpd_req_t *req)
     return ESP_OK;
 }
 
+// F1 (итоговое ревью 25.09): активность — на уровне СОКЕТА (прежняя модель
+// метила ОТКРЫТИЕ соединения; keep-alive-опрос и WS водопада держат одно
+// соединение часами, метка не обновлялась — через 10 мин работающий
+// пользователь считался бездействующим). Модель и host-тесты —
+// http_activity_plan.h. open_fn/close_fn метят открытие/закрытие;
+// web_server_note_request_activity() — ЕДИНСТВЕННАЯ точка, где запрос
+// СЧИТАЕТСЯ (общий трамплин над uris[] ниже + choke points web_waterfall.c).
+// N1 (ревью-2): open_fn/close_fn для активности БОЛЬШЕ НЕ НУЖНЫ — модель
+// упрощена до метки последнего запроса (http_activity_plan.h), сокет ей не
+// нужен вовсе. close_fn остаётся ТОЛЬКО ради чистки WS-реестра водопада
+// (web_waterfall_on_close) — config.close_fn ниже указывает на него напрямую.
+static http_activity_state_t s_activity;
+
+void web_server_note_request_activity(const char *uri)
+{
+    http_activity_note_request(&s_activity, http_uri_is_activity(uri),
+                                (uint32_t)(esp_timer_get_time() / 1000));
+}
+
+// Незарегистрированный URI структурно НЕ проходит через трамплин (тот висит
+// только на СОВПАВШИХ обработчиках) — не поднимает активность без единой
+// лишней строчки здесь. http_404_is_activity() остаётся тестируемым
+// инвариантом-документацией (всегда false).
+static esp_err_t handle_404(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void)err;
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+    return ESP_OK;
+}
+
+// F1: общий трамплин над uris[] (регистрация ниже, web_server_init) — индекс
+// в user_ctx выбирает исходный обработчик из простого массива функций (без
+// malloc/struct); 80 = запас max_uri_handlers (комментарий ниже, ~53 факт).
+#define WEB_SERVER_URI_MAX 80
+static esp_err_t (*s_wrap_handlers[WEB_SERVER_URI_MAX])(httpd_req_t *);
+
+static esp_err_t activity_trampoline(httpd_req_t *req)
+{
+    size_t idx = (size_t)(intptr_t)req->user_ctx;
+    web_server_note_request_activity(req->uri);
+    return s_wrap_handlers[idx](req);
+}
+
+bool web_server_http_activity_quiet(uint32_t threshold_ms)
+{
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    return http_activity_quiet(&s_activity, now_ms, threshold_ms);
+}
+
+uint32_t web_server_http_idle_s(void)
+{
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    return (now_ms - s_activity.last_user_event_ms) / 1000;
+}
+
 void web_server_init(void)
 {
     csrf_generate();
@@ -2171,11 +2269,21 @@ void web_server_init(void)
     config.uri_match_fn = httpd_uri_match_wildcard;
     // #UI-15 P0: чистим WS-реестр при ЛЮБОМ закрытии сокета (RST/FIN/LRU/F5);
     // без callback зомбирующиеся fd ломают broadcast после нескольких F5.
-    config.close_fn = web_waterfall_on_close;
+    config.close_fn = web_waterfall_on_close;   // N1: активности тут больше не нужно
     // #UI-15 P2: сжимаем default recv/send (~5 c) — освобождаем сокеты быстрее
     // под давлением F5+poll, иначе пул держит «полудохлые» соединения долго.
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
+    // N1 (ревью-2): TCP keepalive — зомби-сокет (телефон ушёл из зоны, FIN не
+    // пришёл, ACK последнего ответа получен, lwIP не ретранслирует) теперь
+    // корректно обнуляется гейтом возврата (активность по метке запроса, не
+    // по факту, что сокет ещё открыт), но keepalive всё равно освобождает
+    // занятый слот httpd раньше, чем это сделал бы LRU (только при 11/11).
+    // Значения IDF-дефолтов (esp_http_server.h): idle/interval 5с, count 3.
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 5;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) != ESP_OK) {
@@ -2241,10 +2349,27 @@ void web_server_init(void)
         {"/",                            HTTP_GET,  handle_index,            NULL},
     };
 
-    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++)
-        httpd_register_uri_handler(server, &uris[i]);
+    // N4 (ревью-2): uris[] — статический литерал, его размер ИЗВЕСТЕН на
+    // сборке (в отличие от web_waterfall.c's reg(), тут нужен ровно
+    // _Static_assert, не рантайм-guard) — лишняя запись без пересмотра
+    // WEB_SERVER_URI_MAX раньше молча переполнила бы s_wrap_handlers[].
+    _Static_assert(sizeof(uris) / sizeof(uris[0]) <= WEB_SERVER_URI_MAX,
+                   "WEB_SERVER_URI_MAX меньше числа записей uris[]");
+
+    // F1: трамплин маркирует активность (по http_uri_is_activity(req->uri))
+    // ДО вызова настоящего обработчика — правка ТОЛЬКО регистрации (эта
+    // петля), не тел ~53 обработчиков. user_ctx — индекс в s_wrap_handlers
+    // (иначе он свободен у всех записей uris[], проверено до внедрения).
+    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
+        s_wrap_handlers[i] = uris[i].handler;
+        httpd_uri_t entry = uris[i];
+        entry.handler = activity_trampoline;
+        entry.user_ctx = (void *)(intptr_t)i;
+        httpd_register_uri_handler(server, &entry);
+    }
 
     web_waterfall_register(server);      // /waterfall, /api/waterfall/*, /ws/waterfall
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_404);
 
     ESP_LOGI(TAG, "Web server started on port %d", config.server_port);
 }

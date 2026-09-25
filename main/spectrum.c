@@ -5,6 +5,8 @@
 #include "spectrum_hist_stage.h"
 #include "http_io_gate.h"
 #include "backup_plan.h"   // issue #52: разбор имени снимка и план ротации
+#include "spectrum_restore_plan.h"  // AWF-1: выбор источника восстановления
+#include "spectrum_base_plan.h"     // AWF-3: сброс прибора и слияние база+прибор
 #include "esp_log.h"
 #include <stddef.h>
 #include <inttypes.h>
@@ -27,6 +29,9 @@ static const char *TAG = "spectrum";
 #define AUTOSAVE_FILE     STORAGE_PATH "/current.bin"
 #define AUTOSAVE_TMP_FILE STORAGE_PATH "/current.bin.tmp"
 #define CALIB_FILE        STORAGE_PATH "/calib.bin"
+// AWF-3: спектр, накопленный до последнего обнаруженного сброса анализатора.
+#define BASE_FILE         STORAGE_PATH "/base.bin"
+#define BASE_TMP_FILE     STORAGE_PATH "/base.bin.tmp"
 #define AUTOSAVE_RESERVE  (1024 * 1024)
 
 typedef struct {
@@ -38,6 +43,14 @@ typedef struct {
 
 static spectrum_data_t s_spectrum;
 static device_info_t   s_device_info;
+// AWF-1 (#3): LittleFS была отформатирована при этой загрузке (mount без
+// format_if_mount_failed не удался) — /api/status обязан показать это явно.
+static bool s_fs_formatted;
+// P2: определение — у backup_scan() ниже (тот же раздел, тот же DIR/readdir).
+static void cleanup_orphan_backup_tmp(void);
+// AWF-3: определение — у spectrum_restore_autosave() ниже (тот же раздел,
+// нужен atomic_write_snapshot).
+static void spectrum_base_save(void);
 static uint32_t s_t1_session_inf;
 static bool     s_t1_refresh_sent;
 static uint32_t s_t1_open_ms;
@@ -81,6 +94,14 @@ static volatile bool s_calib_dirty;
 // Staging трогает ТОЛЬКО CDC-таск (histogram и STAT приходят из одного feed_shproto)
 // — лок на staging не нужен, SPEC_LOCK берётся только на публикацию.
 static uint32_t *s_hist_staging;                  // [SPECTRUM_CHANNELS], PSRAM
+// AWF-3: база — спектр, накопленный до последнего обнаруженного сброса
+// анализатора. Показываемый s_spectrum.bins[i] = s_base_bins[i] + dev_bins[i]
+// (dev — текущая накопительная гистограмма прибора, s_hist_staging на коммите).
+// Тот же PSRAM-приём, что s_hist_staging (см. spectrum_init).
+static uint32_t *s_base_bins;                     // [SPECTRUM_CHANNELS], PSRAM
+static uint32_t  s_base_time_sec;
+static uint32_t  s_base_total_counts;
+static uint32_t  s_dev_resets;                    // #7: счётчик сворачиваний с боота шлюза
 static spectrum_hist_stage_t s_hist_stage;        // непрерывность свипа (idle = UINT32_MAX)
 static uint32_t  s_reset_gen;                     // AUD-ASW126 #1/#12: httpd Reset
 static uint32_t  s_stage_reset_gen;               // снимок gen на offset==0 (CDC)
@@ -126,22 +147,126 @@ void spectrum_init(void)
         s_hist_staging = malloc(SPECTRUM_CHANNELS * sizeof(uint32_t));
     if (!s_hist_staging)
         ESP_LOGE(TAG, "hist staging alloc failed — fallback to direct bin writes");
+    // AWF-3: та же PSRAM-схема, что у s_hist_staging (32 КБ, тот же трафик —
+    // пишется раз в коммит, не каждый chunk). База нулевая, пока
+    // spectrum_restore_base() (main.c, после mount) её не заполнит с flash.
+    s_base_bins = heap_caps_malloc(SPECTRUM_CHANNELS * sizeof(uint32_t),
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_base_bins)
+        s_base_bins = malloc(SPECTRUM_CHANNELS * sizeof(uint32_t));
+    if (s_base_bins)
+        memset(s_base_bins, 0, SPECTRUM_CHANNELS * sizeof(uint32_t));
+    else
+        ESP_LOGE(TAG, "base bins alloc failed — AWF-3 base merge disabled");
     spectrum_hist_stage_reset(&s_hist_stage);
+    // AWF-1 (#3): раньше format_if_mount_failed=true стирал раздел МОЛЧА —
+    // событие видно только по факту пустого current.bin. Теперь пробуем БЕЗ
+    // формата первыми, и если mount не удался, форматируем явно и громко
+    // (ESP_LOGE с кодом ошибки), выставляя s_fs_formatted для /api/status.
     esp_vfs_littlefs_conf_t conf = {
         .base_path = STORAGE_PATH,
         .partition_label = "storage",
-        .format_if_mount_failed = true,
+        .format_if_mount_failed = false,
     };
     esp_err_t ret = esp_vfs_littlefs_register(&conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "LittleFS mount failed (%s) — formatting partition 'storage'",
+                 esp_err_to_name(ret));
+        esp_err_t fmt = esp_littlefs_format("storage");
+        if (fmt != ESP_OK) {
+            ESP_LOGE(TAG, "LittleFS format failed: %s", esp_err_to_name(fmt));
+        } else {
+            s_fs_formatted = true;
+            ret = esp_vfs_littlefs_register(&conf);
+        }
+    }
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "LittleFS mount failed: %s", esp_err_to_name(ret));
     } else {
         size_t total = 0, used = 0;
         esp_littlefs_info("storage", &total, &used);
         ESP_LOGI(TAG, "LittleFS: total=%zu used=%zu free=%zu", total, used, total - used);
+        if (s_fs_formatted)
+            ESP_LOGE(TAG, "LittleFS was reformatted this boot — accumulated data on flash is LOST");
         mkdir(SPEC_DIR, 0777);   // #FW-24: подкаталог сохранённых спектров (отделение от calib/current/wf_state в корне)
         mkdir(BACKUP_DIR, 0777); // issue #52: автоснимки — отдельно от ручных, чтобы ротация их не касалась
+        cleanup_orphan_backup_tmp();  // P2: осиротевшие bk_*.bin.tmp после обрыва питания
     }
+}
+
+// AWF-1 (#3): для /api/status — «ФС отформатирована при старте».
+bool spectrum_fs_was_formatted(void)
+{
+    return s_fs_formatted;
+}
+
+// AWF-3 доработка (живой тест 25.09): свёртка базы и слияние — ОДНОЙ функцией
+// spectrum_base_commit() (main/spectrum_base_plan.h). До фикса fold (по STAT)
+// и merge шли раздельно: merge выполнялся ВСЕГДА, а fold — только при свежем
+// STAT; на первом коммите после реального сброса без свежего STAT merge
+// затирал восстановленный показанный спектр нулевой базой ДО того, как fold
+// успевал его сохранить (issue 25.09, база получила 9 вместо 267049).
+// spectrum_base_commit() проверяет сброс (по счёту — ВСЕГДА; по времени —
+// если STAT свежий) СТРОГО до merge — тот же код, что и host-тест.
+static bool commit_fold_and_merge_locked(bool stat_fresh, uint32_t t_new_raw, uint64_t dev_total)
+{
+    if (!s_base_bins) {
+        // Деградация: alloc базы не удался (spectrum_init) — старое прямое
+        // зеркалирование прибора без базы, как до AWF-3.
+        memcpy(s_spectrum.bins, s_hist_staging, SPECTRUM_CHANNELS * sizeof(uint32_t));
+        s_spectrum.total_counts = (uint32_t)dev_total;
+        return false;
+    }
+    spectrum_base_state_t st = { s_base_bins, s_base_time_sec, s_base_total_counts,
+                                  s_spectrum.bins, s_spectrum.total_time_sec, s_spectrum.total_counts };
+    bool did_reset = spectrum_base_commit(&st, s_hist_staging, (uint32_t)dev_total,
+                                           SPECTRUM_CHANNELS, stat_fresh, t_new_raw);
+    s_base_time_sec = st.base_time;
+    s_base_total_counts = st.base_counts;
+    s_spectrum.total_counts = st.shown_counts;
+    if (did_reset) s_dev_resets++;
+    return did_reset;
+}
+
+static void commit_apply_time_stat_fresh_locked(uint32_t t_new_raw, uint32_t base_now,
+                                                uint32_t dev_prev, uint32_t expected)
+{
+    uint32_t t_new = t_new_raw;
+    if (s_spectrum.valid && t_new + 5 >= dev_prev && t_new < expected)
+        t_new = expected;
+    s_spectrum.total_time_sec = base_now + t_new;
+    s_spectrum.cpu_load       = s_stat_stage.cpu_load;
+    s_spectrum.cps            = s_stat_stage.cps;
+    s_spectrum.lost_impulses  = s_stat_stage.lost_impulses;
+    s_spectrum.pulse_width    = s_stat_stage.pulse_width;
+    s_stat_stage.fresh = false;
+}
+
+static void commit_apply_time_locked(bool stat_fresh, uint32_t t_new_raw, uint32_t base_now,
+                                     uint32_t dev_prev, uint32_t expected)
+{
+    if (stat_fresh)
+        commit_apply_time_stat_fresh_locked(t_new_raw, base_now, dev_prev, expected);
+    else if (s_spectrum.valid)
+        s_spectrum.total_time_sec = base_now + expected;   // STAT потерян
+    else
+        s_spectrum.total_time_sec = base_now + 1;           // первый коммит без STAT
+}
+
+// #FW-12, обобщено на dev-относительное время (dev_prev = shown-база; база
+// прибавляется в конце). Тождественно старому поведению при base=0, и
+// корректно сразу после сворачивания: dev_prev==0 автоматически. Откат >=5с
+// раньше трактовался как рестарт прибора — теперь база сворачивается
+// (commit_fold_and_merge_locked), не молча принимается t_new абсолютом.
+static void commit_time_locked(bool stat_fresh, uint32_t t_new_raw)
+{
+    static uint32_t s_drops_at_commit = 0;
+    uint32_t drops_delta = s_hist_drops - s_drops_at_commit;
+    s_drops_at_commit = s_hist_drops;
+    uint32_t base_now = s_base_bins ? s_base_time_sec : 0;
+    uint32_t dev_prev = s_spectrum.valid ? (s_spectrum.total_time_sec - base_now) : 0;
+    uint32_t expected = dev_prev + 1 + drops_delta;
+    commit_apply_time_locked(stat_fresh, t_new_raw, base_now, dev_prev, expected);
 }
 
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
@@ -212,43 +337,24 @@ void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
                 spectrum_hist_stage_reset(&s_hist_stage);
                 return;
             }
-            memcpy(s_spectrum.bins, s_hist_staging, SPECTRUM_CHANNELS * sizeof(uint32_t));
-            s_spectrum.total_counts = (uint32_t)total;
-            // #FW-12: время коммита не может опираться только на STAT — на
-            // FIFO-burst протухший staged STAT неотличим от свежего (свип(t)
-            // битый → его STAT остался staged; STAT(t+1) потерян → коммит
-            // свипа(t+1) взял бы время t: bins на 1 c впереди → жирная строка
-            // водопада). Опорная арифметика: каждый ПОЛНЫЙ свип = ровно 1 c
-            // живого времени прибора, каждый ОТБРОШЕННЫЙ (drop) — ещё 1 c,
-            // прожитый прибором между коммитами. Отсюда нижняя граница:
-            //   expected = prev + 1 + drops_с_прошлого_коммита.
-            // STAT принимаем не ниже expected (MAX): выше — легитимный резинк
-            // (свип потерян ЦЕЛИКОМ, drop не увидел). Откат ≥5 c — рестарт
-            // прибора, принимаем абсолют.
-            {
-                static uint32_t s_drops_at_commit = 0;
-                uint32_t drops_delta = s_hist_drops - s_drops_at_commit;
-                s_drops_at_commit = s_hist_drops;
-                uint32_t expected = s_spectrum.total_time_sec + 1 + drops_delta;
-                if (s_stat_stage.fresh) {
-                    uint32_t t_new = s_stat_stage.total_time_sec;
-                    if (s_spectrum.valid && t_new + 5 >= s_spectrum.total_time_sec &&
-                        t_new < expected)
-                        t_new = expected;      // протухший/отставший STAT
-                    s_spectrum.total_time_sec = t_new;
-                    s_spectrum.cpu_load       = s_stat_stage.cpu_load;
-                    s_spectrum.cps            = s_stat_stage.cps;
-                    s_spectrum.lost_impulses  = s_stat_stage.lost_impulses;
-                    s_spectrum.pulse_width    = s_stat_stage.pulse_width;
-                    s_stat_stage.fresh = false;
-                } else if (s_spectrum.valid) {
-                    s_spectrum.total_time_sec = expected;   // STAT потерян
-                } else {
-                    s_spectrum.total_time_sec++;            // первый коммит без STAT
-                }
+            // AWF-3: свернуть базу (если прибор перезапустился), слить
+            // база+свип, обновить время (#FW-12, обобщено на dev-время).
+            bool stat_fresh = s_stat_stage.fresh;
+            // R1 (ревью-3): двусмысленный коммит (без STAT, count не сказал
+            // «сброс») — не публикуем, ждём следующего (spectrum_base_plan.h).
+            if (s_base_bins &&
+                spectrum_base_commit_should_defer((uint32_t)total, s_base_total_counts,
+                                                   s_spectrum.total_counts, stat_fresh)) {
+                SPEC_UNLOCK();
+                spectrum_hist_stage_reset(&s_hist_stage);
+                return;
             }
+            uint32_t t_new_raw = stat_fresh ? s_stat_stage.total_time_sec : 0;
+            bool did_reset = commit_fold_and_merge_locked(stat_fresh, t_new_raw, total);
+            commit_time_locked(stat_fresh, t_new_raw);
             s_spectrum.valid = true;
             SPEC_UNLOCK();
+            if (did_reset) spectrum_base_save();   // flash-запись, ВНЕ лока
             s_hist_commits++;
             flash_quiet_note_commit();
             hist_drop_diag_note_commit();
@@ -556,6 +662,25 @@ void spectrum_reset(void)
     // silently resurrected the pre-reset spectrum — the Reset undid itself.
     if (unlink(AUTOSAVE_FILE) != 0 && errno != ENOENT)
         ESP_LOGW(TAG, "Reset: current.bin unlink failed (errno=%d)", errno);
+    // F2 (итоговое ревью 25.09): restore_resolve() читает current.bin.tmp как
+    // запасной источник, если current.bin негоден (spectrum.c restore_resolve:
+    // load_valid_snapshot(AUTOSAVE_TMP_FILE,...)) — Reset обязан удалять ВСЕ
+    // файлы, которые читает восстановление, иначе нарезанный tmp, дописанный
+    // ДО Reset, переживает Reset и при следующей загрузке «воскрешает»
+    // сброшенный спектр (тот же класс, что #FW-58 «Reset undid itself»,
+    // другим путём — tmp, а не current.bin).
+    if (unlink(AUTOSAVE_TMP_FILE) != 0 && errno != ENOENT)
+        ESP_LOGW(TAG, "Reset: current.bin.tmp unlink failed (errno=%d)", errno);
+    // AWF-3 (#4): очистка спектра обязана обнулить и базу — иначе первый же
+    // коммит после Reset «восстановит» старый спектр через base+dev.
+    if (unlink(BASE_FILE) != 0 && errno != ENOENT)
+        ESP_LOGW(TAG, "Reset: base.bin unlink failed (errno=%d)", errno);
+    // F2: base.bin.tmp — restore не читает его СЕЙЧАС (spectrum_restore_base()
+    // проверяет только BASE_FILE, без tmp-фолбэка), но удаляем на случай
+    // будущего добавления такого фолбэка и для чистоты (тот же принцип
+    // «Reset обязан удалить всё, что могло бы быть прочитано»).
+    if (unlink(BASE_TMP_FILE) != 0 && errno != ENOENT)
+        ESP_LOGW(TAG, "Reset: base.bin.tmp unlink failed (errno=%d)", errno);
     SPEC_LOCK();
     s_reset_gen++;
     memset(s_spectrum.bins, 0, sizeof(s_spectrum.bins));
@@ -565,6 +690,9 @@ void spectrum_reset(void)
     s_spectrum.lost_impulses = 0;
     s_spectrum.pulse_width = 0;
     s_spectrum.valid = false;
+    if (s_base_bins) memset(s_base_bins, 0, SPECTRUM_CHANNELS * sizeof(uint32_t));
+    s_base_time_sec = 0;
+    s_base_total_counts = 0;
     SPEC_UNLOCK();
 }
 
@@ -671,6 +799,38 @@ static void sanitize_loaded(spectrum_data_t *out)
 // Решение «какие файлы удалить» вынесено в host-тестируемый backup_plan.c; здесь
 // только ввод-вывод. Вся функция работает под http_io_gate (держит вызывающий).
 
+// P2: осиротевшие bk_*.bin.tmp (обрыв питания между fopen(tmp) и rename в
+// atomic_write_snapshot) — backup_parse_name их не видит (".bin.tmp" != ".bin"),
+// поэтому ни ротация, ни restore их никогда не тронут; чистим раз на старте.
+// Путь восстанавливаем из РАЗОБРАННЫХ чисел, не из d_name (%s до 255 Б) —
+// иначе -Werror=format-truncation (тот же приём, что web_server.c:654).
+static bool cleanup_one_backup_tmp(const char *name)
+{
+    size_t len = strlen(name);
+    if (len < 5 || strcmp(name + len - 4, ".tmp") != 0) return false;
+    char stripped[64];
+    if (len - 4 >= sizeof(stripped)) return false;
+    memcpy(stripped, name, len - 4);
+    stripped[len - 4] = '\0';
+    backup_id_t id;
+    if (!backup_parse_name(stripped, &id)) return false;
+    char path[88];
+    snprintf(path, sizeof(path), "%s/" BACKUP_NAME_FMT ".tmp", BACKUP_DIR, id.sess, id.seq);
+    return remove(path) == 0;
+}
+
+static void cleanup_orphan_backup_tmp(void)
+{
+    DIR *dir = opendir(BACKUP_DIR);
+    if (!dir) return;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL)
+        if (cleanup_one_backup_tmp(de->d_name)) n++;
+    closedir(dir);
+    if (n > 0) ESP_LOGW(TAG, "backup: removed %d orphaned tmp file(s) at boot", n);
+}
+
 // Собирает идентификаторы снимков каталога. Возвращает число найденных, либо -1
 // при ошибке открытия каталога. Файлы, не подходящие под шаблон (в т.ч. чужие
 // .bak), пропускаются и в ротацию не попадают.
@@ -688,6 +848,23 @@ static int backup_scan(backup_id_t *out, int cap)
     }
     closedir(dir);
     return n;
+}
+
+// P2 (второе независимое ревью 9453113): атомарная запись spectrum_data_t —
+// общий хелпер для autosave (current.bin) и резервных снимков (bk_*.bin).
+// tmp_path обязан быть уникален для вызывающего. true при успехе; при любой
+// неудаче tmp_path подчищен (unlink), final_path не тронут.
+static bool atomic_write_snapshot(const char *tmp_path, const char *final_path,
+                                  const spectrum_data_t *data)
+{
+    unlink(tmp_path);
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) return false;
+    size_t wr = fwrite(data, sizeof(*data), 1, f);
+    int cl = fclose(f);
+    if (wr != 1 || cl != 0) { unlink(tmp_path); return false; }
+    if (rename(tmp_path, final_path) != 0) { unlink(tmp_path); return false; }
+    return true;
 }
 
 int spectrum_backup_save(uint32_t sess, uint32_t seq, int keep)
@@ -774,22 +951,14 @@ int spectrum_backup_save(uint32_t sess, uint32_t seq, int keep)
                  ndel, keep);
     }
 
-    char path[80];
+    // P2: tmp+rename (atomic_write_snapshot) — обрыв питания портит только
+    // tmp, боевое имя bk_<sess>_<seq>.bin либо целое, либо отсутствует;
+    // обрезанный файл под боевым именем раньше навсегда занимал слот ротации.
+    char path[80], tmp_path[88];
     snprintf(path, sizeof(path), "%s/" BACKUP_NAME_FMT, BACKUP_DIR, sess, seq);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        ESP_LOGE(TAG, "backup: cannot create %s", path);
-        flash_quiet_writer_unlock();
-        free(snap);
-        return -3;
-    }
-    size_t wr = fwrite(snap, sizeof(*snap), 1, f);
-    int fc = fclose(f);
-    if (wr != 1 || fc != 0) {
-        // Обрезанный файл хуже отсутствующего: он займёт слот ротации и вытеснит
-        // годный снимок, а прочитаться не сможет.
-        ESP_LOGE(TAG, "backup: write %s failed (wr=%zu fc=%d), removing", path, wr, fc);
-        remove(path);
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (!atomic_write_snapshot(tmp_path, path, snap)) {
+        ESP_LOGE(TAG, "backup: write %s failed (errno=%d)", path, errno);
         flash_quiet_writer_unlock();
         free(snap);
         return -3;
@@ -1203,53 +1372,240 @@ void spectrum_autosave(void)
         spectrum_autosave_note_fail();
         return;
     }
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t t_open0 = esp_timer_get_time();
-#endif
-    FILE *f = fopen(AUTOSAVE_FILE, "wb");
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t open_us = esp_timer_get_time() - t_open0;
-#endif
-    if (!f) {
+    // P2 (второе независимое ревью 9453113): тот же atomic_write_snapshot,
+    // что и spectrum_backup_save() — не копия. Обрыв питания портит только
+    // tmp; current.bin остаётся прежним и годным для восстановления.
+    // #FW-8 I2 split-timing диагностика (open/write/close us, HIST_DROP_DIAG,
+    // default OFF) вместе с этим убрана — измеряла именно инлайновый путь,
+    // который здесь больше не существует; при необходимости меряется заново
+    // снаружи atomic_write_snapshot() (esp_timer_get_time() вокруг вызова).
+    if (!atomic_write_snapshot(AUTOSAVE_TMP_FILE, AUTOSAVE_FILE, snap)) {
+        ESP_LOGE(TAG, "Autosave write failed (errno=%d)", errno);
         http_io_gate_leave();
-        ESP_LOGE(TAG, "Autosave open failed");
-        free(snap);
+    } else {
+        http_io_gate_leave();
+        spectrum_autosave_note_ok();
+    }
+    free(snap);
+}
+
+// Перебор уже отсканированного списка have[0..n-1] от самого нового к самому
+// старому (backup_newest_index); побитый кандидат пропускается молча.
+static bool restore_from_latest_backup_scanned(backup_id_t *have, int n, spectrum_data_t *out)
+{
+    while (n > 0) {
+        int idx = backup_newest_index(have, n);
+        if (idx < 0) break;
+        char name[40];
+        snprintf(name, sizeof(name), BACKUP_NAME_FMT, have[idx].sess, have[idx].seq);
+        if (spectrum_backup_load(name, out) == 0 && out->valid) {
+            ESP_LOGW(TAG, "Restored autosave from backup %s: %" PRIu32 " counts, %" PRIu32 "s",
+                     name, out->total_counts, out->total_time_sec);
+            return true;
+        }
+        ESP_LOGW(TAG, "backup restore: %s unreadable, trying next", name);
+        have[idx] = have[n - 1];
+        n--;
+    }
+    return false;
+}
+
+// Читает файл целиком в *out; true только если размер точен и valid==true —
+// тот же критерий, что и раньше для current.bin, теперь общий для main/tmp.
+static bool load_valid_snapshot(const char *path, spectrum_data_t *out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t rd = fread(out, 1, sizeof(*out), f);
+    fclose(f);
+    return rd == sizeof(*out) && out->valid;
+}
+
+// P0 review fix: один буфер (heap, у вызывающего), не три копии по источникам.
+// Лог для BACKUP уже дан restore_from_latest_backup_scanned. Вызывать под SPEC_LOCK.
+static void restore_apply(restore_source_t src, spectrum_data_t *data)
+{
+    switch (src) {
+    case RESTORE_SRC_MAIN:
+        s_spectrum = *data;
+        ESP_LOGI(TAG, "Restored autosave from current.bin: %" PRIu32 " counts, %" PRIu32 "s",
+                 s_spectrum.total_counts, s_spectrum.total_time_sec);
+        return;
+    case RESTORE_SRC_TMP:
+        s_spectrum = *data;
+        ESP_LOGW(TAG, "Restored autosave from tmp (power loss mid-write): %" PRIu32 " counts, %" PRIu32 "s",
+                 s_spectrum.total_counts, s_spectrum.total_time_sec);
+        return;
+    case RESTORE_SRC_BACKUP:
+        s_spectrum = *data;
+        return;
+    default:
+        memset(&s_spectrum, 0, sizeof(s_spectrum));
         return;
     }
+}
 
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t t_wr0 = esp_timer_get_time();
-#endif
-    size_t wr = fwrite(snap, sizeof(*snap), 1, f);
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t write_us = esp_timer_get_time() - t_wr0;
-    int64_t t_cl0 = esp_timer_get_time();
-#endif
-    int cl = fclose(f);
-    http_io_gate_leave();
-#if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
-    int64_t close_us = esp_timer_get_time() - t_cl0;
-    ESP_LOGI(TAG, "autosave split open_us=%lld write_us=%lld close_us=%lld wr=%zu",
-             (long long)open_us, (long long)write_us, (long long)close_us, wr);
-#endif
-    if (cl != 0 || wr != 1)
-        ESP_LOGE(TAG, "Autosave write failed (wr=%zu)", wr);
-    else
-        spectrum_autosave_note_ok();
-    free(snap);
+// Хвост restore_resolve(): main/tmp уже проверены — если оба негодны, ровно
+// ОДИН обход BACKUP_DIR (P3) и попытка прочитать самый новый годный снимок.
+static restore_source_t restore_resolve_backup(spectrum_data_t *buf, bool main_valid, bool tmp_valid)
+{
+    backup_id_t have[BACKUP_KEEP_MAX * 2];
+    int n = 0;
+    if (!main_valid && !tmp_valid) {
+        n = backup_scan(have, (int)(sizeof(have) / sizeof(have[0])));
+        if (n > (int)(sizeof(have) / sizeof(have[0])))
+            n = (int)(sizeof(have) / sizeof(have[0]));
+    }
+    restore_source_t src = restore_pick_source(main_valid, tmp_valid, n > 0);
+    if (src == RESTORE_SRC_BACKUP && !restore_from_latest_backup_scanned(have, n, buf)) {
+        ESP_LOGE(TAG, "Autosave restore: main+tmp invalid, backup listed but unreadable");
+        src = RESTORE_SRC_NONE;
+    }
+    return src;
+}
+
+// Заполняет *buf данными выбранного источника (или не трогает его для NONE) и
+// возвращает какой источник выбран; P3: один обход BACKUP_DIR (не два, как в
+// f091b01: там max_session() и restore_from_latest_backup() сканировали дважды).
+static restore_source_t restore_resolve(spectrum_data_t *buf)
+{
+    bool main_valid = load_valid_snapshot(AUTOSAVE_FILE, buf);
+    bool tmp_valid = !main_valid && load_valid_snapshot(AUTOSAVE_TMP_FILE, buf);
+    return restore_resolve_backup(buf, main_valid, tmp_valid);
 }
 
 void spectrum_restore_autosave(void)
 {
-    FILE *f = fopen(AUTOSAVE_FILE, "rb");
-    if (!f) return;
-    SPEC_LOCK();
-    size_t rd = fread(&s_spectrum, 1, sizeof(s_spectrum), f);
-    fclose(f);
-    if (rd == sizeof(s_spectrum) && s_spectrum.valid)
-        ESP_LOGI(TAG, "Restored autosave: %" PRIu32 " counts, %" PRIu32 "s", s_spectrum.total_counts, s_spectrum.total_time_sec);
-    else
+    // P0 (независимое ревью f091b01): раньше 3×spectrum_data_t (~32.8 КБ
+    // каждый, bins[8192]) лежали на стеке app_main разом — ~98 КБ против
+    // CONFIG_ESP_MAIN_TASK_STACK_SIZE=3584. Теперь один буфер в куче,
+    // источники проверяются последовательно, друг друга не переживая.
+    spectrum_data_t *buf = malloc(sizeof(*buf));
+    if (!buf) {
+        ESP_LOGE(TAG, "Autosave restore: malloc(%u) failed, starting empty",
+                 (unsigned)sizeof(*buf));
+        SPEC_LOCK();
         memset(&s_spectrum, 0, sizeof(s_spectrum));
+        SPEC_UNLOCK();
+        return;
+    }
+    restore_source_t src = restore_resolve(buf);
+
+    SPEC_LOCK();
+    restore_apply(src, buf);
+    SPEC_UNLOCK();
+    free(buf);
+}
+
+// AWF-3: сохранить базу атомарно (tmp+rename, тот же atomic_write_snapshot,
+// что автосейв и бэкапы). Вызывать ВНЕ SPEC_LOCK — сам снимает снимок под ним.
+static void spectrum_base_snapshot(spectrum_data_t *buf)
+{
+    memset(buf, 0, sizeof(*buf));
+    SPEC_LOCK();
+    memcpy(buf->bins, s_base_bins, SPECTRUM_CHANNELS * sizeof(uint32_t));
+    buf->total_time_sec = s_base_time_sec;
+    buf->total_counts = s_base_total_counts;
+    SPEC_UNLOCK();
+    buf->valid = true;
+}
+
+// F4 (итоговое ревью 25.09): молча пропускал запись базы, если занят
+// http_io_gate — RAM (B1) и flash (B0) расходились до следующего fold.
+// Теперь: флаг + ESP_LOGW + повтор на ближайшем тике main.c.
+// N3 (ревью-2): main держит gate и пишет B1, CDC после НОВОГО fold видит gate
+// занят и ставит pending=true (B2 не попал в этот заход) — затем main
+// заканчивает и раньше слепо писал pending=!ok=false, СТИРАЯ true от CDC.
+// Фикс: pending СНИМАЕТСЯ сразу при входе в критическую секцию (сразу после
+// захвата gate, ДО самой записи на flash — окно гонки схлопывается с «вся
+// запись» до одной строки под SPEC_LOCK), а НЕ после записи; завершение
+// пишет флаг ТОЛЬКО при неудаче (SET, никогда unconditional CLEAR) — успешная
+// запись никогда не стирает true, выставленный конкурентом. Рейт-лимит 10с
+// на повтор (доп. защёлка поверх main.c 10с-тика).
+static volatile bool s_base_save_pending = false;
+static uint32_t s_base_save_last_attempt_ms = 0;
+#define BASE_SAVE_RETRY_MIN_MS (10u * 1000u)
+
+static void spectrum_base_save(void)
+{
+    if (!s_base_bins) return;
+    spectrum_data_t *buf = malloc(sizeof(*buf));
+    if (!buf) { ESP_LOGE(TAG, "base save: malloc failed"); return; }
+    spectrum_base_snapshot(buf);
+    if (!http_io_gate_try_enter()) {
+        SPEC_LOCK(); s_base_save_pending = true; SPEC_UNLOCK();
+        ESP_LOGW(TAG, "base save: http_io_gate busy, deferred (retry on next tick)");
+        free(buf);
+        return;
+    }
+    // Claim ДО записи (не после) — сужает окно гонки с конкурентным fold+save.
+    SPEC_LOCK(); s_base_save_pending = false; SPEC_UNLOCK();
+    bool ok = atomic_write_snapshot(BASE_TMP_FILE, BASE_FILE, buf);
+    if (!ok) {
+        ESP_LOGE(TAG, "base save: write failed (errno=%d)", errno);
+        SPEC_LOCK(); s_base_save_pending = true; SPEC_UNLOCK();
+    }
+    http_io_gate_leave();
+    free(buf);
+}
+
+// Вызывать раз в main-тик (main.c) — no-op, если ничего не отложено, либо
+// последняя попытка была < BASE_SAVE_RETRY_MIN_MS назад.
+void spectrum_base_save_retry_tick(void)
+{
+    if (!s_base_save_pending) return;
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now_ms - s_base_save_last_attempt_ms < BASE_SAVE_RETRY_MIN_MS) return;
+    s_base_save_last_attempt_ms = now_ms;
+    spectrum_base_save();
+}
+
+static void spectrum_base_apply_loaded(const spectrum_data_t *buf)
+{
+    SPEC_LOCK();
+    // F6 (итоговое ревью 25.09): shown (D) уже восстановлен autosave'ом РАНЬШЕ
+    // по порядку (main.c:69-70) — база обязана быть <= shown, иначе на первом
+    // же коммите shown_counts-base_counts уйдёт в отрицательное (uint32 wrap
+    // в spectrum_base_reset_detected_by_counts) и ложно свернёт МЕНЬШИЙ D
+    // поверх настоящего. Такая база сама негодна (прибор сбросился, D
+    // восстановлен меньшим через bk_*.bin, а на flash осталась база от
+    // прошлой, более долгой сессии) — обнуляем её, не жертвуем D.
+    if (buf->total_counts > s_spectrum.total_counts) {
+        ESP_LOGW(TAG, "Restored base (%" PRIu32 ") > shown (%" PRIu32 ") -- "
+                 "base invalid, zeroing", buf->total_counts, s_spectrum.total_counts);
+        SPEC_UNLOCK();
+        return;
+    }
+    memcpy(s_base_bins, buf->bins, SPECTRUM_CHANNELS * sizeof(uint32_t));
+    s_base_time_sec = buf->total_time_sec;
+    s_base_total_counts = buf->total_counts;
+    SPEC_UNLOCK();
+    ESP_LOGI(TAG, "Restored base: %" PRIu32 " counts, %" PRIu32 "s",
+             s_base_total_counts, s_base_time_sec);
+}
+
+// AWF-3 (#3): база из base.bin. Файла нет (обновление с 1.2.23) — база
+// нулевая; base.bin битый, а D валиден — тоже нулевая (не жертвуем D ради
+// негодной базы, тот же принцип, что restore_pick_source в AWF-1).
+void spectrum_restore_base(void)
+{
+    if (!s_base_bins) return;
+    spectrum_data_t *buf = malloc(sizeof(*buf));
+    if (!buf) { ESP_LOGE(TAG, "base restore: malloc failed"); return; }
+    if (load_valid_snapshot(BASE_FILE, buf))
+        spectrum_base_apply_loaded(buf);
+    else
+        ESP_LOGW(TAG, "base restore: base.bin missing/invalid — zero base");
+    free(buf);
+}
+
+// #7: наблюдаемость для /api/status.
+void spectrum_get_base_info(uint32_t *base_time, uint32_t *base_counts, uint32_t *dev_resets)
+{
+    SPEC_LOCK();
+    if (base_time)   *base_time   = s_base_time_sec;
+    if (base_counts) *base_counts = s_base_total_counts;
+    if (dev_resets)  *dev_resets  = s_dev_resets;
     SPEC_UNLOCK();
 }
 

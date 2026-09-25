@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <stdint.h>   // F1: intptr_t в choke point reg()/wf_activity_trampoline
+#include <assert.h>   // N4: рантайм-защёлка на переполнение таблицы трамплина
 #include <unistd.h>      // close() для web_waterfall_on_close()
 #include <dirent.h>      // #REC-11-A1: листинг /storage/wf для /segments
 #include <sys/stat.h>    // #REC-11-A1: размер файла сегмента (stat)
@@ -838,6 +840,11 @@ static esp_err_t h_page(httpd_req_t *req)
 
 static esp_err_t h_ws(httpd_req_t *req)
 {
+    // N1 (ревью-2): h_ws — ЕДИНСТВЕННЫЙ обработчик и рукопожатия, и КАЖДОГО
+    // входящего кадра клиента (второй if ниже) — метим тут, безусловно,
+    // чтобы клиентские кадры продолжали считаться активностью, не только
+    // сам факт подключения (choke point для этого одного обработчика).
+    web_server_note_request_activity(req->uri);
     if (req->method == HTTP_GET) {
         int fd = httpd_req_to_sockfd(req);
         ws_add(fd);
@@ -1031,10 +1038,41 @@ static esp_err_t h_dose_k_set(httpd_req_t *req)
     return ESP_OK;
 }
 
+// F1 (итоговое ревью 25.09): reg() — choke point регистрации REST водопада,
+// тот же приём, что трамплин над uris[] в web_server.c (индекс в user_ctx,
+// простой массив функций) — отмечает активность ДО вызова настоящего
+// обработчика, без правки тел ~19 обработчиков этого файла.
+#define WF_REG_MAX 24
+// N4 (ревью-2): reg() раньше не проверяла границу — лишний вызов при
+// доработке молча писал бы за пределы s_wf_wrap_handlers[]. Число ниже —
+// ФАКТИЧЕСКОЕ количество вызовов reg() в web_waterfall_register() (посчитано
+// grep'ом на момент фикса); _Static_assert ловит на СБОРКЕ, если кто-то
+// поднимет счётчик без пересмотра WF_REG_MAX, runtime-guard в reg() (ниже) —
+// если само число регистраций разойдётся сборка/рантайм.
+#define WF_REG_COUNT_KNOWN 19
+_Static_assert(WF_REG_COUNT_KNOWN <= WF_REG_MAX,
+               "WF_REG_MAX меньше известного числа reg()-регистраций");
+static esp_err_t (*s_wf_wrap_handlers[WF_REG_MAX])(httpd_req_t *);
+static int s_wf_wrap_count;
+
+static esp_err_t wf_activity_trampoline(httpd_req_t *req)
+{
+    size_t idx = (size_t)(intptr_t)req->user_ctx;
+    web_server_note_request_activity(req->uri);
+    return s_wf_wrap_handlers[idx](req);
+}
+
 static void reg(httpd_handle_t srv, const char *uri, httpd_method_t m,
                 esp_err_t (*h)(httpd_req_t *))
 {
-    httpd_uri_t u = { .uri = uri, .method = m, .handler = h, .user_ctx = NULL };
+    // N4: рантайм-защёлка — _Static_assert выше проверяет ИЗВЕСТНОЕ число
+    // вызовов, но не спасает, если оно разойдётся со счётчиком в рантайме;
+    // громкий abort лучше тихой порчи памяти соседних статических данных.
+    assert(s_wf_wrap_count < WF_REG_MAX && "WF_REG_MAX overflow (reg())");
+    int idx = s_wf_wrap_count++;
+    s_wf_wrap_handlers[idx] = h;
+    httpd_uri_t u = { .uri = uri, .method = m, .handler = wf_activity_trampoline,
+                       .user_ctx = (void *)(intptr_t)idx };
     httpd_register_uri_handler(srv, &u);
 }
 
@@ -1043,6 +1081,7 @@ void web_waterfall_register(httpd_handle_t server)
     s_server = server;
     if (!s_ws_mutex) s_ws_mutex = xSemaphoreCreateMutex();
     for (int i = 0; i < WF_WS_MAX; i++) { s_ws_fds[i] = 0; s_ws_inflight[i] = 0; }
+    s_wf_wrap_count = 0;   // F1: защита от повторного вызова этой функции
 
     reg(server, "/waterfall",            HTTP_GET,  h_page);
     reg(server, "/api/waterfall/status", HTTP_GET,  h_status);

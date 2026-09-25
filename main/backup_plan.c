@@ -99,3 +99,12 @@ int backup_rotate_plan(const backup_id_t *have, int n, int keep,
     }
     return need;
 }
+
+int backup_newest_index(const backup_id_t *have, int n)
+{
+    if (n <= 0 || !have) return -1;
+    int best = 0;
+    for (int i = 1; i < n; i++)
+        if (backup_id_cmp(&have[i], &have[best]) > 0) best = i;
+    return best;
+}
