@@ -351,8 +351,9 @@ that point into a **base**, then shows the analyzer's fresh (zeroed) histogram o
 — in the Web UI, acquisition looks continuous.
 
 - **What is lost:** only whatever accumulated **between the last autosave and the power
-  cut** — usually a few seconds (autosave runs often). Everything saved before that is
-  restored into the base on the next boot.
+  cut** — autosave runs about every ~60 seconds, so **up to ~60 seconds** of acquisition
+  can be lost (worst case: the cut happens right after an autosave). Everything saved
+  before that is restored into the base on the next boot.
 - **`/api/status`**: `base_counts`/`base_time` — how much is stored in the base, `dev_resets`
   — how many times the board has caught the analyzer resetting during this session.
 - **The Reset button** (in the Web UI **and** in BecqMoni/AtomSpectra over the TCP bridge,
