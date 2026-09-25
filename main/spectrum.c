@@ -5,6 +5,7 @@
 #include "spectrum_hist_stage.h"
 #include "http_io_gate.h"
 #include "backup_plan.h"   // issue #52: разбор имени снимка и план ротации
+#include "spectrum_restore_plan.h"  // AWF-1: выбор источника восстановления
 #include "esp_log.h"
 #include <stddef.h>
 #include <inttypes.h>
@@ -38,6 +39,9 @@ typedef struct {
 
 static spectrum_data_t s_spectrum;
 static device_info_t   s_device_info;
+// AWF-1 (#3): LittleFS была отформатирована при этой загрузке (mount без
+// format_if_mount_failed не удался) — /api/status обязан показать это явно.
+static bool s_fs_formatted;
 static uint32_t s_t1_session_inf;
 static bool     s_t1_refresh_sent;
 static uint32_t s_t1_open_ms;
@@ -127,21 +131,44 @@ void spectrum_init(void)
     if (!s_hist_staging)
         ESP_LOGE(TAG, "hist staging alloc failed — fallback to direct bin writes");
     spectrum_hist_stage_reset(&s_hist_stage);
+    // AWF-1 (#3): раньше format_if_mount_failed=true стирал раздел МОЛЧА —
+    // событие видно только по факту пустого current.bin. Теперь пробуем БЕЗ
+    // формата первыми, и если mount не удался, форматируем явно и громко
+    // (ESP_LOGE с кодом ошибки), выставляя s_fs_formatted для /api/status.
     esp_vfs_littlefs_conf_t conf = {
         .base_path = STORAGE_PATH,
         .partition_label = "storage",
-        .format_if_mount_failed = true,
+        .format_if_mount_failed = false,
     };
     esp_err_t ret = esp_vfs_littlefs_register(&conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "LittleFS mount failed (%s) — formatting partition 'storage'",
+                 esp_err_to_name(ret));
+        esp_err_t fmt = esp_littlefs_format("storage");
+        if (fmt != ESP_OK) {
+            ESP_LOGE(TAG, "LittleFS format failed: %s", esp_err_to_name(fmt));
+        } else {
+            s_fs_formatted = true;
+            ret = esp_vfs_littlefs_register(&conf);
+        }
+    }
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "LittleFS mount failed: %s", esp_err_to_name(ret));
     } else {
         size_t total = 0, used = 0;
         esp_littlefs_info("storage", &total, &used);
         ESP_LOGI(TAG, "LittleFS: total=%zu used=%zu free=%zu", total, used, total - used);
+        if (s_fs_formatted)
+            ESP_LOGE(TAG, "LittleFS was reformatted this boot — accumulated data on flash is LOST");
         mkdir(SPEC_DIR, 0777);   // #FW-24: подкаталог сохранённых спектров (отделение от calib/current/wf_state в корне)
         mkdir(BACKUP_DIR, 0777); // issue #52: автоснимки — отдельно от ручных, чтобы ротация их не касалась
     }
+}
+
+// AWF-1 (#3): для /api/status — «ФС отформатирована при старте».
+bool spectrum_fs_was_formatted(void)
+{
+    return s_fs_formatted;
 }
 
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len)
@@ -1206,13 +1233,18 @@ void spectrum_autosave(void)
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t t_open0 = esp_timer_get_time();
 #endif
-    FILE *f = fopen(AUTOSAVE_FILE, "wb");
+    // AWF-1 (#1): атомарная запись — во tmp, затем rename поверх основного
+    // файла (тот же приём, что и в sliced pump-пути ниже). Обрыв питания
+    // между fopen и fclose портит только tmp; current.bin остаётся прежним
+    // и годным для восстановления.
+    unlink(AUTOSAVE_TMP_FILE);
+    FILE *f = fopen(AUTOSAVE_TMP_FILE, "wb");
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t open_us = esp_timer_get_time() - t_open0;
 #endif
     if (!f) {
         http_io_gate_leave();
-        ESP_LOGE(TAG, "Autosave open failed");
+        ESP_LOGE(TAG, "Autosave tmp open failed");
         free(snap);
         return;
     }
@@ -1226,30 +1258,107 @@ void spectrum_autosave(void)
     int64_t t_cl0 = esp_timer_get_time();
 #endif
     int cl = fclose(f);
-    http_io_gate_leave();
 #if HIST_DROP_I2_SPLIT_TIMING || HIST_DROP_DIAG
     int64_t close_us = esp_timer_get_time() - t_cl0;
     ESP_LOGI(TAG, "autosave split open_us=%lld write_us=%lld close_us=%lld wr=%zu",
              (long long)open_us, (long long)write_us, (long long)close_us, wr);
 #endif
-    if (cl != 0 || wr != 1)
+    if (cl != 0 || wr != 1) {
         ESP_LOGE(TAG, "Autosave write failed (wr=%zu)", wr);
-    else
+        unlink(AUTOSAVE_TMP_FILE);
+        http_io_gate_leave();
+    } else if (rename(AUTOSAVE_TMP_FILE, AUTOSAVE_FILE) != 0) {
+        ESP_LOGE(TAG, "Autosave rename failed (errno=%d)", errno);
+        http_io_gate_leave();
+    } else {
+        http_io_gate_leave();
         spectrum_autosave_note_ok();
+    }
     free(snap);
+}
+
+// Перебор уже отсканированного списка have[0..n-1] от самого нового к самому
+// старому (backup_newest_index); побитый кандидат пропускается молча.
+static bool restore_from_latest_backup_scanned(backup_id_t *have, int n, spectrum_data_t *out)
+{
+    while (n > 0) {
+        int idx = backup_newest_index(have, n);
+        if (idx < 0) break;
+        char name[40];
+        snprintf(name, sizeof(name), BACKUP_NAME_FMT, have[idx].sess, have[idx].seq);
+        if (spectrum_backup_load(name, out) == 0 && out->valid) {
+            ESP_LOGW(TAG, "Restored autosave from backup %s: %" PRIu32 " counts, %" PRIu32 "s",
+                     name, out->total_counts, out->total_time_sec);
+            return true;
+        }
+        ESP_LOGW(TAG, "backup restore: %s unreadable, trying next", name);
+        have[idx] = have[n - 1];
+        n--;
+    }
+    return false;
+}
+
+// AWF-1 (#2): последняя линия обороны — самый свежий ГОДНЫЙ резервный снимок
+// (issue #52).
+static bool restore_from_latest_backup(spectrum_data_t *out)
+{
+    backup_id_t have[BACKUP_KEEP_MAX * 2];
+    int n = backup_scan(have, (int)(sizeof(have) / sizeof(have[0])));
+    if (n <= 0) return false;
+    if (n > (int)(sizeof(have) / sizeof(have[0])))
+        n = (int)(sizeof(have) / sizeof(have[0]));
+    return restore_from_latest_backup_scanned(have, n, out);
+}
+
+// Читает файл целиком в *out; true только если размер точен и valid==true —
+// тот же критерий, что и раньше для current.bin, теперь общий для main/tmp.
+static bool load_valid_snapshot(const char *path, spectrum_data_t *out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t rd = fread(out, 1, sizeof(*out), f);
+    fclose(f);
+    return rd == sizeof(*out) && out->valid;
+}
+
+// Применяет выбор restore_pick_source к s_spectrum. Вызывать под SPEC_LOCK.
+static void restore_apply(restore_source_t src, spectrum_data_t *main_data,
+                          spectrum_data_t *tmp_data, spectrum_data_t *backup_data)
+{
+    switch (src) {
+    case RESTORE_SRC_MAIN:
+        s_spectrum = *main_data;
+        ESP_LOGI(TAG, "Restored autosave from current.bin: %" PRIu32 " counts, %" PRIu32 "s",
+                 s_spectrum.total_counts, s_spectrum.total_time_sec);
+        return;
+    case RESTORE_SRC_TMP:
+        s_spectrum = *tmp_data;
+        ESP_LOGW(TAG, "Restored autosave from tmp (power loss mid-write): %" PRIu32 " counts, %" PRIu32 "s",
+                 s_spectrum.total_counts, s_spectrum.total_time_sec);
+        return;
+    case RESTORE_SRC_BACKUP:
+        if (restore_from_latest_backup(backup_data)) {
+            s_spectrum = *backup_data;
+            return;
+        }
+        ESP_LOGE(TAG, "Autosave restore: main+tmp invalid, backup listed but unreadable");
+        break;
+    default:
+        break;
+    }
+    memset(&s_spectrum, 0, sizeof(s_spectrum));
 }
 
 void spectrum_restore_autosave(void)
 {
-    FILE *f = fopen(AUTOSAVE_FILE, "rb");
-    if (!f) return;
+    spectrum_data_t main_data, tmp_data, backup_data;
+    bool main_valid = load_valid_snapshot(AUTOSAVE_FILE, &main_data);
+    bool tmp_valid = !main_valid && load_valid_snapshot(AUTOSAVE_TMP_FILE, &tmp_data);
+    bool have_backup = !main_valid && !tmp_valid && spectrum_backup_max_session() > 0;
+    restore_source_t src = restore_pick_source(main_valid, tmp_valid, have_backup);
+
     SPEC_LOCK();
-    size_t rd = fread(&s_spectrum, 1, sizeof(s_spectrum), f);
-    fclose(f);
-    if (rd == sizeof(s_spectrum) && s_spectrum.valid)
-        ESP_LOGI(TAG, "Restored autosave: %" PRIu32 " counts, %" PRIu32 "s", s_spectrum.total_counts, s_spectrum.total_time_sec);
-    else
-        memset(&s_spectrum, 0, sizeof(s_spectrum));
+    restore_apply(src, &main_data, &tmp_data, &backup_data);
     SPEC_UNLOCK();
 }
 

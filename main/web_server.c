@@ -125,6 +125,8 @@ static esp_err_t handle_status(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "total_counts", sp->total_counts);
     cJSON_AddNumberToObject(root, "cpu_load", sp->cpu_load);
     cJSON_AddBoolToObject(root, "tcp_client", tcp_bridge_client_connected());
+    // AWF-1 (#3): ФС отформатирована при этой загрузке — видимость сброса flash.
+    cJSON_AddBoolToObject(root, "fs_formatted", spectrum_fs_was_formatted());
 
     if (di->valid) {
         cJSON_AddNumberToObject(root, "dev", di->dev);

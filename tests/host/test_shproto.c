@@ -30,6 +30,10 @@ void fuzz_backup_name(void);
 // Сторож набора после перезагрузки прибора (main/acq_watch.h).
 void acq_watch_suite(void);
 void acq_intent_suite(void);
+// AWF-1/2a: восстановление спектра и реконнект/возврат Field AP.
+void test_restore_plan(void);
+void test_wifi_reconnect_plan(void);
+void test_wifi_return_plan(void);
 
 // Тестовая команда. CMD_HISTOGRAM (0x01) объявлена в main/atomspectra.h, но она
 // вне include-path host-сборки; shproto трактует cmd как обычный uint8_t.
@@ -191,6 +195,9 @@ int main(void)
     fuzz_backup_name();
     acq_watch_suite();
     acq_intent_suite();
+    test_restore_plan();
+    test_wifi_reconnect_plan();
+    test_wifi_return_plan();
 
     if (g_failures) {
         printf("\n%d CHECK(S) FAILED\n", g_failures);

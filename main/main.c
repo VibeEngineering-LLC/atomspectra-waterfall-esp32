@@ -143,8 +143,15 @@ void app_main(void)
     int      backup_fail_streak = 0;
     int64_t  backup_due_us = 0;          // 0 = срок ещё не назначен
     boot_config_t backup_cfg = bc;       // стартуем от прочитанного на boot
+    // AWF-2a (#2): проверка возврата из fallback Field AP — раз в 15 тиков
+    // (10с*15=150с, ~2.5 мин); функция сама no-op вне Field AP/при клиентах.
+    int wifi_return_tick = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
+        if (++wifi_return_tick >= 15) {
+            wifi_return_tick = 0;
+            wifi_manager_try_return_to_sta();
+        }
         const spectrum_data_t *sp = spectrum_get_current();
         ESP_LOGI(TAG, "USB:%s WiFi:%s TCP:%s counts:%" PRIu32 " cpu:%u%%",
             usb_host_cdc_is_connected() ? "OK" : "--",

@@ -109,6 +109,9 @@ int  wifi_manager_ap_clients(void);        // #FIELD-6: число STA-клие�
 const char *wifi_manager_ap_ssid(void);    // #FIELD-6: SSID активного AP ("" если STA)
 bool wifi_manager_ap_pass_is_default(void);// #SEC-2: пароль AP не менялся (дефолт)
 bool wifi_manager_ap_forced(void);         // #FIELD-6: field_ap липкий (ap_mode=1) vs fallback
+// AWF-2a (#2): периодическая (main.c tick) попытка вернуться из fallback Field AP
+// в STA, когда сохранённый роутер снова виден и на точке нет клиентов.
+void wifi_manager_try_return_to_sta(void);
 
 void web_server_init(void);
 
@@ -202,6 +205,9 @@ void usb_host_cdc_log_pkt_stats(void);
 bool usb_host_cdc_spectrometer_dead(void);
 
 void spectrum_init(void);
+// AWF-1 (#3): true, если LittleFS была отформатирована на этой загрузке
+// (mount без format_if_mount_failed не удался) — для /api/status.
+bool spectrum_fs_was_formatted(void);
 void spectrum_process_histogram_chunk(const uint8_t *data, size_t len);
 void spectrum_process_stat_packet(const uint8_t *data, size_t len);
 // #FW-8: счётчики staging-сборки свипов гистограммы (полных commit / отброшенных

@@ -133,6 +133,20 @@ static void test_plan_guards(void)
     CHECK(backup_rotate_plan(have, 4, 2, del, 3) == 3);
 }
 
+// AWF-1 (#2): индекс самого нового снимка — для restore_from_latest_backup.
+static void test_newest_index(void)
+{
+    backup_id_t have[5] = { ID(4, 2), ID(3, 9), ID(4, 1), ID(3, 1), ID(5, 1) };
+    CHECK(backup_newest_index(have, 5) == 4);          // {5,1} — самая новая сессия
+    CHECK(backup_newest_index(have, 1) == 0);
+    CHECK(backup_newest_index(have, 0) == -1);
+    CHECK(backup_newest_index(NULL, 0) == -1);
+    CHECK(backup_newest_index(NULL, 3) == -1);
+
+    backup_id_t same_sess[3] = { ID(2, 5), ID(2, 9), ID(2, 1) };
+    CHECK(backup_newest_index(same_sess, 3) == 1);     // тот же sess — больший seq
+}
+
 void test_backup_plan(void)
 {
     test_parse_ok();
@@ -141,4 +155,5 @@ void test_backup_plan(void)
     test_plan_counts();
     test_plan_picks_oldest();
     test_plan_guards();
+    test_newest_index();
 }

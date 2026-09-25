@@ -1,5 +1,7 @@
 #include "atomspectra.h"
 #include "spectrogram.h"   // #FW-55 (P-016): spectrogram_prepare_reboot()
+#include "wifi_reconnect_plan.h"  // AWF-2a (#1): расписание пауз реконнекта
+#include "wifi_return_plan.h"     // AWF-2a (#2): решение о возврате из Field AP
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -18,8 +20,11 @@ static const char *TAG = "wifi_mgr";
 static EventGroupHandle_t s_wifi_events;
 #define WIFI_CONNECTED_BIT BIT0
 
+// AWF-2a (#1): счётчик попыток (индекс в расписании пауз) и таймер,
+// планирующий следующий esp_wifi_connect() без блокировки обработчика событий.
 static int s_retry_count = 0;
-#define MAX_RETRY 10
+static int64_t s_disconnect_started_us = 0;   // 0 = сейчас не в серии реконнектов
+static esp_timer_handle_t s_reconnect_timer = NULL;
 
 // #FIELD-2a: STA не получила IP за FALLBACK_SEC → ребут в полевой AP.
 #define FALLBACK_SEC 90
@@ -345,7 +350,29 @@ static void fallback_timer_cb(void *arg)
         set_fb_flag_and_reboot();
 }
 
+// AWF-2a (#1): очередная попытка по расписанию пауз — не блокирует обработчик
+// событий (эта функция сама вызывается из таска esp_timer, не из handler'а).
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!wifi_is_connected())
+        esp_wifi_connect();
+}
+
 /* ---- STA mode ---- */
+
+// Таймер создаётся лениво (esp_wifi_connect() ещё не звали до первого
+// STA_DISCONNECTED) — обычный esp-idf идиом, ошибку создания просто логируем.
+static void ensure_reconnect_timer(void)
+{
+    if (s_reconnect_timer) return;
+    const esp_timer_create_args_t targs = {
+        .callback = reconnect_timer_cb,
+        .name = "wifi_reconnect",
+    };
+    if (esp_timer_create(&targs, &s_reconnect_timer) != ESP_OK)
+        ESP_LOGE(TAG, "reconnect timer create failed");
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
@@ -357,19 +384,31 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         uint8_t reason = disc ? disc->reason : 0;
         ESP_LOGW(TAG, "STA disconnected reason=%u", (unsigned)reason);
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
-        if (s_retry_count < MAX_RETRY) {
-            esp_wifi_connect();
-            s_retry_count++;
-            ESP_LOGW(TAG, "Reconnecting (%d/%d) reason=%u...", s_retry_count, MAX_RETRY, (unsigned)reason);
-        } else {
-            // #FIELD-2a: не тупик, как раньше, а полевой AP (либо раньше 90с-таймера)
-            ESP_LOGE(TAG, "WiFi failed after %d retries reason=%u -> field AP", MAX_RETRY, (unsigned)reason);
+        // AWF-2a (#1): нарастающие паузы (esp_timer, не блокируя handler) вместо
+        // немедленных попыток подряд — короткая перезагрузка роутера не должна
+        // уводить плату в поле раньше, чем роутер успевает подняться.
+        if (s_disconnect_started_us == 0) s_disconnect_started_us = esp_timer_get_time();
+        uint32_t elapsed_s = (uint32_t)((esp_timer_get_time() - s_disconnect_started_us) / 1000000);
+        if (wifi_reconnect_should_fallback(elapsed_s)) {
+            ESP_LOGE(TAG, "WiFi down %us (reason=%u) -> field AP", (unsigned)elapsed_s, (unsigned)reason);
             set_fb_flag_and_reboot();
+        } else {
+            uint32_t delay_s = wifi_reconnect_delay_s(s_retry_count);
+            s_retry_count++;
+            ensure_reconnect_timer();
+            if (s_reconnect_timer) {
+                esp_timer_stop(s_reconnect_timer);   // на случай уже взведённого (idempotent)
+                esp_timer_start_once(s_reconnect_timer, (uint64_t)delay_s * 1000000);
+            }
+            ESP_LOGW(TAG, "Reconnect in %us (attempt %d, down %us, reason=%u)",
+                     (unsigned)delay_s, s_retry_count, (unsigned)elapsed_s, (unsigned)reason);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "Connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
+        s_disconnect_started_us = 0;   // AWF-2a (#1): серия реконнектов закрыта
+        if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
         // #FIELD-2a: STA поднялась — отменить fallback-таймер
         if (s_fallback_timer) esp_timer_stop(s_fallback_timer);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
@@ -519,4 +558,63 @@ bool wifi_manager_ap_forced(void)
 bool wifi_manager_ap_pass_is_default(void)
 {
     return s_ap_pass_default;
+}
+
+// AWF-2a (#2): сохранённый SSID из NVS, куда его пишет handle_setup_connect().
+// Пусто, если плата ни разу не настраивалась на роутер (свежая/только-forced-AP).
+static bool load_saved_sta_ssid(char *out, size_t out_sz)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READONLY, &nvs) != ESP_OK) return false;
+    size_t len = out_sz;
+    esp_err_t err = nvs_get_str(nvs, "ssid", out, &len);
+    nvs_close(nvs);
+    return err == ESP_OK && out[0] != '\0';
+}
+
+// Временно расширяет режим до APSTA (клиентов на AP уже нет — проверено
+// вызывающим), сканирует эфир на конкретный SSID и возвращает AP-only режим.
+// AP на время скана может уйти на другой канал (esp-idf так и работает) —
+// поэтому вызывающий обязан гарантировать отсутствие клиентов заранее.
+static bool scan_for_saved_ssid(const char *ssid)
+{
+    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return false;
+    wifi_scan_config_t scan_cfg = { .ssid = (uint8_t *)ssid, .show_hidden = true };
+    bool found = false;
+    if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK) {
+        uint16_t num = 0;
+        esp_wifi_scan_get_ap_num(&num);
+        found = (num > 0);
+    }
+    esp_wifi_set_mode(WIFI_MODE_AP);
+    return found;
+}
+
+// Сканирует и решает, перепроверив клиентов ПОСЛЕ скана (могли подключиться
+// во время него — AP на это время уходит с канала).
+static void wifi_return_finish(bool entered_by_fallback, const char *ssid)
+{
+    bool found = scan_for_saved_ssid(ssid);
+    int clients = wifi_manager_ap_clients();
+    if (!wifi_return_should_reboot_to_sta(entered_by_fallback, clients, found)) return;
+
+    ESP_LOGW(TAG, "FIELD-2a: saved SSID '%s' visible again, no AP clients -> reboot to STA", ssid);
+    spectrogram_prepare_reboot();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+// AWF-2a (#2): вызывать периодически (раз в 2-3 мин, main.c tick) только в
+// Field AP. Возврат — исключительно когда SSID РЕАЛЬНО увиден сканированием,
+// клиентов нет и вход был по fallback (не forced Outdoor, тот липкий).
+void wifi_manager_try_return_to_sta(void)
+{
+    if (s_mode != NET_MODE_FIELD_AP) return;
+    bool entered_by_fallback = !s_ap_forced;
+    int clients = wifi_manager_ap_clients();
+    if (!wifi_return_scan_allowed(entered_by_fallback, clients)) return;
+
+    char ssid[WIFI_SSID_MAX] = {0};
+    if (!load_saved_sta_ssid(ssid, sizeof(ssid))) return;
+    wifi_return_finish(entered_by_fallback, ssid);
 }

@@ -38,3 +38,7 @@ int backup_id_cmp(const backup_id_t *a, const backup_id_t *b);
 // (вызывающий не должен молча удалить часть).
 int backup_rotate_plan(const backup_id_t *have, int n, int keep,
                        backup_id_t *to_delete, int cap);
+
+// AWF-1: индекс самого нового (старшего по backup_id_cmp) элемента среди
+// have[0..n-1] — для восстановления "последней линией обороны". -1 при n<=0.
+int backup_newest_index(const backup_id_t *have, int n);
