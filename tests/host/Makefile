@@ -72,6 +72,7 @@ test: $(SRCS) test_util.h socket_budget_check.sh ../../main/socket_budget.h test
 	$(CC) $(CFLAGS) -o test_runner $(SRCS) -lm
 	./test_runner
 	bash ./socket_budget_check.sh
+	bash ./ota_install_task_check.sh
 	./test_import_body_plan
 	./test_import_tmp_plan
 	./test_n42_time_plan

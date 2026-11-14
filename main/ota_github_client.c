@@ -49,7 +49,16 @@ typedef struct {
 static SemaphoreHandle_t s_lock;            // защищает s_progress и s_cache
 static ota_gh_progress_t s_progress;
 static ota_gh_cache_t    s_cache;
-static TaskHandle_t      s_install_task;    // NULL, когда задача не идёт
+static TaskHandle_t      s_install_task;    // NULL, когда установка не идёт; иначе = s_install_worker (флаг «занято»)
+
+// #63: задача установки создаётся ОДИН РАЗ при старте (ota_gh_client_init) со статическим стеком и TCB во внутренней RAM
+// (.bss) и живёт постоянно: xTaskCreate в момент нажатия кнопки падал, когда крупнейший свободный внутренний блок < 8192 Б
+// (фрагментация кучи). Постоянная задача (а не create/delete на каждую установку) исключает повторное использование
+// стека/TCB, пока idle-задача ещё не завершила vTaskDelete.
+#define OTA_GH_INSTALL_STACK 8192
+static StackType_t       s_install_stack[OTA_GH_INSTALL_STACK] __attribute__((aligned(16)));
+static StaticTask_t      s_install_tcb;
+static TaskHandle_t      s_install_worker;  // NULL, если задачу создать не удалось
 
 // LK-07 (1.2.30): фоновая проверка релиза; состояние и готовый ответ — под s_lock.
 #define OTA_GH_CHECK_KEEP_MS 10000
@@ -57,11 +66,18 @@ static ota_chk_state_t s_chk_state;
 static int64_t         s_chk_done_us;
 static char            s_chk_json[512];
 
+static void install_worker(void *arg);
+
 void ota_gh_client_init(void)
 {
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
     memset(&s_progress, 0, sizeof(s_progress));
     memset(&s_cache, 0, sizeof(s_cache));
+    if (!s_install_worker) {
+        s_install_worker = xTaskCreateStaticPinnedToCore(install_worker, "ota_gh_install", OTA_GH_INSTALL_STACK, NULL, 4,
+                                                         s_install_stack, &s_install_tcb, 1);
+        if (!s_install_worker) ESP_LOGE(TAG, "install task not created");
+    }
 }
 
 bool ota_gh_prerelease_channel_get(void)
@@ -595,21 +611,30 @@ done:
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
     s_install_task = NULL;
     if (s_lock) xSemaphoreGive(s_lock);
-    vTaskDelete(NULL);
+}
+
+// постоянная задача ждёт уведомления от ota_gh_install_start(), выполняет одну установку, возвращается к ожиданию
+static void install_worker(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        install_task(NULL);
+    }
 }
 
 esp_err_t ota_gh_install_start(void)
 {
+    // задача не создана при старте, это не «занято»
+    if (s_install_worker == NULL) return ESP_ERR_NO_MEM;
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
     bool busy = (s_install_task != NULL);
+    // проверка и захват под одним замком, два POST не запустят две установки
+    if (!busy) s_install_task = s_install_worker;
     if (s_lock) xSemaphoreGive(s_lock);
-    if (busy) return ESP_ERR_INVALID_STATE;  // уже идёт -- идемпотентно
+    // уже идёт, идемпотентно
+    if (busy) return ESP_ERR_INVALID_STATE;
 
-    TaskHandle_t h = NULL;
-    BaseType_t ok = xTaskCreatePinnedToCore(install_task, "ota_gh_install", 8192, NULL, 4, &h, 1);
-    if (ok != pdPASS) return ESP_ERR_NO_MEM;
-    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_install_task = h;   // пишем ПОСЛЕ успешного создания, не как out-param гонки с install_task()
-    if (s_lock) xSemaphoreGive(s_lock);
+    xTaskNotifyGive(s_install_worker);
     return ESP_OK;
 }

@@ -636,9 +636,14 @@ static esp_err_t handle_ota_gh_install(httpd_req_t *req)
 {
     if (!csrf_check(req)) return ESP_FAIL;
     esp_err_t e = ota_gh_install_start();
+    if (e == ESP_ERR_NO_MEM) {   // #63: нет памяти/задача не создана — не «уже идёт», UI показывает своё сообщение (503)
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "Install task unavailable: out of memory");
+        return ESP_FAIL;
+    }
     if (e != ESP_OK) {
         httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_sendstr(req, "Install already running or OOM");
+        httpd_resp_sendstr(req, "Install already running");
         return ESP_FAIL;
     }
     httpd_resp_sendstr(req, "{\"ok\":true}");
